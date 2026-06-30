@@ -1,7 +1,7 @@
 .vscode/
 __pycache__/
 
-outputs/
+output/
 log/
 
 Character-Level Chinese Large Language Model.md
