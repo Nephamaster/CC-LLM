@@ -248,7 +248,7 @@ merge 规则：
 
 子词表：
 
-- `pinyin_vocab.json`：如 `zhong1`、`hang2`，轻声统一为 `5`。
+- `pinyin_vocab.json`：如 `zhong1`、`hang2`，轻声统一为 `0`。
 - `shengmu_vocab.json`：包含空声母 `""`，如 `b p m f ... zh ch sh r z c s`。
 - `yunmu_vocab.json`：如 `a ai an ang ... üe`。内部建议统一用 `v` 存储 `ü`，避免 Unicode 标准化差异。
 - `tone_vocab.json`：`0/1/2/3/4/5`，其中 `0` 表示无读音或未知。
@@ -413,10 +413,9 @@ URL: https://example.com/中文?a=1
 统一入口：
 
 ```bash
-conda activate work
-python -m src.vocab_design.build_vocab \
+python -m src.vocab.build_vocab \
   --base-model Qwen/Qwen3-1.7B-Base \
-  --output-dir outputs/qwen3-1.7b-char-vocab \
+  --output-dir models/Qwen3-1.7B-Base-Char \
   --hanzi-sources resources/hanzi/tghz2013.txt resources/hanzi/common_traditional.txt resources/hanzi/rare_high_freq.txt \
   --unihan-zip resources/unihan/Unihan.zip \
   --structure-table resources/hanzi/structure.tsv \
@@ -428,27 +427,29 @@ python -m src.vocab_design.build_vocab \
 建议 CLI 子命令：
 
 ```bash
-python -m src.vocab_design.build_vocab build-hanzi-set ...
-python -m src.vocab_design.build_vocab build-semantic-vocab ...
-python -m src.vocab_design.build_vocab build-feature-vocab ...
-python -m src.vocab_design.build_vocab migrate-embeddings ...
-python -m src.vocab_design.build_vocab validate ...
-python -m src.vocab_design.build_vocab all ...
+python -m src.vocab.build_vocab build-hanzi-set ...
+python -m src.vocab.build_vocab build-semantic-vocab ...
+python -m src.vocab.build_vocab build-feature-vocab ...
+python -m src.vocab.build_vocab migrate-embeddings ...
+python -m src.vocab.build_vocab validate ...
+python -m src.vocab.build_vocab all ...
 ```
 
 ## 5. 产物目录
 
 ```text
-outputs/qwen3-1.7b-char-vocab/
-  tokenizer/
-    vocab.json
-    merges.txt
-    tokenizer.json
-    tokenizer_config.json
-    special_tokens_map.json
-    new2old_token_id.json
-    new_token_init_token_ids.json
-    semantic_vocab_manifest.json
+models/Qwen3-1.7B-Base-Char/
+  vocab.json
+  merges.txt
+  tokenizer.json
+  tokenizer_config.json
+  special_tokens_map.json
+  new2old_token_id.json
+  new_token_init_token_ids.json
+  semantic_vocab_manifest.json
+  config.json
+  model.safetensors
+  generation_config.json
   features/
     hanzi_set.txt
     hanzi_set.meta.json
@@ -463,10 +464,6 @@ outputs/qwen3-1.7b-char-vocab/
     char_feature_index.jsonl
     feature_index.pt
     feature_vocab_manifest.json
-  model/
-    config.json
-    model.safetensors
-    generation_config.json
   reports/
     embedding_migration_report.json
     validation_report.json
@@ -516,7 +513,7 @@ outputs/qwen3-1.7b-char-vocab/
 短期可以复用 `src/charize` 的核心算法，但不建议直接继续在该目录叠加音形词表逻辑。推荐：
 
 - `src/charize` 保留为历史参考。
-- 新实现放入 `src/vocab_design`。
+- 新实现放入 `src/vocab`。
 - 当前 `tokenizer_prune_qwen.py` 中成熟的 byte-level BPE 保护逻辑迁移过去。
 - 当前 `pruner.py` 的 embedding 迁移逻辑迁移过去，并补充 Qwen3 tied embedding 检查。
 

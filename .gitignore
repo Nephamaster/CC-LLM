@@ -2,6 +2,9 @@
 __pycache__/
 
 output/
+models/
 log/
+
+hanzi/
 
 Character-Level Chinese Large Language Model.md
