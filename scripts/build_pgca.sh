@@ -1,0 +1,2 @@
+python -m src.pgca.build_pgca --model-path models/Qwen3-1.7B-Base-Char --output-path models/Qwen3-1.7B-Base-Char-PGCA --pgca-layers 11,12,13,14,15,16
+python -m src.pgca.validate_pgca --model-path models/Qwen3-1.7B-Base-Char-PGCA

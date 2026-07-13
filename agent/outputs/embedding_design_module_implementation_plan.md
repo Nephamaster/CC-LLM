@@ -157,7 +157,7 @@ batch_feature_ids = {k: table[k][input_ids] for k in feature_keys}
 
 ### 6.2 Feature embedding 参数
 
-建议新增 `PhoneticGlyphFeatureEmbedding`：
+新增 `PhoneticGlyphFeatureEmbedding`：
 
 ```python
 E_pinyin:        [|V_pinyin|, d_feat]
@@ -247,8 +247,8 @@ feature_mask:   [batch, seq, max_pinyin_per_char + 1]
 
 - `is_hanzi=False`
 - `feature_mask=False`
-- feature memory 可为零向量
-- 后续 PGCA 对这些位置应跳过或得到零 residual
+- feature memory 设为零向量
+- 后续 PGCA 对这些位置得到零 residual
 
 ## 7. 初始化策略
 
@@ -258,16 +258,16 @@ feature_mask:   [batch, seq, max_pinyin_per_char + 1]
 
 ### 7.2 feature embedding
 
-随机初始化即可，但要稳定：
-
-```text
-normal_(mean=0, std=0.02)
-```
-
-或沿用 Qwen3 config 的 `initializer_range`。如果 config 存在：
+沿用 Qwen3 config 的 `initializer_range`。如果 config 存在：
 
 ```python
 std = model.config.initializer_range
+```
+
+若不存在，则随机初始化即可，但要稳定：
+
+```text
+normal_(mean=0, std=0.02)
 ```
 
 ### 7.3 projector/gate
