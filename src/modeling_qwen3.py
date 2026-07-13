@@ -300,26 +300,30 @@ def _get_config_model_path(config: Qwen3Config) -> Path | None:
     return None
 
 
-def _build_feature_memory_builder(config: Qwen3Config) -> FeatureMemoryBuilder | None:
+def _build_feature_memory_builder(
+    config: Qwen3Config,
+    model_path: str | Path | None = None,
+    feature_embedding: PhoneticGlyphFeatureEmbedding | None = None,
+) -> FeatureMemoryBuilder | None:
     if not getattr(config, "use_pgca", False) or not getattr(config, "pgca_build_features_in_model", True):
         return None
 
-    model_path = _get_config_model_path(config)
+    model_path = Path(model_path) if model_path is not None else _get_config_model_path(config)
     if model_path is None:
         return None
 
     embedding_config_path = model_path / "embedding_config.json"
     feature_index_path = model_path / "features" / "feature_index.pt"
-    print('feature_index_path:', feature_index_path)
     if not embedding_config_path.exists() or not feature_index_path.exists():
         return None
 
-    embedding_config = EmbeddingFeatureConfig.from_artifacts(
-        model_path,
-        d_model=config.hidden_size,
-        initializer_range=config.initializer_range,
-    )
-    feature_embedding = PhoneticGlyphFeatureEmbedding(embedding_config)
+    if feature_embedding is None:
+        embedding_config = EmbeddingFeatureConfig.from_artifacts(
+            model_path,
+            d_model=config.hidden_size,
+            initializer_range=config.initializer_range,
+        )
+        feature_embedding = PhoneticGlyphFeatureEmbedding(embedding_config)
     return FeatureMemoryBuilder.from_pretrained(feature_index_path, feature_embedding)
 
 
@@ -410,6 +414,30 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.has_sliding_layers = "sliding_attention" in self.config.layer_types
 
         self.post_init()
+
+    def reload_feature_memory_builder(
+        self,
+        model_path: str | Path | None = None,
+        *,
+        reset_feature_embedding: bool = False,
+    ) -> FeatureMemoryBuilder | None:
+        """Reload non-persistent feature indexes after checkpoint loading."""
+        feature_embedding = None
+        if not reset_feature_embedding and self.feature_memory_builder is not None:
+            feature_embedding = self.feature_memory_builder.feature_embedding
+
+        builder = _build_feature_memory_builder(
+            self.config,
+            model_path=model_path,
+            feature_embedding=feature_embedding,
+        )
+        if builder is None:
+            self.feature_memory_builder = None
+            return None
+
+        reference = self.embed_tokens.weight
+        self.feature_memory_builder = builder.to(device=reference.device, dtype=reference.dtype)
+        return self.feature_memory_builder
 
     def _prepare_feature_memory(
         self,

@@ -190,7 +190,7 @@ def main() -> None:
             max_hanzi_checks=args.max_hanzi_checks,
         )
     ).validate()
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    # print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

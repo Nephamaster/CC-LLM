@@ -32,37 +32,45 @@ def _check_modules(model: Qwen3ForCausalLM) -> dict:
         for idx, layer in enumerate(model.model.layers)
         if getattr(layer, "pgca_attn", None) is not None
     }
+    pgca_parameters = {
+        name: parameter
+        for name, parameter in model.named_parameters()
+        if ".pgca_attn." in name or "feature_memory_builder.feature_embedding." in name
+    }
+    meta_parameters = [name for name, parameter in pgca_parameters.items() if parameter.is_meta]
+    non_finite_parameters = [
+        name
+        for name, parameter in pgca_parameters.items()
+        if not parameter.is_meta and not bool(torch.isfinite(parameter).all().item())
+    ]
     gate_values = {
-        name: float(param.detach().cpu())
-        for name, param in model.named_parameters()
+        name: float(parameter.detach().cpu())
+        for name, parameter in pgca_parameters.items()
         if name.endswith("pgca_attn.gate")
     }
+    expected_gate = float(model.config.pgca_gate_init)
+    gates_match = len(gate_values) == len(expected_layers) and all(
+        abs(value - expected_gate) < 1e-8 for value in gate_values.values()
+    )
     return {
         "expected_layers": sorted(expected_layers),
         "actual_layers": sorted(actual_layers),
         "layers_match": actual_layers == expected_layers,
         "gate_values": gate_values,
-        "gates_zero": all(abs(value) < 1e-8 for value in gate_values.values()),
+        "gates_match": gates_match,
+        "meta_parameters": meta_parameters,
+        "non_finite_parameters": non_finite_parameters,
+        "parameters_finite": not meta_parameters and not non_finite_parameters,
     }
 
 
 def _check_feature_memory(model: Qwen3ForCausalLM, input_ids: torch.Tensor) -> dict:
     builder = getattr(model.model, "feature_memory_builder", None)
-
-    for i in [15946, 28392, 25403]:
-        print(
-            i,
-            builder.is_hanzi[i].item(),
-            builder.pinyin_mask[i].tolist(),
-        )
-
     if builder is None:
         return {"available": False}
 
     with torch.no_grad():
         memory, mask = builder(input_ids)
-    print('memory:', memory)
-    print('mask:', mask)
     expected_shape = [
         input_ids.shape[0],
         input_ids.shape[1],
@@ -95,6 +103,9 @@ def _check_forward(model: Qwen3ForCausalLM, input_ids: torch.Tensor) -> dict:
 def validate_pgca_model(model_path: Path, text: str) -> dict:
     config = Qwen3Config.from_pretrained(model_path)
     model = Qwen3ForCausalLM.from_pretrained(model_path, config=config, torch_dtype="auto")
+    builder = model.model.reload_feature_memory_builder(model_path)
+    if builder is None:
+        raise FileNotFoundError(f"PGCA feature artifacts are incomplete under {model_path}")
     model.eval()
 
     tokenizer = Qwen3CharTokenizer(
@@ -104,9 +115,7 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
         )
     )
     encoded = tokenizer.encode(text, add_special_tokens=False)
-    print('encoded:', encoded)
     input_ids = torch.tensor([encoded["input_ids"]], dtype=torch.long)
-    print('input_ids:', input_ids)
 
     config_checks = _check_config(config)
     module_checks = _check_modules(model)
@@ -125,7 +134,8 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
         and config_checks["hidden_size_matches"]
         and config_checks["head_shape_matches"]
         and module_checks["layers_match"]
-        and module_checks["gates_zero"]
+        and module_checks["gates_match"]
+        and module_checks["parameters_finite"]
         and feature_passed
         and forward_checks["logits_shape_matches"]
         and forward_checks["loss_is_finite"]

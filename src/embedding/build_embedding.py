@@ -97,7 +97,7 @@ def main() -> None:
 
     args = parser.parse_args()
     result = args.func(args)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    # print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

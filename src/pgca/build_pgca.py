@@ -70,10 +70,82 @@ def update_config(config_path: Path, pgca_layers: list[int]) -> dict:
     return data
 
 
-def reset_pgca_gates(model: Qwen3PGCAForCausalLM, value: float) -> None:
-    for name, param in model.named_parameters():
-        if name.endswith("pgca_attn.gate"):
-            param.data.fill_(value)
+def initialize_pgca_parameters(model: Qwen3PGCAForCausalLM) -> None:
+    std = float(model.config.initializer_range)
+    gate_init = float(model.config.pgca_gate_init)
+
+    with torch.no_grad():
+        for layer_idx in model.config.pgca_layers:
+            attention = model.model.layers[layer_idx].pgca_attn
+            for projection in (attention.q_proj, attention.k_proj, attention.v_proj, attention.o_proj):
+                torch.nn.init.normal_(projection.weight, mean=0.0, std=std)
+                if projection.bias is not None:
+                    torch.nn.init.zeros_(projection.bias)
+            attention.q_norm.weight.fill_(1.0)
+            attention.k_norm.weight.fill_(1.0)
+            attention.gate.fill_(gate_init)
+
+
+def check_pgca_parameters(model: Qwen3PGCAForCausalLM) -> dict:
+    pgca_parameters = {
+        name: parameter
+        for name, parameter in model.named_parameters()
+        if ".pgca_attn." in name or "feature_memory_builder.feature_embedding." in name
+    }
+    meta_parameters = [name for name, parameter in pgca_parameters.items() if parameter.is_meta]
+    non_finite_parameters = [
+        name
+        for name, parameter in pgca_parameters.items()
+        if not parameter.is_meta and not bool(torch.isfinite(parameter).all().item())
+    ]
+    all_zero_weights = [
+        name
+        for name, parameter in pgca_parameters.items()
+        if parameter.ndim > 1 and not parameter.is_meta and not bool(torch.count_nonzero(parameter).item())
+    ]
+    invalid_norm_parameters = [
+        name
+        for name, parameter in pgca_parameters.items()
+        if (name.endswith("q_norm.weight") or name.endswith("k_norm.weight"))
+        and not parameter.is_meta
+        and not bool(torch.all(parameter == 1).item())
+    ]
+    nonzero_biases = [
+        name
+        for name, parameter in pgca_parameters.items()
+        if name.endswith(".bias")
+        and not parameter.is_meta
+        and bool(torch.count_nonzero(parameter).item())
+    ]
+    gate_values = {
+        name: float(parameter.detach().cpu())
+        for name, parameter in pgca_parameters.items()
+        if name.endswith("pgca_attn.gate")
+    }
+    expected_gate = float(model.config.pgca_gate_init)
+    gates_match = len(gate_values) == len(model.config.pgca_layers) and all(
+        abs(value - expected_gate) < 1e-8 for value in gate_values.values()
+    )
+
+    return {
+        "parameter_count": sum(parameter.numel() for parameter in pgca_parameters.values()),
+        "tensor_count": len(pgca_parameters),
+        "meta_parameters": meta_parameters,
+        "non_finite_parameters": non_finite_parameters,
+        "all_zero_weights": all_zero_weights,
+        "invalid_norm_parameters": invalid_norm_parameters,
+        "nonzero_biases": nonzero_biases,
+        "gate_values": gate_values,
+        "gates_match": gates_match,
+        "passed": (
+            not meta_parameters
+            and not non_finite_parameters
+            and not all_zero_weights
+            and not invalid_norm_parameters
+            and not nonzero_biases
+            and gates_match
+        ),
+    }
 
 
 def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str | None) -> dict:
@@ -93,14 +165,15 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         output_loading_info=True,
         torch_dtype="auto",
     )
-    reset_pgca_gates(model, float(config.pgca_gate_init))
-    model.save_pretrained(output_path)
+    builder = model.model.reload_feature_memory_builder(output_path, reset_feature_embedding=True)
+    if builder is None:
+        raise FileNotFoundError(f"PGCA feature artifacts are incomplete under {output_path}")
 
-    gate_values = {
-        name: float(param.detach().cpu())
-        for name, param in model.named_parameters()
-        if name.endswith("pgca_attn.gate")
-    }
+    initialize_pgca_parameters(model)
+    parameter_checks = check_pgca_parameters(model)
+    if not parameter_checks["passed"]:
+        raise RuntimeError(f"PGCA parameter initialization failed: {parameter_checks}")
+    model.save_pretrained(output_path)
     report = {
         "base_model_path": str(model_path),
         "output_model_path": str(output_path),
@@ -110,8 +183,7 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         "missing_keys": loading_info.get("missing_keys", []),
         "unexpected_keys": loading_info.get("unexpected_keys", []),
         "mismatched_keys": loading_info.get("mismatched_keys", []),
-        "pgca_gate_values": gate_values,
-        "pgca_parameter_count": sum(p.numel() for n, p in model.named_parameters() if ".pgca_attn." in n),
+        "pgca_initialization": parameter_checks,
     }
 
     report_path = output_path / "pgca_migration_report.json"

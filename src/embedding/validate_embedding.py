@@ -124,7 +124,7 @@ def main() -> None:
             validate_model_weights=not args.skip_model_weights,
         )
     ).validate()
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    # print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
