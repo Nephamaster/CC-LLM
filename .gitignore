@@ -6,7 +6,11 @@ models/
 log/
 tools/
 data/
-
+reports/
 hanzi/
+manifests/
+phase1/
 
 Character-Level Chinese Large Language Model.md
+GITHUB_TOKEN
+HF_TOKEN

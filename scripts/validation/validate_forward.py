@@ -12,9 +12,7 @@ from typing import Any
 import torch
 
 from scripts.validation.common import file_sha256, numeric_summary, read_json, read_jsonl, utc_now_iso, write_json
-from src.configuration_qwen3 import Qwen3Config
-from src.modeling_qwen3 import Qwen3ForCausalLM
-from src.vocab.qwen3_char_tokenizer import Qwen3CharTokenizer, Qwen3CharTokenizerConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 
 def resolve_device(value: str) -> torch.device:
@@ -37,7 +35,7 @@ def tensor_norms(weight: torch.Tensor, token_ids: list[int]) -> tuple[list[float
     return norms.cpu().tolist(), finite, zero_count
 
 
-def check_migrated_weights(model: Qwen3ForCausalLM, model_path: Path) -> dict[str, Any]:
+def check_migrated_weights(model: Any, model_path: Path) -> dict[str, Any]:
     mapping_path = model_path / "new_token_init_token_ids.json"
     if not mapping_path.exists():
         return {"passed": False, "reason": f"missing {mapping_path}"}
@@ -110,28 +108,28 @@ def check_migrated_weights(model: Qwen3ForCausalLM, model_path: Path) -> dict[st
     }
 
 
-def load_model(model_path: Path, device: torch.device) -> tuple[Qwen3ForCausalLM, Qwen3Config]:
-    config = Qwen3Config.from_pretrained(model_path)
-    model = Qwen3ForCausalLM.from_pretrained(model_path, config=config, torch_dtype="auto")
-    if getattr(config, "use_pgca", False):
-        builder = model.model.reload_feature_memory_builder(model_path)
-        if builder is None:
-            raise FileNotFoundError(f"PGCA feature artifacts are incomplete under {model_path}")
+def load_model(model_path: Path, device: torch.device) -> tuple[Any, Any]:
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        config=config,
+        trust_remote_code=True,
+        torch_dtype="auto",
+    )
     model.to(device)
     model.eval()
     return model, config
 
-
 def run_sample(
-    model: Qwen3ForCausalLM,
-    tokenizer: Qwen3CharTokenizer,
+    model: Any,
+    tokenizer: Any,
     row: dict[str, Any],
     device: torch.device,
     max_length: int,
     max_loss: float,
     max_logit_abs: float,
 ) -> dict[str, Any]:
-    encoded = tokenizer.encode(str(row["text"]), add_special_tokens=False)
+    encoded = tokenizer(str(row["text"]), add_special_tokens=False)
     full_length = len(encoded["input_ids"])
     token_ids = encoded["input_ids"][:max_length]
     if len(token_ids) < 2:
@@ -180,9 +178,8 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     dataset_complete = len(rows) == args.expected_records
     device = resolve_device(args.device)
     model, config = load_model(args.model_path, device)
-    tokenizer = Qwen3CharTokenizer(
-        Qwen3CharTokenizerConfig(tokenizer_dir=args.model_path, features_dir=args.model_path / "features")
-    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, use_fast=True)
+
     weight_checks = check_migrated_weights(model, args.model_path)
 
     results: list[dict[str, Any]] = []

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Optional
 
 import torch
@@ -25,12 +24,7 @@ from transformers.generation import GenerationMixin
 from transformers.integrations import use_kernel_forward_from_hub, use_kernel_func_from_hub, use_kernelized_func
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
-from transformers.modeling_layers import (
-    GenericForQuestionAnswering,
-    GenericForSequenceClassification,
-    GenericForTokenClassification,
-    GradientCheckpointingLayer,
-)
+from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
@@ -38,7 +32,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.generic import maybe_autocast, merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
-from .configuration_qwen3 import Qwen3Config
+from .configuration_qwen3_pgca import Qwen3PGCAConfig
 from .embedding.config import EmbeddingFeatureConfig
 from .embedding.feature_embedding import PhoneticGlyphFeatureEmbedding
 from .embedding.feature_memory import FeatureMemoryBuilder
@@ -85,7 +79,7 @@ class Qwen3MLP(nn.Module):
 class Qwen3RotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor  # fix linting for `register_buffer`
 
-    def __init__(self, config: Qwen3Config, device=None):
+    def __init__(self, config: Qwen3PGCAConfig, device=None):
         super().__init__()
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
@@ -103,7 +97,7 @@ class Qwen3RotaryEmbedding(nn.Module):
 
     @staticmethod
     def compute_default_rope_parameters(
-        config: Qwen3Config | None = None,
+        config: Qwen3PGCAConfig | None = None,
         device: Optional["torch.device"] = None,
         seq_len: int | None = None,
     ) -> tuple["torch.Tensor", float]:
@@ -221,7 +215,7 @@ def eager_attention_forward(
 class Qwen3Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: Qwen3Config, layer_idx: int):
+    def __init__(self, config: Qwen3PGCAConfig, layer_idx: int):
         super().__init__()
         self.layer_type = config.layer_types[layer_idx] if hasattr(config, "layer_types") else None
         self.config = config
@@ -290,45 +284,30 @@ class Qwen3Attention(nn.Module):
         return attn_output, attn_weights
 
 
-def _get_config_model_path(config: Qwen3Config) -> Path | None:
-    for attr_name in ("_name_or_path", "name_or_path"):
-        value = getattr(config, attr_name, None)
-        if value:
-            path = Path(value)
-            if path.exists():
-                return path
-    return None
-
-
-def _build_feature_memory_builder(
-    config: Qwen3Config,
-    model_path: str | Path | None = None,
-    feature_embedding: PhoneticGlyphFeatureEmbedding | None = None,
-) -> FeatureMemoryBuilder | None:
-    if not getattr(config, "use_pgca", False) or not getattr(config, "pgca_build_features_in_model", True):
+def _build_feature_memory_builder(config: Qwen3PGCAConfig) -> FeatureMemoryBuilder | None:
+    if not config.use_pgca:
         return None
 
-    model_path = Path(model_path) if model_path is not None else _get_config_model_path(config)
-    if model_path is None:
-        return None
+    embedding_config = EmbeddingFeatureConfig(
+        semantic_vocab_size=config.vocab_size,
+        d_model=config.hidden_size,
+        d_feat=config.pgca_feature_embedding_dim,
+        max_pinyin_per_char=config.pgca_max_pinyin_per_char,
+        num_feature_slots=config.pgca_feature_slots,
+        feature_vocab_sizes=config.pgca_feature_vocab_sizes,
+        initializer_range=config.initializer_range,
+        use_glyph_image=config.pgca_use_glyph_image,
+    )
+    feature_embedding = PhoneticGlyphFeatureEmbedding(embedding_config)
+    return FeatureMemoryBuilder.empty(
+        vocab_size=config.vocab_size,
+        max_pinyin_per_char=config.pgca_max_pinyin_per_char,
+        feature_embedding=feature_embedding,
+    )
 
-    embedding_config_path = model_path / "embedding_config.json"
-    feature_index_path = model_path / "features" / "feature_index.pt"
-    if not embedding_config_path.exists() or not feature_index_path.exists():
-        return None
 
-    if feature_embedding is None:
-        embedding_config = EmbeddingFeatureConfig.from_artifacts(
-            model_path,
-            d_model=config.hidden_size,
-            initializer_range=config.initializer_range,
-        )
-        feature_embedding = PhoneticGlyphFeatureEmbedding(embedding_config)
-    return FeatureMemoryBuilder.from_pretrained(feature_index_path, feature_embedding)
-
-
-class Qwen3DecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: Qwen3Config, layer_idx: int):
+class Qwen3PGCADecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: Qwen3PGCAConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
@@ -379,11 +358,12 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         return hidden_states
 
 
-class Qwen3PreTrainedModel(PreTrainedModel):
-    config: Qwen3Config
+class Qwen3PGCAPreTrainedModel(PreTrainedModel):
+    config_class = Qwen3PGCAConfig
+    config: Qwen3PGCAConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["Qwen3DecoderLayer"]
+    _no_split_modules = ["Qwen3PGCADecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
@@ -392,20 +372,20 @@ class Qwen3PreTrainedModel(PreTrainedModel):
     _can_compile_fullgraph = True
     _supports_attention_backend = True
     _can_record_outputs = {
-        "hidden_states": Qwen3DecoderLayer,
+        "hidden_states": Qwen3PGCADecoderLayer,
         "attentions": Qwen3Attention,
     }
 
 
-class Qwen3Model(Qwen3PreTrainedModel):
-    def __init__(self, config: Qwen3Config):
+class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
+    def __init__(self, config: Qwen3PGCAConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [Qwen3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [Qwen3PGCADecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen3RotaryEmbedding(config=config)
@@ -415,29 +395,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         self.post_init()
 
-    def reload_feature_memory_builder(
-        self,
-        model_path: str | Path | None = None,
-        *,
-        reset_feature_embedding: bool = False,
-    ) -> FeatureMemoryBuilder | None:
-        """Reload non-persistent feature indexes after checkpoint loading."""
-        feature_embedding = None
-        if not reset_feature_embedding and self.feature_memory_builder is not None:
-            feature_embedding = self.feature_memory_builder.feature_embedding
+    def get_input_embeddings(self) -> nn.Embedding:
+        return self.embed_tokens
 
-        builder = _build_feature_memory_builder(
-            self.config,
-            model_path=model_path,
-            feature_embedding=feature_embedding,
-        )
-        if builder is None:
-            self.feature_memory_builder = None
-            return None
-
-        reference = self.embed_tokens.weight
-        self.feature_memory_builder = builder.to(device=reference.device, dtype=reference.dtype)
-        return self.feature_memory_builder
+    def set_input_embeddings(self, value: nn.Embedding) -> None:
+        self.embed_tokens = value
 
     def _prepare_feature_memory(
         self,
@@ -544,18 +506,36 @@ class Qwen3Model(Qwen3PreTrainedModel):
         )
 
 
-class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
+class Qwen3PGCAForCausalLM(Qwen3PGCAPreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_gather_output"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = Qwen3Model(config)
+        self.model = Qwen3PGCAModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         self.post_init()
+
+    def get_input_embeddings(self) -> nn.Embedding:
+        return self.model.get_input_embeddings()
+
+    def set_input_embeddings(self, value: nn.Embedding) -> None:
+        self.model.set_input_embeddings(value)
+
+    def get_output_embeddings(self) -> nn.Linear:
+        return self.lm_head
+
+    def set_output_embeddings(self, value: nn.Linear) -> None:
+        self.lm_head = value
+
+    def get_decoder(self) -> Qwen3PGCAModel:
+        return self.model
+
+    def set_decoder(self, decoder: Qwen3PGCAModel) -> None:
+        self.model = decoder
 
     @can_return_tuple
     def forward(
@@ -603,38 +583,12 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         )
 
 
-class Qwen3PGCAPreTrainedModel(Qwen3PreTrainedModel):
-    pass
-
-
-class Qwen3PGCAModel(Qwen3Model):
-    pass
-
-
-class Qwen3PGCAForCausalLM(Qwen3ForCausalLM):
-    pass
-
-
-class Qwen3ForSequenceClassification(GenericForSequenceClassification, Qwen3PreTrainedModel):
-    pass
-
-
-class Qwen3ForTokenClassification(GenericForTokenClassification, Qwen3PreTrainedModel):
-    pass
-
-
-class Qwen3ForQuestionAnswering(GenericForQuestionAnswering, Qwen3PreTrainedModel):
-    base_model_prefix = "transformer"  # For BC, where `transformer` was used instead of `model`
+Qwen3PGCAModel.register_for_auto_class("AutoModel")
+Qwen3PGCAForCausalLM.register_for_auto_class("AutoModelForCausalLM")
 
 
 __all__ = [
-    "Qwen3ForCausalLM",
     "Qwen3PGCAForCausalLM",
-    "Qwen3ForQuestionAnswering",
-    "Qwen3PreTrainedModel",
     "Qwen3PGCAPreTrainedModel",
-    "Qwen3Model",
     "Qwen3PGCAModel",
-    "Qwen3ForSequenceClassification",
-    "Qwen3ForTokenClassification",
 ]

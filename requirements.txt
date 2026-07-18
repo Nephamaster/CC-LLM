@@ -2,3 +2,9 @@ torch
 transformers
 datasets
 pandas
+numpy
+pyarrow
+datasketch
+requests
+huggingface_hub
+PyYAML

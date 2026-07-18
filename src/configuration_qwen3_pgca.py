@@ -1,4 +1,4 @@
-﻿# Copyright 2024 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Qwen3 configuration with PGCA settings."""
+"""Configuration for the Qwen3 model with PGCA feature attention."""
 
 from transformers.configuration_utils import PreTrainedConfig
 from transformers.modeling_rope_utils import RopeParameters
@@ -19,10 +19,21 @@ from transformers.modeling_rope_utils import RopeParameters
 from .pgca.config import default_pgca_layers
 
 
-class Qwen3Config(PreTrainedConfig):
-    """Qwen3 configuration extended with PGCA fields."""
+FEATURE_VOCAB_KEYS = (
+    "pinyin",
+    "shengmu",
+    "yunmu",
+    "tone",
+    "stroke_count",
+    "radical_stroke",
+    "structure",
+)
 
-    model_type = "qwen3"
+
+class Qwen3PGCAConfig(PreTrainedConfig):
+    """Qwen3 configuration extended with self-contained PGCA feature settings."""
+
+    model_type = "qwen3_pgca"
     keys_to_ignore_at_inference = ["past_key_values"]
 
     base_model_tp_plan = {
@@ -80,9 +91,13 @@ class Qwen3Config(PreTrainedConfig):
         pgca_head_dim: int | None = None,
         pgca_gate_init: float = 0.0,
         pgca_dropout: float = 0.0,
-        pgca_feature_slots: int = 9,
+        pgca_feature_slots: int | None = None,
         pgca_feature_hidden_size: int | None = None,
-        pgca_build_features_in_model: bool = True,
+        pgca_feature_embedding_dim: int = 256,
+        pgca_max_pinyin_per_char: int = 8,
+        pgca_feature_vocab_sizes: dict[str, int] | None = None,
+        pgca_use_glyph_image: bool = False,
+        pgca_feature_index_sha256: str | None = None,
         **kwargs,
     ):
         if num_key_value_heads is None:
@@ -107,7 +122,7 @@ class Qwen3Config(PreTrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.tie_word_embeddings = tie_word_embeddings
-        self.rope_parameters = rope_parameters
+        self.rope_parameters = rope_parameters or {"rope_theta": 1_000_000.0, "rope_type": "default"}
         self.attention_bias = attention_bias
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window
@@ -123,11 +138,20 @@ class Qwen3Config(PreTrainedConfig):
         self.pgca_num_attention_heads = pgca_num_attention_heads or num_attention_heads
         self.pgca_num_key_value_heads = pgca_num_key_value_heads or num_key_value_heads
         self.pgca_head_dim = pgca_head_dim or head_dim
-        self.pgca_gate_init = pgca_gate_init
-        self.pgca_dropout = pgca_dropout
-        self.pgca_feature_slots = pgca_feature_slots
-        self.pgca_feature_hidden_size = pgca_feature_hidden_size or hidden_size
-        self.pgca_build_features_in_model = pgca_build_features_in_model
+        self.pgca_gate_init = float(pgca_gate_init)
+        self.pgca_dropout = float(pgca_dropout)
+        self.pgca_max_pinyin_per_char = int(pgca_max_pinyin_per_char)
+        self.pgca_feature_slots = int(pgca_feature_slots or (self.pgca_max_pinyin_per_char + 1))
+        self.pgca_feature_hidden_size = int(pgca_feature_hidden_size or hidden_size)
+        self.pgca_feature_embedding_dim = int(pgca_feature_embedding_dim)
+        self.pgca_feature_vocab_sizes = (
+            {str(key): int(value) for key, value in pgca_feature_vocab_sizes.items()}
+            if pgca_feature_vocab_sizes is not None
+            else None
+        )
+        self.pgca_use_glyph_image = bool(pgca_use_glyph_image)
+        self.pgca_feature_index_sha256 = pgca_feature_index_sha256
+        self._validate_pgca()
 
         super().__init__(
             pad_token_id=pad_token_id,
@@ -137,5 +161,27 @@ class Qwen3Config(PreTrainedConfig):
             **kwargs,
         )
 
+    def _validate_pgca(self) -> None:
+        if len(set(self.pgca_layers)) != len(self.pgca_layers):
+            raise ValueError("pgca_layers must not contain duplicates")
+        if any(layer_idx < 0 or layer_idx >= self.num_hidden_layers for layer_idx in self.pgca_layers):
+            raise ValueError("pgca_layers contains an index outside num_hidden_layers")
+        if not self.use_pgca:
+            return
+        if not self.pgca_layers:
+            raise ValueError("use_pgca=True requires at least one PGCA layer")
+        if self.pgca_feature_slots != self.pgca_max_pinyin_per_char + 1:
+            raise ValueError("pgca_feature_slots must equal pgca_max_pinyin_per_char + 1")
+        if self.pgca_feature_hidden_size != self.hidden_size:
+            raise ValueError("pgca_feature_hidden_size must equal hidden_size")
+        if self.pgca_feature_vocab_sizes is None:
+            raise ValueError("use_pgca=True requires pgca_feature_vocab_sizes in config")
+        missing = [key for key in FEATURE_VOCAB_KEYS if key not in self.pgca_feature_vocab_sizes]
+        if missing:
+            raise ValueError(f"pgca_feature_vocab_sizes is missing keys: {missing}")
 
-__all__ = ["Qwen3Config"]
+
+Qwen3PGCAConfig.register_for_auto_class()
+
+
+__all__ = ["Qwen3PGCAConfig"]

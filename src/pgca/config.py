@@ -25,26 +25,30 @@ class PGCAConfig:
     pgca_dropout: float = 0.0
     pgca_feature_slots: int = 9
     pgca_feature_hidden_size: int = 2048
-    pgca_build_features_in_model: bool = True
+    pgca_feature_embedding_dim: int = 256
+    pgca_max_pinyin_per_char: int = 8
+    pgca_feature_vocab_sizes: dict[str, int] | None = None
+    pgca_use_glyph_image: bool = False
 
     @classmethod
     def from_model_config(cls, config) -> "PGCAConfig":
-        layers = getattr(config, "pgca_layers", None)
+        layers = config.pgca_layers
         if layers is None:
             layers = default_pgca_layers(int(config.num_hidden_layers))
         return cls(
-            use_pgca=bool(getattr(config, "use_pgca", True)),
+            use_pgca=bool(config.use_pgca),
             pgca_layers=list(layers),
-            pgca_num_attention_heads=int(getattr(config, "pgca_num_attention_heads", config.num_attention_heads)),
-            pgca_num_key_value_heads=int(
-                getattr(config, "pgca_num_key_value_heads", config.num_key_value_heads)
-            ),
-            pgca_head_dim=int(getattr(config, "pgca_head_dim", config.head_dim)),
-            pgca_gate_init=float(getattr(config, "pgca_gate_init", 0.0)),
-            pgca_dropout=float(getattr(config, "pgca_dropout", 0.0)),
-            pgca_feature_slots=int(getattr(config, "pgca_feature_slots", 9)),
-            pgca_feature_hidden_size=int(getattr(config, "pgca_feature_hidden_size", config.hidden_size)),
-            pgca_build_features_in_model=bool(getattr(config, "pgca_build_features_in_model", True)),
+            pgca_num_attention_heads=int(config.pgca_num_attention_heads),
+            pgca_num_key_value_heads=int(config.pgca_num_key_value_heads),
+            pgca_head_dim=int(config.pgca_head_dim),
+            pgca_gate_init=float(config.pgca_gate_init),
+            pgca_dropout=float(config.pgca_dropout),
+            pgca_feature_slots=int(config.pgca_feature_slots),
+            pgca_feature_hidden_size=int(config.pgca_feature_hidden_size),
+            pgca_feature_embedding_dim=int(config.pgca_feature_embedding_dim),
+            pgca_max_pinyin_per_char=int(config.pgca_max_pinyin_per_char),
+            pgca_feature_vocab_sizes=dict(config.pgca_feature_vocab_sizes),
+            pgca_use_glyph_image=bool(config.pgca_use_glyph_image),
         )
 
     def to_dict(self) -> dict:

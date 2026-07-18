@@ -64,7 +64,7 @@ class VocabValidator:
             "no_composite_hanzi_vocab_tokens": self._check_no_composite_hanzi_tokens(state),
             "mapping_coverage": self._check_mapping_coverage(len(tokenizer)),
             "feature_index": self._check_feature_index(len(tokenizer)),
-            "wrapper_alignment": self._check_wrapper_alignment(),
+            "wrapper_alignment": self._check_wrapper_alignment(tokenizer, hanzi_chars),
             "special_tokens": self._check_special_tokens(tokenizer),
         }
         passed = all(item["passed"] for item in checks.values())
@@ -139,11 +139,12 @@ class VocabValidator:
             "bad_rows_head": bad_rows[:20],
         }
 
-    def _check_wrapper_alignment(self) -> dict:
+    def _check_wrapper_alignment(self, tokenizer, hanzi_chars: list[str]) -> dict:
         index_path = self.config.features_dir / "char_feature_index.jsonl"
         manifest_path = self.config.features_dir / "feature_index_manifest.json"
         if not index_path.exists() or not manifest_path.exists():
             return {"passed": False, "reason": "feature index artifacts missing"}
+
         wrapper = Qwen3CharTokenizer(
             Qwen3CharTokenizerConfig(
                 tokenizer_dir=self.config.char_model_path,
@@ -152,19 +153,66 @@ class VocabValidator:
                 use_fast=self.config.use_fast,
             )
         )
+        extension_chars = [char for char in hanzi_chars if ord(char) > 0xFFFF][:4]
+        special_tokens = list(getattr(tokenizer, "all_special_tokens", []) or [])
+        special_boundary = (
+            f"{special_tokens[0]}中国ABC{special_tokens[-1]}"
+            if special_tokens
+            else "中国ABC"
+        )
         samples = [
             "这是一个中文分词测试。",
             "行行重行行，银行行长行不行？",
             "Python 3.11: print(\"你好, Qwen3!\")",
             "URL: https://example.com?a=1",
+            "中国ABC123，。!?🙂\uFFFD",
+            "".join(extension_chars) + "扩展区ABC",
+            special_boundary,
         ]
         failures: list[dict] = []
-        for text in samples:
-            encoded = wrapper.encode(text)
-            if len(encoded["input_ids"]) != len(encoded["feature_ids"]):
-                failures.append({"text": text, "reason": "length mismatch"})
-        return {"passed": not failures, "sample_count": len(samples), "failures": failures}
 
+        for start in range(0, len(hanzi_chars), 512):
+            chars = hanzi_chars[start : start + 512]
+            text = "".join(chars)
+            expected = [wrapper.char_token_ids[char] for char in chars]
+            auto_ids = tokenizer.encode(text, add_special_tokens=False)
+            wrapper_ids = wrapper.encode(text, add_special_tokens=False)["input_ids"]
+            if auto_ids != expected or wrapper_ids != expected:
+                failures.append(
+                    {
+                        "kind": "hanzi_chunk",
+                        "start": start,
+                        "codepoint_head": [f"U+{ord(char):04X}" for char in chars[:8]],
+                        "expected_length": len(expected),
+                        "auto_length": len(auto_ids),
+                        "wrapper_length": len(wrapper_ids),
+                    }
+                )
+                if len(failures) >= 20:
+                    break
+
+        for text in samples:
+            auto_ids = tokenizer.encode(text, add_special_tokens=False)
+            encoded = wrapper.encode(text, add_special_tokens=False)
+            if auto_ids != encoded["input_ids"]:
+                failures.append(
+                    {
+                        "kind": "mixed_or_boundary",
+                        "text": text,
+                        "auto_ids": auto_ids,
+                        "wrapper_ids": encoded["input_ids"],
+                    }
+                )
+            elif len(auto_ids) != len(encoded["feature_ids"]):
+                failures.append({"kind": "feature_length", "text": text})
+
+        return {
+            "passed": not failures,
+            "hanzi_checked": len(hanzi_chars),
+            "sample_count": len(samples),
+            "auto_tokenizer_class": type(tokenizer).__name__,
+            "failures": failures[:20],
+        }
     @staticmethod
     def _check_special_tokens(tokenizer) -> dict:
         return {
