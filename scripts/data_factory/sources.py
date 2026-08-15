@@ -16,19 +16,7 @@ from scripts.data_factory.config import (
 from scripts.data_factory.io_utils import expand_paths, iter_jsonl
 
 
-CLUE_FIELDS = {
-    "afqmc": ("sentence1", "sentence2"),
-    "c3": ("context", "question", "choice"),
-    "chid": ("content", "candidates"),
-    "cluewsc2020": ("text", "target"),
-    "cmnli": ("premise", "hypothesis"),
-    "cmrc2018": ("context", "question"),
-    "csl": ("abstract", "keyword"),
-    "drcd": ("context", "question"),
-    "iflytek": ("sentence",),
-    "ocnli": ("premise", "hypothesis"),
-    "tnews": ("sentence", "keywords"),
-}
+CHID_PLACEHOLDER_RE = re.compile(r"#idiom\d+#")
 
 EXCLUDED_CLUE_FIELDS = frozenset(
     {"answer", "answers", "id", "idx", "index", "label", "label_desc", "label_des", "metadata"}
@@ -52,10 +40,7 @@ def _text_values(value: Any) -> Iterator[str]:
             yield from _text_values(nested)
 
 
-def _compose_clue_text(subset: str, row: dict[str, Any]) -> str:
-    fields = CLUE_FIELDS.get(subset)
-    if fields is None:
-        fields = tuple(key for key in row if key.lower() not in EXCLUDED_CLUE_FIELDS)
+def _join_fields(row: dict[str, Any], fields: tuple[str, ...]) -> str:
     values: list[str] = []
     seen: set[str] = set()
     for field in fields:
@@ -64,6 +49,57 @@ def _compose_clue_text(subset: str, row: dict[str, Any]) -> str:
                 values.append(value)
                 seen.add(value)
     return "\n".join(values)
+
+
+def _chid_texts(row: dict[str, Any]) -> Iterator[tuple[str, str]]:
+    contents = list(_text_values(row.get("content")))
+    answer_data = row.get("answers")
+    answers = list(_text_values(answer_data.get("text"))) if isinstance(answer_data, dict) else []
+    placeholder_count = sum(len(CHID_PLACEHOLDER_RE.findall(content)) for content in contents)
+    if placeholder_count != len(answers):
+        raise ValueError(
+            f"CHID row has {placeholder_count} placeholders but {len(answers)} answers"
+        )
+
+    answer_index = 0
+    for content_index, content in enumerate(contents):
+        def replace(_: re.Match[str]) -> str:
+            nonlocal answer_index
+            answer = answers[answer_index]
+            answer_index += 1
+            return answer
+
+        yield CHID_PLACEHOLDER_RE.sub(replace, content), f"content-{content_index}"
+
+
+def _clue_texts(subset: str, row: dict[str, Any]) -> Iterator[tuple[str, str | None]]:
+    if subset == "afqmc":
+        yield _join_fields(row, ("sentence1", "sentence2")), None
+    elif subset == "c3":
+        yield _join_fields(row, ("context", "question", "answer")), None
+    elif subset == "chid":
+        yield from _chid_texts(row)
+    elif subset == "cluewsc2020":
+        yield _join_fields(row, ("text",)), None
+    elif subset == "cmnli":
+        for field in ("sentence1", "sentence2"):
+            yield _join_fields(row, (field,)), field
+    elif subset in {"cmrc2018", "drcd"}:
+        yield _join_fields(row, ("context",)), None
+    elif subset == "csl":
+        yield _join_fields(row, ("abst",)), None
+    elif subset in {"iflytek", "tnews"}:
+        yield _join_fields(row, ("sentence",)), None
+
+
+def _clue_context_key(subset: str, row: dict[str, Any]) -> str | None:
+    value = str(row.get("id", ""))
+    if subset == "cmrc2018":
+        match = re.match(r"^TRAIN_([^_]+)", value)
+        return f"TRAIN_{match.group(1)}" if match else value or None
+    if subset == "drcd":
+        return value.rsplit("-", 1)[0] if "-" in value else value or None
+    return None
 
 
 def _iter_parquet_rows(paths: list[Path], columns: list[str] | None = None) -> Iterator[tuple[Path, int, dict[str, Any]]]:
@@ -92,22 +128,34 @@ def iter_clue(config: PipelineConfig, source_config: dict[str, Any]) -> Iterator
         raise FileNotFoundError(f"no CLUE train parquet files found under {root}")
 
     counters: dict[str, int] = {}
+    seen_contexts: dict[str, set[str]] = {"cmrc2018": set(), "drcd": set()}
     for path, _, row in _iter_parquet_rows(paths):
         subset = path.parent.name
+        if subset == "ocnli":
+            continue
+        context_key = _clue_context_key(subset, row)
+        if context_key is not None:
+            if context_key in seen_contexts[subset]:
+                continue
+            seen_contexts[subset].add(context_key)
         index = counters.get(subset, 0)
         counters[subset] = index + 1
-        yield {
-            "text": _compose_clue_text(subset, row),
-            "source": "clue_benchmark",
-            "doc_id": f"clue-{_safe_component(subset)}-train-{index}",
-            "license": source_config.get("license", "unknown"),
-            "license_note": source_config.get("license_note"),
-            "category": "chinese_general",
-            "path": str(path),
-            "split": "train",
-            "subset": subset,
-            "_allow_unverified_license": bool(source_config.get("allow_unverified_license", False)),
-        }
+        for text, part in _clue_texts(subset, row):
+            doc_id = f"clue-{_safe_component(subset)}-train-{index}"
+            if part is not None:
+                doc_id = f"{doc_id}-{_safe_component(part)}"
+            yield {
+                "text": text,
+                "source": "clue_benchmark",
+                "doc_id": doc_id,
+                "license": source_config.get("license", "unknown"),
+                "license_note": source_config.get("license_note"),
+                "category": "chinese_general",
+                "path": str(path),
+                "split": "train",
+                "subset": subset,
+                "_allow_unverified_license": bool(source_config.get("allow_unverified_license", False)),
+            }
 
 
 def iter_fineweb_chinese(config: PipelineConfig, source_config: dict[str, Any]) -> Iterator[dict[str, Any]]:

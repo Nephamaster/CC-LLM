@@ -35,6 +35,15 @@ python -m scripts.data_factory.build_phase1 ACTION \
 - `ACTION`：`prepare`、`dedup`、`sample` 或 `all`。
 - `--config`：配置文件路径，默认 `scripts/data_factory/phase1_config.json`。
 - `--overwrite`：删除对应阶段的已有产物后重新构建。
+- `--resume`：仅用于 `sample`，从现有 `candidate_index.sqlite` 恢复。
+- `--workers N`：仅用于 `sample`，覆盖并发分词批次数。
+- `--source NAME`：仅用于 `prepare`，只处理指定来源；可重复传入。与 `--overwrite` 合用时只覆盖该来源的标准化分片。
+
+仅重新处理 CLUE，保留其他已生成数据：
+
+```bash
+bash scripts/data_factory/run_phase1.sh prepare --source clue --overwrite
+```
 
 ### `run_phase1.sh`
 
@@ -328,3 +337,21 @@ resources/raw/phase1/collected/
 ```
 
 无需合并这些 JSONL，现有配置会读取该目录下所有文件。若数量不足，使用新的搜索词重复发现流程，但每批使用不同输出文件名，避免覆盖已有结果。
+
+## Sampling performance and resume
+
+The `sample` action uses batched Fast Tokenizer counting and bulk SQLite inserts. Tune these fields in `phase1_config.json`:
+
+- `sample_batch_size`: maximum records per tokenizer batch; default `512`.
+- `sample_batch_chars`: maximum characters per tokenizer batch; default `1000000`.
+- `sample_workers`: concurrent tokenizer batches and tokenizer threads; default `8`.
+
+Start with `--workers 8` or `--workers 16`. Higher values increase the number of in-flight long-text batches and memory usage; they may not improve throughput after CPU or storage is saturated.
+
+Resume an interrupted sampling run without deleting `candidate_index.sqlite`:
+
+```bash
+bash scripts/data_factory/run_phase1.sh sample --resume --workers 16
+```
+
+Use `--overwrite` only when the candidate index must be rebuilt from scratch. `--resume` and `--overwrite` are mutually exclusive.

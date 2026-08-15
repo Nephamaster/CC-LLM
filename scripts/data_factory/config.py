@@ -47,12 +47,23 @@ class PipelineConfig:
     normalized_shard_records: int
     deduplicated_shard_records: int
     final_shard_tokens: int
+    sample_batch_size: int
+    sample_batch_chars: int
+    sample_workers: int
     sources: dict[str, Any]
     quotas: dict[str, int]
     mixed_quotas: dict[str, int]
     supplemental_quotas: dict[str, int]
     quality: dict[str, Any]
     dedup: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        if self.sample_batch_size <= 0:
+            raise ValueError("sample_batch_size must be positive")
+        if self.sample_batch_chars <= 0:
+            raise ValueError("sample_batch_chars must be positive")
+        if self.sample_workers <= 0:
+            raise ValueError("sample_workers must be positive")
 
     @property
     def raw_manifest_dir(self) -> Path:
@@ -127,6 +138,9 @@ def load_config(path: Path) -> PipelineConfig:
         normalized_shard_records=int(raw.get("normalized_shard_records", 100_000)),
         deduplicated_shard_records=int(raw.get("deduplicated_shard_records", 100_000)),
         final_shard_tokens=int(raw.get("final_shard_tokens", 100_000_000)),
+        sample_batch_size=int(raw.get("sample_batch_size", 512)),
+        sample_batch_chars=int(raw.get("sample_batch_chars", 1_000_000)),
+        sample_workers=int(raw.get("sample_workers", raw.get("tokenizer_workers", 8))),
         sources=sources,
         quotas=quotas,
         mixed_quotas=mixed_quotas,

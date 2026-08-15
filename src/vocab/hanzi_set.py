@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .unicode_ranges import CJK_BASIC, UnicodeRange, chars_from_ranges, is_cjk_hanzi
+from .unicode_ranges import CJK_BASIC, CJK_EXTENSION_A, UnicodeRange, chars_from_ranges, is_cjk_hanzi
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class HanziSource:
 @dataclass(frozen=True)
 class HanziSetBuildConfig:
     output_dir: Path = Path("resources/hanzi")
-    vocab_ranges: tuple[UnicodeRange, ...] = (CJK_BASIC,)
+    vocab_ranges: tuple[UnicodeRange, ...] = (CJK_BASIC, CJK_EXTENSION_A)
     tghz2013_path: Path = Path("resources/hanzi/tghz2013.txt")
     common_traditional_path: Path = Path("resources/hanzi/common_traditional.txt")
     rare_high_freq_path: Path = Path("resources/hanzi/rare_high_freq.txt")

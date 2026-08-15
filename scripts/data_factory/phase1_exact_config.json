@@ -7,9 +7,6 @@
   "normalized_shard_records": 100000,
   "deduplicated_shard_records": 100000,
   "final_shard_tokens": 100000000,
-  "sample_batch_size": 512,
-  "sample_batch_chars": 1000000,
-  "sample_workers": 8,
   "quality": {
     "min_chars": 10,
     "min_printable_ratio": 0.98,
@@ -19,7 +16,7 @@
     "mixed_max_hanzi_ratio": 0.85
   },
   "dedup": {
-    "near_min_chars": 50,
+    "near_min_chars": 2147483647,
     "natural_num_perm": 128,
     "natural_band_size": 4,
     "natural_threshold": 0.8,
