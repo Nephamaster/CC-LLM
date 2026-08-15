@@ -14,7 +14,7 @@
 ## 2. 资料依据
 
 - Qwen3 Technical Report 说明 Qwen3 是 dense/MoE 混合规模家族，覆盖 0.6B 到 235B，并强调多语言能力和开源可复现；本实验选用 dense 的 `Qwen3-1.7B-Base`。参考：https://arxiv.org/abs/2505.09388
-- `Qwen3-1.7B-Base` 当前本地迁移报告显示：`hidden_size=2048`，原模型 `old_vocab_size=151936`，新词表 `new_vocab_size=147688`，`tie_word_embeddings=true`，输入输出 embedding 需要保持 tied。
+- 最新迁移报告显示：`hidden_size=2048`，原模型 `old_vocab_size=151936`，新词表 `new_vocab_size=154019`，`tie_word_embeddings=true`，输入输出 embedding 需要保持 tied。
 - 词表扩展初始化研究表明，新 token 不宜随意随机初始化；用旧 tokenizer 分解后的已有 embedding 组合初始化，是比随机初始化更稳妥的基线。参考：
   - Vocabulary expansion empirical comparison：https://arxiv.org/abs/2407.05841
   - OFA unseen subword embedding initialization：https://arxiv.org/abs/2311.08849
@@ -44,8 +44,8 @@ models/Qwen3-1.7B-Base-Char/
 当前 tokenizer/feature validation 已通过，关键值：
 
 ```text
-new_vocab_size = 147688
-hanzi_token_count = 21816
+new_vocab_size = 154019
+hanzi_token_count = 28134
 hidden_size = 2048
 max_pinyin_per_char = 8
 ```
@@ -124,8 +124,8 @@ for name in ("pad_token_id", "eos_token_id", "bos_token_id"):
 这会使：
 
 ```text
-pad_token_id = 147662
-eos_token_id = 147662
+pad_token_id = 153993
+eos_token_id = 153993
 bos_token_id = None
 ```
 
@@ -286,7 +286,7 @@ pgca_gate_init = 0.0
 
 ```python
 {
-  "semantic_vocab_size": 147688,
+  "semantic_vocab_size": 154019,
   "d_model": 2048,
   "d_feat": 256,
   "max_pinyin_per_char": 8,
@@ -316,11 +316,10 @@ models/Qwen3-1.7B-Base-Char/embedding_config.json
 
 - `new_vocab_size == len(tokenizer)`
 - `new2old ∪ init_ids` 覆盖所有 token id
-- input/output embedding shape 为 `[147688, 2048]`
+- input/output embedding shape 为 `[154019, 2048]`
 - tied embedding 为 true
 - `bos_token_id is None`
 - `pad/eos_token_id == tokenizer.pad/eos_token_id`
-- forward smoke test loss 非 NaN/Inf
 
 feature 侧：
 
@@ -328,24 +327,20 @@ feature 侧：
 - `feature_mask.shape == [batch, seq, 9]`
 - 汉字 token 至少有一个有效 feature slot
 - 非汉字 token mask 全 false
-- 多音字如“行”应有多个拼音 slot
 - 不创建 `lm_head` 对应的 feature 参数
 
 ## 10. CLI 建议
 
-新增：
+在已经执行 `bash scripts/build_vocab.sh`、完成语义 embedding 迁移后，统一执行：
 
 ```bash
-python -m src.embedding.semantic_embedding migrate \
+python -m src.embedding.build_embedding all \
   --base-model-path /share/project/wuhaiming/data/models/Qwen3-1.7B-Base/ \
-  --char-model-path models/Qwen3-1.7B-Base-Char
-
-python -m src.embedding.feature_embedding build \
-  --char-model-path models/Qwen3-1.7B-Base-Char
-
-python -m src.embedding.validate_embedding \
-  --char-model-path models/Qwen3-1.7B-Base-Char
+  --char-model-path models/Qwen3-1.7B-Base-Char \
+  --skip-migrate
 ```
+
+该命令生成 `embedding_config.json` 并完成 semantic/feature embedding 验证，不重复覆盖已经迁移的 Char 模型权重。feature embedding 参数在本阶段只进行结构和张量接口验证，实际参数会在后续构建 PGCA 模型时写入模型权重。
 
 为了兼容已有流程，`src.vocab.build_vocab migrate` 可以继续存在，但内部应调用新的 `src.embedding.semantic_embedding`。
 

@@ -19,13 +19,11 @@ EXPECTED_AUTO_MAP = {
 REQUIRED_RUNTIME_FILES = (
     "configuration_qwen3_pgca.py",
     "modeling_qwen3_pgca.py",
-    "embedding/__init__.py",
-    "embedding/config.py",
-    "embedding/feature_embedding.py",
-    "embedding/feature_memory.py",
-    "pgca/__init__.py",
-    "pgca/attention.py",
-    "pgca/config.py",
+    "embedding_config.py",
+    "feature_embedding.py",
+    "feature_memory.py",
+    "pgca_attention.py",
+    "pgca_config.py",
 )
 
 

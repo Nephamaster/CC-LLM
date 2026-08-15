@@ -413,15 +413,14 @@ URL: https://example.com/中文?a=1
 统一入口：
 
 ```bash
-python -m src.vocab.build_vocab \
-  --base-model Qwen/Qwen3-1.7B-Base \
-  --output-dir models/Qwen3-1.7B-Base-Char \
-  --hanzi-sources resources/hanzi/tghz2013.txt resources/hanzi/common_traditional.txt resources/hanzi/rare_high_freq.txt \
-  --unihan-zip resources/unihan/Unihan.zip \
-  --structure-table resources/hanzi/structure.tsv \
-  --include-cjk-basic \
-  --include-cjk-ext-a \
-  --allow-missing-features
+python -m src.vocab.build_vocab all \
+  --base-model-path /share/project/wuhaiming/data/models/Qwen3-1.7B-Base/ \
+  --char-model-path models/Qwen3-1.7B-Base-Char \
+  --hanzi-dir resources/hanzi \
+  --features-dir models/Qwen3-1.7B-Base-Char/features \
+  --unihan-path resources/unihan/Unihan.zip \
+  --fallback-unihan-dir resources/raw/Unihan \
+  --strict
 ```
 
 建议 CLI 子命令：

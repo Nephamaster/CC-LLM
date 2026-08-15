@@ -24,7 +24,7 @@
 本地当前模型与产物：
 
 - `models/Qwen3-1.7B-Base-Char/config.json`
-  - `vocab_size=147688`
+  - `vocab_size=154019`
   - `hidden_size=2048`
   - `num_hidden_layers=28`
   - `num_attention_heads=16`
@@ -64,8 +64,8 @@ src/pgca/
 新增 Qwen3 PGCA 文件：
 
 ```text
-src/configuration_qwen3.py
-src/modeling_qwen3.py
+src/configuration_qwen3_pgca.py
+src/modeling_qwen3_pgca.py
 ```
 
 实现基准：
@@ -92,18 +92,21 @@ class PGCAConfig:
     pgca_dropout: float = 0.0
     pgca_feature_slots: int = 9
     pgca_feature_hidden_size: int = 2048
-    pgca_build_features_in_model: bool = True
+    pgca_feature_embedding_dim: int = 256
+    pgca_max_pinyin_per_char: int = 8
+    pgca_feature_vocab_sizes: dict[str, int] | None = None
+    pgca_use_glyph_image: bool = False
 ```
 
 默认层选择：
 
 - Qwen3-1.7B-Base 共 28 层。
-- 默认插入中间 1/3 的 6 层：`[11, 12, 13, 14, 15, 16]`。
-- 用户需要更轻量实验时可改为 `[10, 14, 18, 22]`。
+- 未传 `--pgca-layers` 时，代码默认插入中间 1/3 的 9 层：`[9, 10, 11, 12, 13, 14, 15, 16, 17]`。
+- 本轮实验通过命令显式使用 6 层：`[11, 12, 13, 14, 15, 16]`。
 
 配置落点：
 
-- 基于 `src/configuration_qwen3_hf.py` 新增 `src/configuration_qwen3.py`。
+- 基于 `src/configuration_qwen3_hf.py` 新增 `src/configuration_qwen3_pgca.py`。
 
 ### 3.2 `PGCACrossAttention`
 
@@ -147,94 +150,56 @@ H_next = H_mid + MLP(RMSNorm(H_mid))
 - 使用 Qwen3 同样的 `head_dim=128`、GQA 结构、`Qwen3RMSNorm` head-wise q/k norm。
 - PGCA 不使用 RoPE，因为 feature slots 不是时间序列位置。
 - 对非汉字 token，`feature_mask` 全 0；PGCA 输出应为 0，避免影响原始非汉字建模。
-- 对全 mask 行，不能让 softmax 产生 NaN；实现时先把 masked score 置为大负值，softmax 后再乘 mask，并对分母做 clamp。
+- 对全 mask 行，masked score 使用当前 dtype 的有限最小值，softmax 后再将 mask 位置清零，避免 NaN。
 - `pgca_gate` 使用标量参数，初始为 0，使初始行为接近 Char baseline。
 
 ### 3.3 Qwen3 接入
 
-实现方案：基于三个 HF 官方代码副本新增 PGCA 版本。
+实现方案：基于三个 HF 官方代码副本新增独立的 PGCA 模型类型。
 
-1. `src/configuration_qwen3.py`
-   - 从 `src/configuration_qwen3_hf.py` 派生。
-   - 保留 Qwen3 原始字段。
-   - 新增 `pgca_*` 字段。
-   - `model_type` 可保持 `qwen3`，但 `architectures` 在输出配置中写为 `Qwen3PGCAForCausalLM`。
+1. `src/configuration_qwen3_pgca.py`
+   - 定义 `Qwen3PGCAConfig(PreTrainedConfig)`。
+   - 使用唯一的 `model_type="qwen3_pgca"`，避免被 Transformers 静默识别为原生 Qwen3。
+   - 保留 Qwen3 原始字段，并加入全部 `pgca_*` 和 feature vocab 配置。
+   - 输出配置写入 `architectures=["Qwen3PGCAForCausalLM"]` 与完整 `auto_map`。
 
-2. `src/modeling_qwen3.py`
-   - 从 `src/modeling_qwen3_hf.py` 派生。
-   - 类名建议：
-     - `Qwen3PGCAPreTrainedModel`
-     - `Qwen3PGCAModel`
-     - `Qwen3PGCAForCausalLM`
+2. `src/modeling_qwen3_pgca.py`
+   - 定义 `Qwen3PGCAPreTrainedModel`、`Qwen3PGCAModel` 和 `Qwen3PGCAForCausalLM`。
+   - `config_class=Qwen3PGCAConfig`，`base_model_prefix="model"`，支持 gradient checkpointing 和 Transformers attention backend。
 
-3. `Qwen3DecoderLayer.__init__`
-   - 若 `layer_idx in config.pgca_layers`，创建 `self.pgca_attn = PGCACrossAttention(config)`。
-   - 否则为 `None`。
-
-4. `Qwen3DecoderLayer.forward`
-   - 新增参数：
-     - `feature_memory: Optional[torch.Tensor] = None`
-     - `feature_mask: Optional[torch.Tensor] = None`
+3. `Qwen3PGCADecoderLayer`
+   - 仅当 `layer_idx in config.pgca_layers` 时创建 `self.pgca_attn`。
    - self-attention 和 PGCA 使用同一个 `input_layernorm(hidden_states)` 结果并行计算：
 
 ```python
 residual = hidden_states
 normed_hidden_states = self.input_layernorm(hidden_states)
-
-self_attn_out, _ = self.self_attn(
-    hidden_states=normed_hidden_states,
-    attention_mask=attention_mask,
-    position_ids=position_ids,
-    past_key_values=past_key_values,
-    use_cache=use_cache,
-    cache_position=cache_position,
-    position_embeddings=position_embeddings,
-    **kwargs,
-)
-
-pgca_out = 0
-if self.pgca_attn is not None and feature_memory is not None:
-    pgca_out = self.pgca_attn(normed_hidden_states, feature_memory, feature_mask)
-
+self_attn_out, _ = self.self_attn(normed_hidden_states, ...)
+pgca_out = self.pgca_attn(normed_hidden_states, feature_memory, feature_mask)
 hidden_states = residual + self_attn_out + pgca_out
-residual = hidden_states
-hidden_states = self.post_attention_layernorm(hidden_states)
-hidden_states = self.mlp(hidden_states)
-hidden_states = residual + hidden_states
+hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
 ```
 
-5. `Qwen3PGCAModel.__init__`
-   - 若 `config.pgca_build_features_in_model=True`，根据模型目录加载：
-     - `embedding_config.json`
-     - `features/feature_index.pt`
-   - 构造：
-     - `PhoneticGlyphFeatureEmbedding`
-     - `FeatureMemoryBuilder`
+4. `Qwen3PGCAModel.__init__`
+   - 只根据 config 构造 `PhoneticGlyphFeatureEmbedding` 和空的 `FeatureMemoryBuilder`。
+   - 不读取 `config.name_or_path`、`embedding_config.json` 或 `features/feature_index.pt`。
+   - feature index 作为 persistent buffer 从模型权重恢复。
 
-6. `Qwen3PGCAModel.forward`
-   - 新增参数：
-     - `feature_memory=None`
-     - `feature_mask=None`
-     - `feature_ids=None`
-   - 优先级：
-     - 显式传入 `feature_memory/feature_mask`：直接使用。
-     - 否则若 `input_ids` 存在且 `feature_memory_builder` 存在：自动构造。
-     - 否则 PGCA 分支跳过。
-   - generation decode 阶段通常 `input_ids` 为当前 step token，自动 lookup 可正常工作，不需要额外 KV cache。
+5. `Qwen3PGCAModel.forward`
+   - feature 输入优先级：显式 `feature_memory/feature_mask`，其次 `feature_ids`，最后根据 `input_ids` 自动查表。
+   - generation decode 阶段只查当前 step token，不需要额外 feature cache。
 
-7. `Qwen3PGCAForCausalLM.forward`
+6. `Qwen3PGCAForCausalLM.forward`
    - 透传 `feature_memory/feature_mask/feature_ids`。
-   - 保持 `logits_to_keep`、loss、past_key_values 原逻辑不变。
+   - 保持 `logits_to_keep`、loss 和 `past_key_values` 原逻辑。
+
+7. 严格加载
+   - `from_pretrained()` 完成后检查 feature index 的 `missing_keys`、ready 状态、行数和有效汉字特征。
+   - 完整性检查只发生在加载阶段；forward 内不执行 `.item()` 或数据依赖 Python 分支，以兼容 vLLM/`torch.compile`。
 
 ## 4. 权重与配置迁移
 
-新增脚本：
-
-```text
-src/pgca/build_pgca.py
-```
-
-功能：
+执行：
 
 ```bash
 python -m src.pgca.build_pgca \
@@ -245,72 +210,55 @@ python -m src.pgca.build_pgca \
 
 流程：
 
-1. 复制 char 模型目录到 PGCA 输出目录。
-2. 更新 `config.json`：
+1. 复制 Char 模型到 PGCA 输出目录，并读取迁移输入 `embedding_config.json` 与 `features/feature_index.pt`。
+2. 将 embedding 配置合并进 `Qwen3PGCAConfig`，写入：
+   - `model_type="qwen3_pgca"`
    - `architectures=["Qwen3PGCAForCausalLM"]`
-   - `use_pgca=true`
-   - `pgca_layers=[11,12,13,14,15,16]`
-   - `pgca_num_attention_heads=16`
-   - `pgca_num_key_value_heads=8`
-   - `pgca_head_dim=128`
-   - `pgca_feature_slots=9`
-   - `pgca_feature_hidden_size=2048`
-   - `pgca_gate_init=0.0`
-3. 加载 char 权重到 PGCA 模型，允许 missing PGCA 权重。
-4. 新增 PGCA 参数按 `initializer_range=0.02` 初始化，gate 为 0。
-5. 保存模型和报告：
-   - `pgca_migration_report.json`
-   - `reports/pgca_validation_report.json`
+   - `auto_map`
+   - PGCA 层、头维度、feature vocab sizes 和 feature index SHA256。
+3. 从 Char checkpoint 加载原主干参数；本次迁移显式允许 PGCA 新参数和 feature buffers 缺失。
+4. 写入并验证 feature index，初始化全部 PGCA 新参数，并将所有 gate 重置为 `pgca_gate_init=0.0`。
+5. `save_pretrained()` 后复制扁平化 remote code，确保不存在 `src.*` 导入。
+6. 删除最终仓库中的 `embedding_config.json`、`features/` 及旧 runtime 目录；feature index 已作为 persistent buffer 进入模型权重。
+7. 生成 `pgca_migration_report.json`，记录配置映射、feature index SHA256、加载信息和 PGCA 初始化检查。
 
-报告核心字段：
+构建脚本不自动运行验证。构建完成后单独执行：
 
-- `base_model_path`
-- `output_model_path`
-- `pgca_layers`
-- `loaded_base_parameter_count`
-- `missing_pgca_parameter_count`
-- `unexpected_keys`
-- `pgca_gate_values`
-- `feature_memory_shape`
-- `forward_passed`
+```bash
+python -m src.pgca.validate_pgca \
+  --model-path models/Qwen3-1.7B-Base-Char-PGCA
+```
+
+验证结果写入 `models/Qwen3-1.7B-Base-Char-PGCA/reports/pgca_validation_report.json`。
 
 ## 5. 验证设计
 
-新增：
+`src/pgca/validate_pgca.py` 当前验证：
 
-```text
-src/pgca/validate_pgca.py
-```
+1. 模型仓库
+   - `model_type="qwen3_pgca"`
+   - `architectures` 与 `auto_map` 正确
+   - remote-code 文件完整
+   - 最终仓库不再依赖外部 `embedding_config.json` 和 `features/feature_index.pt`
 
-最低验证项：
-
-1. 配置一致性
-   - `hidden_size == pgca_feature_hidden_size == 2048`
-   - `num_attention_heads == pgca_num_attention_heads == 16`
-   - `num_key_value_heads == pgca_num_key_value_heads == 8`
-   - `head_dim == pgca_head_dim == 128`
-   - `pgca_layers` 均在 `[0, 27]`
-
-2. 参数存在性
-   - 仅指定层包含 `pgca_attn`
-   - 非 PGCA 层不创建 PGCA 参数
-   - gate 初始值为 0
+2. 配置与模块
+   - PGCA 层均在合法范围内，实际插入层与配置一致
+   - hidden/head/feature slot 维度一致
+   - gate 与 `pgca_gate_init` 一致
+   - PGCA 参数不存在 meta、NaN 或 Inf
 
 3. feature memory
-   - `FeatureMemoryBuilder(input_ids)` 输出 `(batch, seq, 9, 2048)` 和 `(batch, seq, 9)`
-   - 汉字 token 至少有一个 feature slot 有效
-   - 非汉字 token feature mask 全 0
+   - persistent feature buffers 已进入 checkpoint
+   - feature index ready，行数等于 `vocab_size`
+   - 输出形状为 `(batch, seq, 9, 2048)` 和 `(batch, seq, 9)`
+   - 测试文本包含汉字并能产生有效 feature slot
 
 4. forward
-   - 中文、英文、混合输入能 forward
-   - logits shape 为 `(batch, seq, 147688)`
-   - `past_key_values` 可返回
-   - loss 计算可运行
+   - 默认使用 `中国ABC`，也可通过 `--text` 指定输入
+   - logits shape 为 `(batch, seq, 154019)`
+   - loss 为有限值
 
-5. 初始等价性
-   - gate 为 0 时，同一输入下 PGCA 模型和 Char 模型 logits 应接近。
-   - 该检查要求 PGCA 与 self-attention 并行但 gate 为 0，保证新增分支不会改变初始主干输出。
-   - 允许极小数值误差；推荐阈值 `max_abs_diff < 1e-5`，若 dtype 为 bf16 可放宽到 `1e-2`。
+当前自动验证不比较 Char/PGCA logits，也不单独测试 KV cache。gate 为 0 的初始等价性可作为额外实验检查，但不应写成当前 validation report 已覆盖的指标。
 
 ## 6. 训练控制建议
 
@@ -331,26 +279,26 @@ src/pgca/validate_pgca.py
 
 ## 7. 风险与处理
 
-- `AutoModelForCausalLM` 自动加载：若要通过 Transformers auto class 加载，需要注册本地 modeling 或使用 `trust_remote_code` 路径；本阶段优先保证 `from src.modeling_qwen3 import Qwen3PGCAForCausalLM` 可用。
-- generation 时 feature 自动构造：decode step 只有新 token 的 `input_ids`，PGCA 是 position-wise，不依赖历史 feature，因此不需要 feature cache。
-- 全 mask softmax：必须显式处理，否则非汉字 token 会产生 NaN。
-- 输出目录：PGCA 建议输出到 `models/Qwen3-1.7B-Base-Char-PGCA`，避免覆盖已验证的 Char baseline。
+- Transformers/ms-swift 加载：最终目录是自包含 remote-code 模型仓库，使用 `model_type="qwen3_pgca"`、`auto_map` 和 `trust_remote_code=True` 加载，避免落入原生 Qwen3。
+- feature index 完整性：加载完成后严格检查必需 buffers；缺失时直接失败，不能静默退化为全零 PGCA。
+- vLLM 编译：forward 路径不读取 `feature_index_ready.item()`，避免 `torch.compile` 的数据依赖控制流错误。
+- generation：PGCA 是 position-wise，仅需当前 token 的 feature lookup，不增加历史 feature cache。
+- 全 mask softmax：masked score 使用有限最小值，softmax 后再次清零 mask，确保非汉字位置输出为零且不产生 NaN。
+- 输出目录固定为 `models/Qwen3-1.7B-Base-Char-PGCA`，避免覆盖 Char baseline。
 
 ## 8. 实施顺序
 
-1. 新增 `src/pgca/config.py` 和 `src/pgca/attention.py`。
-2. 基于 `src/configuration_qwen3_hf.py` 新增 `src/configuration_qwen3.py`，只加入 `pgca_*` 字段。
-3. 基于 `src/modeling_qwen3_hf.py` 和 `src/modular_qwen3.py` 新增 `src/modeling_qwen3.py`：
-   - decoder layer 并行接入 PGCA
-   - model forward 自动构造或接收 feature memory
-   - CausalLM forward 透传 feature 参数
-4. 新增 `src/pgca/build_pgca.py` 执行门面。
-5. 新增 `src/pgca/validate_pgca.py`。
-6. 生成 `pgca_migration_report.json` 与 `reports/pgca_validation_report.json`。
+1. 实现 `src/pgca/config.py` 和 `src/pgca/attention.py`。
+2. 新增独立的 `src/configuration_qwen3_pgca.py` 与 `src/modeling_qwen3_pgca.py`。
+3. 在 decoder layer 中并行接入 PGCA，并让 model/CausalLM forward 透传 feature 参数。
+4. 将 embedding 配置合并进模型 config，并把 feature index 注册为 persistent buffers。
+5. 实现 `src/pgca/build_pgca.py`，完成权重迁移、初始化、remote-code 打包和旧外部依赖清理。
+6. 实现 `src/pgca/validate_pgca.py`，构建完成后独立执行验证。
+7. 生成 `pgca_migration_report.json` 与 `reports/pgca_validation_report.json`。
 
 ## 9. 预期交付产物
 
-代码：
+源码：
 
 ```text
 src/pgca/__init__.py
@@ -358,29 +306,38 @@ src/pgca/config.py
 src/pgca/attention.py
 src/pgca/build_pgca.py
 src/pgca/validate_pgca.py
-src/configuration_qwen3.py
-src/modeling_qwen3.py
+src/configuration_qwen3_pgca.py
+src/modeling_qwen3_pgca.py
 ```
 
-执行后模型目录：
+最终模型仓库：
 
 ```text
 models/Qwen3-1.7B-Base-Char-PGCA/
+  __init__.py
   config.json
   generation_config.json
-  embedding_config.json
+  tokenizer files
+  configuration_qwen3_pgca.py
+  modeling_qwen3_pgca.py
+  embedding_config.py
+  feature_embedding.py
+  feature_memory.py
+  pgca_attention.py
+  pgca_config.py
+  model*.safetensors
+  model.safetensors.index.json       # 分片时存在
   pgca_migration_report.json
   reports/pgca_validation_report.json
-  features/
-  tokenizer files
-  model weights
 ```
+
+`embedding_config.json` 和 `features/feature_index.pt` 只作为迁移输入，不保留在最终 PGCA 仓库中。
 
 最小成功标准：
 
-- PGCA 模型能从 Char 权重加载。
+- PGCA 模型能通过 Transformers `AutoModelForCausalLM` 和 remote code 从完整 checkpoint 加载。
 - 指定层包含 PGCA 参数，gate 初始为 0。
-- 中文/英文/混合输入 forward 通过。
-- `bos/eos/pad` 仍不越界。
-- logits 维度为 `147688`。
-- gate=0 时输出与 Char baseline 接近。
+- feature index 已进入模型权重，缺失时加载直接失败。
+- 中文/英文混合输入 forward 通过，loss 有限。
+- `bos/eos/pad` 均在合法范围内。
+- logits 最后一维为 `154019`。

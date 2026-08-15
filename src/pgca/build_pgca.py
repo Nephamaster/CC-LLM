@@ -22,8 +22,21 @@ AUTO_MAP = {
     "AutoModelForCausalLM": "modeling_qwen3_pgca.Qwen3PGCAForCausalLM",
 }
 RUNTIME_FILES = {
-    "embedding": ("__init__.py", "config.py", "feature_embedding.py", "feature_memory.py"),
-    "pgca": ("__init__.py", "attention.py", "config.py"),
+    "embedding_config.py": "embedding/config.py",
+    "feature_embedding.py": "embedding/feature_embedding.py",
+    "feature_memory.py": "embedding/feature_memory.py",
+    "pgca_attention.py": "pgca/attention.py",
+    "pgca_config.py": "pgca/config.py",
+}
+REMOTE_IMPORT_REWRITES = {
+    "configuration_qwen3_pgca.py": {".pgca.config": ".pgca_config"},
+    "modeling_qwen3_pgca.py": {
+        ".embedding.config": ".embedding_config",
+        ".embedding.feature_embedding": ".feature_embedding",
+        ".embedding.feature_memory": ".feature_memory",
+        ".pgca.attention": ".pgca_attention",
+    },
+    "feature_embedding.py": {".config": ".embedding_config"},
 }
 
 
@@ -234,16 +247,19 @@ def check_feature_index(model: Qwen3PGCAForCausalLM) -> dict:
     }
 
 
+def _copy_remote_file(source: Path, destination: Path) -> None:
+    text = source.read_text(encoding="utf-8")
+    for old, new in REMOTE_IMPORT_REWRITES.get(destination.name, {}).items():
+        text = text.replace(old, new)
+    destination.write_text(text, encoding="utf-8")
+
+
 def copy_runtime_code(output_path: Path) -> None:
     source_root = Path(__file__).resolve().parents[1]
-    shutil.copy2(source_root / "configuration_qwen3_pgca.py", output_path / "configuration_qwen3_pgca.py")
-    shutil.copy2(source_root / "modeling_qwen3_pgca.py", output_path / "modeling_qwen3_pgca.py")
-
-    for package, filenames in RUNTIME_FILES.items():
-        destination = output_path / package
-        destination.mkdir(parents=True, exist_ok=True)
-        for filename in filenames:
-            shutil.copy2(source_root / package / filename, destination / filename)
+    for filename in ("configuration_qwen3_pgca.py", "modeling_qwen3_pgca.py"):
+        _copy_remote_file(source_root / filename, output_path / filename)
+    for destination, source in RUNTIME_FILES.items():
+        _copy_remote_file(source_root / source, output_path / destination)
 
     init_path = output_path / "__init__.py"
     init_path.write_text(
@@ -259,11 +275,7 @@ def validate_runtime_code(output_path: Path) -> dict:
         "__init__.py",
         "configuration_qwen3_pgca.py",
         "modeling_qwen3_pgca.py",
-        *[
-            f"{package}/{filename}"
-            for package, filenames in RUNTIME_FILES.items()
-            for filename in filenames
-        ],
+        *RUNTIME_FILES,
     ]
     errors: list[dict[str, str]] = []
     for relative_path in relative_paths:
@@ -293,7 +305,23 @@ def validate_runtime_code(output_path: Path) -> dict:
 def remove_legacy_runtime_artifacts(output_path: Path) -> None:
     for filename in ("configuration_qwen3.py", "modeling_qwen3.py", "embedding_config.json"):
         (output_path / filename).unlink(missing_ok=True)
-    shutil.rmtree(output_path / "features", ignore_errors=True)
+    for directory in ("embedding", "features", "pgca"):
+        shutil.rmtree(output_path / directory, ignore_errors=True)
+
+
+def save_pretrained_without_auto_copy(model: Qwen3PGCAForCausalLM, output_path: Path) -> None:
+    """Save weights while leaving remote-code copying to copy_runtime_code()."""
+    model_class = type(model)
+    config_class = type(model.config)
+    model_auto_class = getattr(model_class, "_auto_class", None)
+    config_auto_class = getattr(config_class, "_auto_class", None)
+    model_class._auto_class = None
+    config_class._auto_class = None
+    try:
+        model.save_pretrained(output_path, safe_serialization=True)
+    finally:
+        model_class._auto_class = model_auto_class
+        config_class._auto_class = config_auto_class
 
 
 def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str | None) -> dict:
@@ -328,6 +356,7 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         config=config,
         output_loading_info=True,
         torch_dtype="auto",
+        validate_pgca_feature_index=False,
     )
 
     feature_index = validate_feature_index(
@@ -348,7 +377,7 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
     if not feature_checks["passed"]:
         raise RuntimeError(f"Feature index embedding failed: {feature_checks}")
 
-    model.save_pretrained(output_path, safe_serialization=True)
+    save_pretrained_without_auto_copy(model, output_path)
     copy_runtime_code(output_path)
     runtime_code_checks = validate_runtime_code(output_path)
     remove_legacy_runtime_artifacts(output_path)

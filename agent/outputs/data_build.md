@@ -298,47 +298,11 @@ Phase 1 和 Phase 2 之间不能重复，各阶段内部也不能重复。去重
 
 |数据类别	|比例	|说明|
 |:---|:---|:---|
-|中文高质量通用文本 |30% |CLUECorpus2020、CCI3.0-HQ、WanJuan1.0|
+|中文高质量通用文本 |30% |CCI3.0-HQ、WanJuan1.0|
 |中文知识密集数据	|20%	|OpenCSG Fineweb-edu-chinese、书籍、百科、论文、古文古诗(Wikisource )|
 |中英混排高质量语料	|15%	|README、API 文档、中文技术博客、论文摘要|
 |代码 / 数学 / 科学文档	|10%	|The Stack v2、代码文档、算法教程|
 |英文 / 多语言保持数据	|15%	|FineWeb-Edu、The Pile|
 |长文本专项数据 |10%    | 长篇教材章节、政策法规全文、长篇中文论文/报告、古文长篇章节 (文本长度>4k,<=32k)|
 
-数据总量：2B tokens （新 tokenizer 计算）
-
-### 已有数据说明（只说明Phase1未涉及的）
-
-- **CLUE benchmark 训练集**
-
-    服务器路径：`/share/project/wuhaiming/data/dataset/clue/`
-
-    子文件路径：
-    ```bash
-    afqmc/train-00000-of-00001.parquet
-    c3/train-00000-of-00001.parquet
-    chid/train-00000-of-00001.parquet
-    cluewsc2020/train-00000-of-00001.parquet
-    cmnli/train-00000-of-00001.parquet
-    cmrc2018/train-00000-of-00001.parquet
-    csl/train-00000-of-00001.parquet
-    drcd/train-00000-of-00001.parquet
-    iflytek/train-00000-of-00001.parquet
-    ocnli/train-00000-of-00001.parquet
-    tnews/train-00000-of-00001.parquet
-    ```
-
-    原始数据结构：
-    ```python
-    import pandas as pd
-
-    data = pd.read_parquet('/share/project/wuhaiming/data/dataset/clue/afqmc/train-00000-of-00001.parquet')
-    print(data.head())
-
-    ## 列名：sentence1  sentence2   label   idx
-    0   蚂蚁借呗等额还款可以换成先息后本吗  借呗有先息到期还本吗    0   0
-    1   蚂蚁花呗说我违约一次    蚂蚁花呗违约行为是什么  0   1
-    2   帮我看一下本月花呗账单有没有结清    下月花呗账单    0   2
-    3   蚂蚁借呗多长时间综合评估一次    借呗得评估多久  0   3
-    4   我的花呗账单是***，还款怎么是***    我的花呗，月结出来说让我还***元，我自己算了一下详细名单我应该还***元    1   4  
-    ```
+数据总量：20B tokens （新 tokenizer 计算）

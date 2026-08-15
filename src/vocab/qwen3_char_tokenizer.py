@@ -13,6 +13,12 @@ from transformers import AutoTokenizer
 from .unicode_ranges import is_cjk_hanzi
 
 
+class UnsupportedHanziError(ValueError):
+    def __init__(self, char: str):
+        self.char = char
+        super().__init__(f"Hanzi is missing from char tokenizer vocab: {char} U+{ord(char):04X}")
+
+
 @dataclass(frozen=True)
 class Qwen3CharTokenizerConfig:
     tokenizer_dir: str | Path = Path("models/Qwen3-1.7B-Base-Char")
@@ -101,7 +107,7 @@ class Qwen3CharTokenizer:
             if is_cjk_hanzi(char):
                 token_id = self.char_token_ids.get(char)
                 if token_id is None:
-                    raise ValueError(f"Hanzi is missing from char tokenizer vocab: {char} U+{ord(char):04X}")
+                    raise UnsupportedHanziError(char)
                 input_ids.append(token_id)
                 feature_ids.append(self._feature_for_token(token_id))
                 position += 1

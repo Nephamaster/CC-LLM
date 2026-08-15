@@ -35,7 +35,7 @@ from transformers.utils.output_capturing import capture_outputs
 from .configuration_qwen3_pgca import Qwen3PGCAConfig
 from .embedding.config import EmbeddingFeatureConfig
 from .embedding.feature_embedding import PhoneticGlyphFeatureEmbedding
-from .embedding.feature_memory import FeatureMemoryBuilder
+from .embedding.feature_memory import FEATURE_INDEX_KEYS, FeatureMemoryBuilder
 from .pgca.attention import PGCACrossAttention
 
 
@@ -375,6 +375,40 @@ class Qwen3PGCAPreTrainedModel(PreTrainedModel):
         "hidden_states": Qwen3PGCADecoderLayer,
         "attentions": Qwen3Attention,
     }
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        validate_feature_index = kwargs.pop("validate_pgca_feature_index", True)
+        return_loading_info = bool(kwargs.get("output_loading_info", False))
+        kwargs["output_loading_info"] = True
+
+        model, loading_info = super().from_pretrained(
+            pretrained_model_name_or_path,
+            *model_args,
+            **kwargs,
+        )
+        if validate_feature_index and getattr(model.config, "use_pgca", False):
+            model._validate_loaded_feature_index(loading_info)
+
+        return (model, loading_info) if return_loading_info else model
+
+    def _validate_loaded_feature_index(self, loading_info: dict) -> None:
+        required_suffixes = tuple(
+            f"feature_memory_builder.{key}" for key in (*FEATURE_INDEX_KEYS, "feature_index_ready")
+        )
+        missing_keys = sorted(
+            key
+            for key in (loading_info.get("missing_keys") or [])
+            if key.endswith(required_suffixes)
+        )
+        if missing_keys:
+            raise RuntimeError(f"checkpoint is missing PGCA feature index weights: {missing_keys}")
+
+        base_model = getattr(self, self.base_model_prefix, self)
+        builder = getattr(base_model, "feature_memory_builder", None)
+        if builder is None:
+            raise RuntimeError("PGCA feature memory builder is missing")
+        builder.validate_ready(vocab_size=self.config.vocab_size)
 
 
 class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):

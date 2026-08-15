@@ -355,3 +355,12 @@ bash scripts/data_factory/run_phase1.sh sample --resume --workers 16
 ```
 
 Use `--overwrite` only when the candidate index must be rebuilt from scratch. `--resume` and `--overwrite` are mutually exclusive.
+## Phase 1 validation set
+
+After the `sample` action has completed, build a document-level held-out validation set from candidates that were not selected for training:
+
+```bash
+python -m scripts.data_factory.build_phase1_validation --overwrite
+```
+
+The default target is `1,000,000` tokens. The output is `data/semantic_alignment/validation/validation.jsonl`, and the report is `data/semantic_alignment/reports/phase1_validation_report.json`. Whole documents are retained, so individual category counts may slightly exceed their targets. A category with no held-out candidates is recorded in `category_shortfalls` and does not stop the build. Use `--target-tokens`, `--output-path`, `--report-path`, or `--database-path` to override the defaults.

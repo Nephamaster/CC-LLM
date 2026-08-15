@@ -89,13 +89,13 @@ class FeatureMemoryBuilder(nn.Module):
         feature_embedding: PhoneticGlyphFeatureEmbedding,
         *,
         persistent: bool = True,
+        ready: bool = True,
     ):
         super().__init__()
         self.feature_embedding = feature_embedding
         for key in FEATURE_INDEX_KEYS:
             self.register_buffer(key, feature_index[key], persistent=persistent)
-        self.register_buffer("feature_index_ready", torch.tensor(False), persistent=persistent)
-        self._feature_index_checked = False
+        self.register_buffer("feature_index_ready", torch.tensor(ready), persistent=persistent)
 
     @classmethod
     def empty(
@@ -109,6 +109,7 @@ class FeatureMemoryBuilder(nn.Module):
             empty_feature_index(vocab_size, max_pinyin_per_char),
             feature_embedding,
             persistent=True,
+            ready=False,
         )
 
     @classmethod
@@ -138,16 +139,24 @@ class FeatureMemoryBuilder(nn.Module):
                 target = getattr(self, key)
                 target.copy_(value.to(device=target.device, dtype=target.dtype))
             self.feature_index_ready.fill_(True)
-            self._feature_index_checked = True
+
+    def validate_ready(self, *, vocab_size: int | None = None) -> None:
+        """Validate checkpoint state outside the model forward path."""
+        if self.feature_index_ready.is_meta:
+            raise RuntimeError("PGCA feature index was not materialized from the checkpoint")
+        if not bool(self.feature_index_ready.item()):
+            raise RuntimeError("PGCA feature index is not initialized in this checkpoint")
+        if vocab_size is not None and self.is_hanzi.shape[0] != vocab_size:
+            raise RuntimeError(
+                f"PGCA feature index has {self.is_hanzi.shape[0]} rows; expected {vocab_size}"
+            )
+        if not bool(self.is_hanzi.any().item()) or not bool(self.pinyin_mask.any().item()):
+            raise RuntimeError("PGCA feature index does not contain any usable Hanzi features")
 
     def forward(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.feature_embedding(self.lookup(input_ids))
 
     def lookup(self, input_ids: torch.Tensor) -> dict[str, torch.Tensor]:
-        if not self._feature_index_checked:
-            if not bool(self.feature_index_ready.item()):
-                raise RuntimeError("PGCA feature index is not initialized in this checkpoint")
-            self._feature_index_checked = True
         if input_ids.dtype != torch.long:
             input_ids = input_ids.long()
         return {
