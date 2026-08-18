@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import tarfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -119,6 +121,37 @@ def _iter_parquet_rows(paths: list[Path], columns: list[str] | None = None) -> I
                 row_index += 1
 
 
+def _iter_jsonl_rows(paths: list[Path]) -> Iterator[tuple[Path, int, dict[str, Any]]]:
+    for path in paths:
+        for row_index, row in enumerate(iter_jsonl([path])):
+            yield path, row_index, row
+
+
+def _iter_tar_jsonl_rows(paths: list[Path]) -> Iterator[tuple[Path, str, int, dict[str, Any]]]:
+    for path in paths:
+        with tarfile.open(path, mode="r|gz") as archive:
+            for member in archive:
+                if not member.isfile() or not member.name.lower().endswith(".jsonl"):
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                for row_index, raw_line in enumerate(extracted):
+                    if not raw_line.strip():
+                        continue
+                    try:
+                        row = json.loads(raw_line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                        raise ValueError(
+                            f"invalid JSON at {path}:{member.name}:{row_index + 1}: {error}"
+                        ) from error
+                    if not isinstance(row, dict):
+                        raise ValueError(
+                            f"{path}:{member.name}:{row_index + 1} must contain a JSON object"
+                        )
+                    yield path, member.name, row_index, row
+
+
 def iter_clue(config: PipelineConfig, source_config: dict[str, Any]) -> Iterator[dict[str, Any]]:
     root = Path(source_config["path"])
     if not root.is_absolute():
@@ -171,10 +204,69 @@ def iter_fineweb_chinese(config: PipelineConfig, source_config: dict[str, Any]) 
             "doc_id": f"fineweb_edu_chinese_v2.2-{_safe_component(subset)}-{_safe_component(stem)}-{row_index}",
             "license": source_config.get("license", "Apache-2.0"),
             "license_note": source_config.get("license_note"),
-            "category": "chinese_high_quality",
+            "category": "chinese_natural",
             "path": str(path),
             "quality_score": row.get("score"),
             "upstream_source": row.get("source"),
+        }
+
+
+def iter_cci3_hq(config: PipelineConfig, source_config: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    paths = expand_paths(source_config["paths"], config.repo_root)
+    if not paths:
+        raise FileNotFoundError(f"no CCI3-HQ files match {source_config['paths']}")
+    for path, row_index, row in _iter_jsonl_rows(paths):
+        upstream_id = row.get("id")
+        id_component = _safe_component(str(upstream_id or ""))
+        if not id_component:
+            id_component = f"{_safe_component(path.stem)}-{row_index}"
+        yield {
+            "text": row.get("text"),
+            "source": "cci3_hq",
+            "doc_id": f"cci3_hq-{id_component}",
+            "license": source_config.get("license", "Apache-2.0"),
+            "license_note": source_config.get("license_note"),
+            "category": "chinese_natural",
+            "path": str(path),
+            "upstream_id": row.get("id"),
+            "quality_score": row.get("score"),
+        }
+
+
+def _wanjuan_text(subset: str, row: dict[str, Any]) -> str | None:
+    if subset.lower() != "exam_cn":
+        return row.get("content")
+    question = row.get("q_main") or row.get("q_mean")
+    answer_detail = row.get("answer_detail")
+    parts = [
+        value.strip()
+        for value in (question, answer_detail)
+        if isinstance(value, str) and value.strip()
+    ]
+    return "\n".join(parts) or None
+
+
+def iter_wanjuan(config: PipelineConfig, source_config: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    paths = expand_paths(source_config["paths"], config.repo_root)
+    if not paths:
+        raise FileNotFoundError(f"no WanJuan files match {source_config['paths']}")
+    for path, member_name, row_index, row in _iter_tar_jsonl_rows(paths):
+        subset = _safe_component(path.parent.name)
+        upstream_id = row.get("id")
+        id_component = _safe_component(str(upstream_id or ""))
+        if not id_component:
+            id_component = f"{_safe_component(path.stem)}-{row_index}"
+        yield {
+            "text": _wanjuan_text(subset, row),
+            "source": "wanjuan1_0",
+            "doc_id": f"wanjuan1_0-{subset}-{id_component}",
+            "license": source_config.get("license", "CC-BY-4.0"),
+            "license_note": source_config.get("license_note"),
+            "category": "chinese_natural",
+            "path": str(path),
+            "archive_member": member_name,
+            "subset": subset,
+            "upstream_id": row.get("id"),
         }
 
 
@@ -245,10 +337,15 @@ def source_iterators(config: PipelineConfig) -> list[tuple[str, Iterator[dict[st
         values.append(("clue", iter_clue(config, sources["clue"])))
     if sources.get("fineweb_chinese", {}).get("enabled", True):
         values.append(("fineweb_chinese", iter_fineweb_chinese(config, sources["fineweb_chinese"])))
+    cci3_hq = sources.get("cci3_hq")
+    if cci3_hq and cci3_hq.get("enabled", True):
+        values.append(("cci3_hq", iter_cci3_hq(config, cci3_hq)))
+    wanjuan = sources.get("wanjuan")
+    if wanjuan and wanjuan.get("enabled", True):
+        values.append(("wanjuan", iter_wanjuan(config, wanjuan)))
     if sources.get("fineweb_english", {}).get("enabled", True):
         values.append(("fineweb_english", iter_fineweb_english(config, sources["fineweb_english"])))
     for external in sources.get("external", []):
         if external.get("enabled", True):
             values.append((str(external["name"]), iter_external(config, external)))
     return values
-

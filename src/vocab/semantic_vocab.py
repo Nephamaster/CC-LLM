@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -32,11 +33,21 @@ class SemanticVocabResult:
     merges: list[tuple[str, str]]
     new2old_token_id: dict[int, int]
     new_token_init_token_ids: dict[int, list[int]]
+    removed_multi_hanzi_tokens: list[dict[str, Any]]
+    new_hanzi_token_ids: dict[int, str]
     manifest: dict[str, Any]
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_hanzi_set(path: Path) -> set[str]:
@@ -157,11 +168,18 @@ def add_single_hanzi_bpe_paths(
     new2old_token_id: dict[int, int],
     merges: list[tuple[str, str]],
     hanzi_set: set[str],
-) -> tuple[list[tuple[str, str]], dict[int, list[int]], int, int]:
+) -> tuple[
+    list[tuple[str, str]],
+    dict[int, list[int]],
+    dict[int, str],
+    int,
+    int,
+]:
     existing_merges = set(merges)
     promoted_merges: list[tuple[str, str]] = []
     promoted_merge_set: set[tuple[str, str]] = set()
     init_token_ids: dict[int, list[int]] = {}
+    new_hanzi_token_ids: dict[int, str] = {}
     added_token_count = 0
 
     def old_ids_for_text(text: str) -> list[int]:
@@ -187,7 +205,12 @@ def add_single_hanzi_bpe_paths(
 
         for byte_piece in piece:
             if byte_piece not in new_vocab:
-                add_vocab_token(byte_piece, [int(old_vocab[byte_piece])] if byte_piece in old_vocab else old_char_ids)
+                init_old_ids = (
+                    [int(old_vocab[byte_piece])]
+                    if byte_piece in old_vocab
+                    else old_char_ids
+                )
+                add_vocab_token(byte_piece, init_old_ids)
 
         acc = piece[0]
         for part in piece[1:]:
@@ -199,11 +222,20 @@ def add_single_hanzi_bpe_paths(
                 promoted_merge_set.add(merge)
             acc = merged
 
+        token_id = new_vocab[acc]
+        if token_id in init_token_ids:
+            new_hanzi_token_ids[token_id] = char
+
     patched_merges = promoted_merges + [
         merge for merge in merges if merge not in promoted_merge_set and merge in existing_merges
     ]
-    return patched_merges, init_token_ids, added_token_count, len(promoted_merges)
-
+    return (
+        patched_merges,
+        init_token_ids,
+        new_hanzi_token_ids,
+        added_token_count,
+        len(promoted_merges),
+    )
 
 def patch_added_tokens(tokenizer_json: dict, vocab: dict[str, int], new2old_token_id: dict[int, int]) -> int:
     """Keep added/special tokens contiguous with the new vocab and mapped to old ids."""
@@ -237,6 +269,7 @@ class SemanticVocabBuilder:
         )
 
         removed_token_ids: set[int] = set()
+        removed_multi_hanzi_tokens: list[dict[str, Any]] = []
         removed_token_count_by_kind = {"mixed_hanzi": 0, "multi_hanzi": 0, "other_hanzi": 0}
         for token, token_id in state.vocab.items():
             decoded = state.decode_piece(token)
@@ -255,8 +288,15 @@ class SemanticVocabBuilder:
                 removed_token_count_by_kind["mixed_hanzi"] += 1
             elif hanzi_count > 1:
                 removed_token_count_by_kind["multi_hanzi"] += 1
+                removed_multi_hanzi_tokens.append(
+                    {"token": decoded, "old_token_id": int(token_id)}
+                )
             else:
                 removed_token_count_by_kind["other_hanzi"] += 1
+
+        removed_multi_hanzi_tokens.sort(
+            key=lambda item: int(item["old_token_id"])
+        )
 
         new_vocab, new2old_token_id = build_reindexed_vocab_and_mapping(state.vocab, removed_token_ids)
 
@@ -273,7 +313,13 @@ class SemanticVocabBuilder:
 
         merges = [merge for index, merge in enumerate(state.merges) if index not in removed_merge_ids]
         merges, dangling_before_add = filter_merges_by_vocab(merges, new_vocab)
-        merges, init_token_ids, added_token_count, promoted_merge_count = add_single_hanzi_bpe_paths(
+        (
+            merges,
+            init_token_ids,
+            new_hanzi_token_ids,
+            added_token_count,
+            promoted_merge_count,
+        ) = add_single_hanzi_bpe_paths(
             tokenizer=tokenizer,
             state=state,
             old_vocab=state.vocab,
@@ -293,11 +339,13 @@ class SemanticVocabBuilder:
             "new_vocab_size": len(new_vocab),
             "removed_token_count": len(removed_token_ids),
             "removed_token_count_by_kind": removed_token_count_by_kind,
+            "removed_multi_hanzi_token_count": len(removed_multi_hanzi_tokens),
             "removed_merge_count": len(removed_merge_ids),
             "dangling_merge_count_before_single_hanzi_add": dangling_before_add,
             "dangling_merge_count_after_single_hanzi_add": dangling_after_add,
             "added_token_count": added_token_count,
             "new_token_init_count": len(init_token_ids),
+            "new_hanzi_token_count": len(new_hanzi_token_ids),
             "promoted_merge_count": promoted_merge_count,
             "protected_token_count": len(protected_tokens),
             "protected_merge_count": len(protected_merge_ids),
@@ -308,6 +356,8 @@ class SemanticVocabBuilder:
             merges=merges,
             new2old_token_id=new2old_token_id,
             new_token_init_token_ids=init_token_ids,
+            removed_multi_hanzi_tokens=removed_multi_hanzi_tokens,
+            new_hanzi_token_ids=new_hanzi_token_ids,
             manifest=manifest,
         )
 
@@ -318,6 +368,33 @@ class SemanticVocabBuilder:
             self._write_tokenizer_assets(tokenizer, result)
         return result
 
+    def build_metadata_only(self) -> SemanticVocabResult:
+        result = self.build()
+        manifest_path = self.config.output_dir / "semantic_vocab_manifest.json"
+        existing_manifest: dict[str, Any] | None = None
+        if manifest_path.exists():
+            with manifest_path.open("rt", encoding="utf-8") as file:
+                existing_manifest = json.load(file)
+            for key in ("old_vocab_size", "new_vocab_size", "removed_token_count"):
+                if existing_manifest.get(key) != result.manifest.get(key):
+                    raise ValueError(f"existing semantic vocab manifest does not match rebuilt {key}")
+
+        self._write_alignment_metadata(result)
+        if existing_manifest is not None:
+            existing_manifest.update(
+                {
+                    key: value
+                    for key, value in result.manifest.items()
+                    if key.startswith("removed_multi_hanzi_")
+                    or key.startswith("new_hanzi_token_")
+                    or key.startswith("alignment_metadata_")
+                }
+            )
+            result.manifest = existing_manifest
+
+        write_json(manifest_path, result.manifest)
+        return result
+
     def _load_tokenizer(self) -> Any:
         from transformers import AutoTokenizer
 
@@ -325,6 +402,24 @@ class SemanticVocabBuilder:
             self.config.base_tokenizer_path,
             trust_remote_code=self.config.trust_remote_code,
             use_fast=self.config.use_fast,
+        )
+
+    def _write_alignment_metadata(self, result: SemanticVocabResult) -> None:
+        output_dir = self.config.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        removed_path = output_dir / "removed_multi_hanzi_tokens.json"
+        new_hanzi_path = output_dir / "new_hanzi_token_ids.json"
+
+        write_json(removed_path, result.removed_multi_hanzi_tokens)
+        write_json(new_hanzi_path, result.new_hanzi_token_ids)
+        result.manifest.update(
+            {
+                "alignment_metadata_generated_at": _utc_now_iso(),
+                "removed_multi_hanzi_tokens_file": removed_path.name,
+                "removed_multi_hanzi_tokens_sha256": _file_sha256(removed_path),
+                "new_hanzi_token_ids_file": new_hanzi_path.name,
+                "new_hanzi_token_ids_sha256": _file_sha256(new_hanzi_path),
+            }
         )
 
     def _write_tokenizer_assets(self, tokenizer: Any, result: SemanticVocabResult) -> None:
@@ -337,6 +432,7 @@ class SemanticVocabBuilder:
         write_merges(output_dir / "merges.txt", result.merges)
         write_json(output_dir / "new2old_token_id.json", result.new2old_token_id)
         write_json(output_dir / "new_token_init_token_ids.json", result.new_token_init_token_ids)
+        self._write_alignment_metadata(result)
         write_json(output_dir / "semantic_vocab_manifest.json", result.manifest)
 
         patched_tokenizer_json = state.patched_tokenizer_json(result.vocab, result.merges)
@@ -370,6 +466,11 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
     parser.add_argument("--hanzi-set-path", type=Path, default=Path("resources/hanzi/hanzi_set.txt"))
     parser.add_argument("--allow-slow", action="store_true")
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Write alignment metadata without replacing tokenizer assets",
+    )
     args = parser.parse_args()
 
     config = SemanticVocabBuildConfig(
@@ -378,7 +479,8 @@ def main() -> None:
         hanzi_set_path=args.hanzi_set_path,
         use_fast=not args.allow_slow,
     )
-    result = SemanticVocabBuilder(config).build_and_write()
+    builder = SemanticVocabBuilder(config)
+    result = builder.build_metadata_only() if args.metadata_only else builder.build_and_write()
     print(json.dumps(result.manifest, ensure_ascii=False, indent=2))
 
 

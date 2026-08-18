@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,7 +15,8 @@ from scripts.data_factory.sample import (
     BatchTokenCounter,
     CandidateIndex,
     TokenCountResult,
-    _build_candidate_index,
+    _filter_candidates_for_intent,
+    _materialize_preselected_candidates,
 )
 
 
@@ -31,7 +33,9 @@ class CandidateIndexTest(unittest.TestCase):
                 self.assertEqual(index.add_many(rows, seed=7), 2)
                 self.assertEqual(index.add_many(rows, seed=7), 0)
                 self.assertEqual(index.totals(), (2, 3))
+                self.assertEqual(index.feature_inventory()["parent_records"], 2)
                 self.assertEqual(index.existing_doc_ids(["a", "missing"]), {"a"})
+                self.assertEqual(index.existing_parent_doc_ids(["a", "missing"]), {"a"})
 
                 input_path = root / "part-00000.jsonl"
                 input_path.write_text("{}\n", encoding="utf-8")
@@ -75,7 +79,7 @@ class BatchTokenCounterTest(unittest.TestCase):
         self.assertEqual(result.skipped_by_reason["unsupported_hanzi"], 1)
         self.assertEqual(result.skipped_by_reason["tokenization_error"], 1)
 
-class ConcurrentIndexBuildTest(unittest.TestCase):
+class ConcurrentMaterializationTest(unittest.TestCase):
     def test_parallel_batches_and_resume(self) -> None:
         class FakeTokenCounter:
             active = 0
@@ -85,54 +89,139 @@ class ConcurrentIndexBuildTest(unittest.TestCase):
             def __init__(self, _config: object, _workers: int) -> None:
                 pass
 
+        class FakeCandidateProcessor:
+            def __init__(self, _config: object, _counter: FakeTokenCounter) -> None:
+                pass
+
             def count_rows(self, rows: list[dict]) -> TokenCountResult:
-                with self.lock:
-                    type(self).active += 1
-                    type(self).max_active = max(type(self).max_active, type(self).active)
+                with FakeTokenCounter.lock:
+                    FakeTokenCounter.active += 1
+                    FakeTokenCounter.max_active = max(
+                        FakeTokenCounter.max_active,
+                        FakeTokenCounter.active,
+                    )
                 try:
                     time.sleep(0.03)
-                    counted = [(row, len(str(row["text"]))) for row in rows]
-                    return TokenCountResult(counted, 0, {}, [])
+                    candidates = []
+                    for row in rows:
+                        value = dict(row)
+                        value.update(
+                            {
+                                "doc_id": f"{row['doc_id']}#window-0",
+                                "parent_doc_id": row["doc_id"],
+                                "candidate_pool": "chinese_natural",
+                                "candidate_roles": ["base"],
+                            }
+                        )
+                        candidates.append((value, len(str(row["text"]))))
+                    return TokenCountResult(candidates, 0, Counter(), [])
                 finally:
-                    with self.lock:
-                        type(self).active -= 1
+                    with FakeTokenCounter.lock:
+                        FakeTokenCounter.active -= 1
 
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            root = Path(temporary_dir)
-            deduplicated = root / "deduplicated"
-            deduplicated.mkdir()
-            rows = [
+        class FakeDocumentIndex:
+            def __init__(self, items: list[tuple[dict, str]]) -> None:
+                self.items = items
+                self.materialized: set[str] = set()
+
+            def selected_count(self) -> int:
+                return len(self.items)
+
+            def materialized_count(self) -> int:
+                return len(self.materialized)
+
+            def reset_materialized(self) -> None:
+                self.materialized.clear()
+
+            def mark_materialized(self, doc_ids: list[str]) -> None:
+                self.materialized.update(doc_ids)
+
+        rows = [
+            (
                 {
                     "doc_id": f"doc-{index}",
                     "category": "chinese_general",
                     "source": "source",
                     "text": f"text-{index}",
-                }
-                for index in range(8)
+                },
+                "chinese_natural",
+            )
+            for index in range(8)
+        ]
+        document_index = FakeDocumentIndex(rows)
+
+        def batches(index, *, max_records: int, max_chars: int):
+            del max_chars
+            pending = [
+                item
+                for item in index.items
+                if item[0]["doc_id"] not in index.materialized
             ]
-            input_path = deduplicated / "part-00000.jsonl"
-            input_path.write_text(
-                "".join(json.dumps(row) + "\n" for row in rows),
-                encoding="utf-8",
-            )
-            config = SimpleNamespace(
-                deduplicated_dir=deduplicated,
-                sample_workers=4,
-                sample_batch_size=1,
-                sample_batch_chars=100,
-                seed=7,
-            )
-            database_path = root / "candidate_index.sqlite"
+            for start in range(0, len(pending), max_records):
+                yield pending[start : start + max_records]
 
-            with patch("scripts.data_factory.sample.BatchTokenCounter", FakeTokenCounter):
-                report = _build_candidate_index(config, database_path, workers=4)
-                resumed = _build_candidate_index(config, database_path, resume=True, workers=4)
+        config = SimpleNamespace(
+            sample_batch_size=1,
+            sample_batch_chars=100,
+            seed=7,
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            index = CandidateIndex(Path(temporary_dir) / "candidate.sqlite")
+            try:
+                with (
+                    patch(
+                        "scripts.data_factory.sample.BatchTokenCounter",
+                        FakeTokenCounter,
+                    ),
+                    patch(
+                        "scripts.data_factory.sample.Phase1CandidateProcessor",
+                        FakeCandidateProcessor,
+                    ),
+                    patch(
+                        "scripts.data_factory.sample.iter_selected_document_batches",
+                        batches,
+                    ),
+                ):
+                    report = _materialize_preselected_candidates(
+                        config,
+                        index,
+                        document_index,
+                        workers=4,
+                    )
+                    resumed = _materialize_preselected_candidates(
+                        config,
+                        index,
+                        document_index,
+                        workers=4,
+                    )
 
-            self.assertEqual(report["records"], 8)
-            self.assertGreaterEqual(FakeTokenCounter.max_active, 2)
-            self.assertEqual(resumed["records"], 8)
-            self.assertEqual(resumed["resumed_files"], 1)
-            self.assertEqual(resumed["processed_this_run"], 0)
+                self.assertEqual(index.totals(), (8, 48))
+                self.assertEqual(report["candidate_records_inserted"], 8)
+                self.assertGreaterEqual(FakeTokenCounter.max_active, 2)
+                self.assertEqual(resumed["processed_this_run"], 0)
+            finally:
+                index.close()
+
+    def test_candidate_intent_isolation(self) -> None:
+        row = {
+            "doc_id": "doc#window-0",
+            "parent_doc_id": "doc",
+            "candidate_roles": ["base", "new_hanzi_coverage", "multi_hanzi_bridge"],
+            "candidate_pool": "chinese_natural",
+            "eligible_new_hanzi": True,
+            "eligible_bridge": True,
+            "new_hanzi_hits": {"㐀": 1},
+            "bridge_hits": {"7": 1},
+        }
+        [(filtered, _tokens)] = _filter_candidates_for_intent(
+            [(row, 10)],
+            {"doc": "new_hanzi_coverage"},
+        )
+        self.assertTrue(filtered["eligible_new_hanzi"])
+        self.assertFalse(filtered["eligible_bridge"])
+        self.assertEqual(filtered["bridge_hits"], {})
+        self.assertEqual(filtered["candidate_roles"], ["new_hanzi_coverage"])
+
 
 if __name__ == "__main__":
     unittest.main()

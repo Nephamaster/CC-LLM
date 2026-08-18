@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -63,6 +64,7 @@ class VocabValidator:
             "hanzi_single_token": self._check_hanzi_single_token(tokenizer, hanzi_chars),
             "no_composite_hanzi_vocab_tokens": self._check_no_composite_hanzi_tokens(state),
             "mapping_coverage": self._check_mapping_coverage(len(tokenizer)),
+            "alignment_metadata": self._check_alignment_metadata(tokenizer),
             "feature_index": self._check_feature_index(len(tokenizer)),
             "wrapper_alignment": self._check_wrapper_alignment(tokenizer, hanzi_chars),
             "special_tokens": self._check_special_tokens(tokenizer),
@@ -113,6 +115,88 @@ class VocabValidator:
         init_ids = {int(key) for key in read_json(init_path)} if init_path.exists() else set()
         missing = [token_id for token_id in range(vocab_size) if token_id not in mapping and token_id not in init_ids]
         return {"passed": not missing, "vocab_size": vocab_size, "missing_head": missing[:20]}
+
+    def _check_alignment_metadata(self, tokenizer) -> dict:
+        model_path = self.config.char_model_path
+        removed_path = model_path / "removed_multi_hanzi_tokens.json"
+        new_hanzi_path = model_path / "new_hanzi_token_ids.json"
+        init_path = model_path / "new_token_init_token_ids.json"
+        manifest_path = model_path / "semantic_vocab_manifest.json"
+        required = (removed_path, new_hanzi_path, init_path, manifest_path)
+        missing = [str(path) for path in required if not path.is_file()]
+        if missing:
+            return {"passed": False, "reason": "missing alignment metadata", "missing": missing}
+
+        removed = read_json(removed_path)
+        new_hanzi = read_json(new_hanzi_path)
+        init_ids = {int(token_id) for token_id in read_json(init_path)}
+        manifest = read_json(manifest_path)
+        failures: list[dict[str, Any]] = []
+
+        old_token_ids: set[int] = set()
+        if not isinstance(removed, list):
+            failures.append({"artifact": removed_path.name, "reason": "expected JSON list"})
+            removed = []
+        for row in removed:
+            token = row.get("token") if isinstance(row, dict) else None
+            old_token_id = row.get("old_token_id") if isinstance(row, dict) else None
+            if (
+                not isinstance(token, str)
+                or count_hanzi(token) != len(token)
+                or len(token) <= 1
+                or not isinstance(old_token_id, int)
+                or old_token_id in old_token_ids
+            ):
+                failures.append({"artifact": removed_path.name, "row": row})
+                if len(failures) >= 20:
+                    break
+            else:
+                old_token_ids.add(old_token_id)
+
+        if not isinstance(new_hanzi, dict):
+            failures.append({"artifact": new_hanzi_path.name, "reason": "expected JSON object"})
+            new_hanzi = {}
+        for raw_token_id, char in new_hanzi.items():
+            try:
+                token_id = int(raw_token_id)
+            except (TypeError, ValueError):
+                failures.append({"artifact": new_hanzi_path.name, "token_id": raw_token_id})
+                continue
+            if (
+                not isinstance(char, str)
+                or count_hanzi(char) != 1
+                or len(char) != 1
+                or token_id not in init_ids
+                or tokenizer.encode(char, add_special_tokens=False) != [token_id]
+            ):
+                failures.append(
+                    {"artifact": new_hanzi_path.name, "token_id": token_id, "char": char}
+                )
+                if len(failures) >= 20:
+                    break
+
+        def sha256(path: Path) -> str:
+            digest = hashlib.sha256()
+            with path.open("rb") as file:
+                for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        checks = {
+            "removed_count_matches": manifest.get("removed_multi_hanzi_token_count") == len(removed),
+            "new_hanzi_count_matches": manifest.get("new_hanzi_token_count") == len(new_hanzi),
+            "removed_sha256_matches": manifest.get("removed_multi_hanzi_tokens_sha256")
+            == sha256(removed_path),
+            "new_hanzi_sha256_matches": manifest.get("new_hanzi_token_ids_sha256")
+            == sha256(new_hanzi_path),
+        }
+        return {
+            "passed": not failures and all(checks.values()),
+            "removed_multi_hanzi_tokens": len(removed),
+            "new_hanzi_tokens": len(new_hanzi),
+            "checks": checks,
+            "failures": failures,
+        }
 
     def _check_feature_index(self, vocab_size: int) -> dict:
         index_path = self.config.features_dir / "char_feature_index.jsonl"

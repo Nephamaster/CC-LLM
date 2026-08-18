@@ -17,6 +17,7 @@ from scripts.validation.common import is_cjk_hanzi
 ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
 EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
+URL_RE = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
 LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+.#/-]*")
 CODE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[^\s\w]", re.UNICODE)
 ENGLISH_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+", re.UNICODE)
@@ -113,27 +114,56 @@ def printable_ratio(text: str) -> float:
 
 
 def mixed_language_stats(text: str) -> dict[str, float | int | bool]:
-    hanzi = sum(is_cjk_hanzi(char) for char in text)
-    latin_words = len(LATIN_WORD_RE.findall(text))
-    denominator = hanzi + latin_words
-    ratio = hanzi / denominator if denominator else 0.0
+    visible = URL_RE.sub(" ", text)
+    hanzi = sum(is_cjk_hanzi(char) for char in visible)
+    latin_chars = sum("A" <= char <= "Z" or "a" <= char <= "z" for char in visible)
+    latin_words = len(LATIN_WORD_RE.findall(visible))
+    denominator = hanzi + latin_chars
+    hanzi_ratio = hanzi / denominator if denominator else 0.0
+    latin_ratio = latin_chars / denominator if denominator else 0.0
+
+    scripts: list[str] = []
+    for char in visible:
+        script = "hanzi" if is_cjk_hanzi(char) else "latin" if char.isascii() and char.isalpha() else None
+        if script is not None and (not scripts or scripts[-1] != script):
+            scripts.append(script)
+    boundary_count = sum(left != right for left, right in zip(scripts, scripts[1:]))
+
     same_paragraph = any(
         any(is_cjk_hanzi(char) for char in paragraph) and LATIN_WORD_RE.search(paragraph)
-        for paragraph in re.split(r"\n\s*\n", text)
+        for paragraph in re.split(r"\n\s*\n", visible)
     )
-    return {"hanzi": hanzi, "latin_words": latin_words, "hanzi_ratio": ratio, "same_paragraph": same_paragraph}
+    return {
+        "hanzi": hanzi,
+        "latin_chars": latin_chars,
+        "latin_words": latin_words,
+        "hanzi_ratio": hanzi_ratio,
+        "latin_ratio": latin_ratio,
+        "boundary_count": boundary_count,
+        "same_paragraph": same_paragraph,
+    }
 
 
-def validate_mixed_text(text: str, quality: dict[str, Any]) -> str | None:
-    stats = mixed_language_stats(text)
+def validate_mixed_text(
+    text: str,
+    quality: dict[str, Any],
+    stats: dict[str, float | int | bool] | None = None,
+) -> str | None:
+    stats = mixed_language_stats(text) if stats is None else stats
     if stats["hanzi"] < int(quality.get("mixed_min_hanzi", 20)):
         return "mixed_too_few_hanzi"
     if stats["latin_words"] < int(quality.get("mixed_min_latin_words", 5)):
         return "mixed_too_few_latin_words"
-    if not float(quality.get("mixed_min_hanzi_ratio", 0.15)) <= stats["hanzi_ratio"] <= float(
-        quality.get("mixed_max_hanzi_ratio", 0.85)
+    if not float(quality.get("mixed_min_hanzi_ratio", 0.20)) <= stats["hanzi_ratio"] <= float(
+        quality.get("mixed_max_hanzi_ratio", 0.80)
     ):
-        return "mixed_ratio_out_of_range"
+        return "mixed_hanzi_ratio_out_of_range"
+    if not float(quality.get("mixed_min_latin_ratio", 0.05)) <= stats["latin_ratio"] <= float(
+        quality.get("mixed_max_latin_ratio", 0.50)
+    ):
+        return "mixed_latin_ratio_out_of_range"
+    if stats["boundary_count"] < int(quality.get("mixed_min_boundaries", 2)):
+        return "mixed_too_few_boundaries"
     if not stats["same_paragraph"]:
         return "mixed_not_cooccurring"
     return None
@@ -230,5 +260,9 @@ def code_shingles(text: str, width: int = 5) -> Iterable[bytes]:
 
 
 def dedup_kind(row: dict[str, Any]) -> str:
-    return "code" if row.get("category") == "supplemental" and row.get("quota_group") in {"code", "structured"} else "natural"
-
+    specialized = row.get("category") in {"supplemental", "specialized"}
+    return (
+        "code"
+        if specialized and row.get("quota_group") in {"code", "structured"}
+        else "natural"
+    )

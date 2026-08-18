@@ -5,13 +5,15 @@ Phase 1 语义对齐数据构建工具。默认配置为 `scripts/data_factory/p
 ## 快速使用
 
 ```bash
-# 完整执行：清洗 -> 去重 -> tokenizer 计数、配额采样与分片
+# 完整执行：清洗 -> 去重 -> 候选索引 -> 验证预留 -> 配额采样与分片
 bash scripts/data_factory/run_phase1.sh all
 
 # 分阶段执行
 bash scripts/data_factory/run_phase1.sh prepare
 bash scripts/data_factory/run_phase1.sh dedup
 bash scripts/data_factory/run_phase1.sh sample
+# 仅从已有选择重新导出两套验证集
+bash scripts/data_factory/run_phase1.sh validation --overwrite
 ```
 
 可通过环境变量替换配置文件：
@@ -29,21 +31,24 @@ Phase 1 主执行门面。
 ```bash
 python -m scripts.data_factory.build_phase1 ACTION \
   --config scripts/data_factory/phase1_config.json \
-  [--overwrite]
+  [--overwrite | --resume] [--workers N]
 ```
 
-- `ACTION`：`prepare`、`dedup`、`sample` 或 `all`。
+- `ACTION`：`prepare`、`dedup`、`sample`、`validation` 或 `all`。
 - `--config`：配置文件路径，默认 `scripts/data_factory/phase1_config.json`。
 - `--overwrite`：删除对应阶段的已有产物后重新构建。
-- `--resume`：仅用于 `sample`，从现有 `candidate_index.sqlite` 恢复。
-- `--workers N`：仅用于 `sample`，覆盖并发分词批次数。
+- `--resume`：用于 `prepare`、`dedup`、`sample`，从各阶段已提交的文件或分片继续。
+- `--workers N`：覆盖对应阶段的进程数；默认分别读取 `prepare_workers`、`dedup_workers`、`sample_workers`。
 - `--source NAME`：仅用于 `prepare`，只处理指定来源；可重复传入。与 `--overwrite` 合用时只覆盖该来源的标准化分片。
 
-仅重新处理 CLUE，保留其他已生成数据：
+仅处理单个来源并保留其他已生成数据：
 
 ```bash
-bash scripts/data_factory/run_phase1.sh prepare --source clue --overwrite
+bash scripts/data_factory/run_phase1.sh prepare --source cci3_hq
+bash scripts/data_factory/run_phase1.sh prepare --source wanjuan
 ```
+
+重新生成同名来源时追加 `--overwrite`。CLUE 默认禁用，不进入 Phase 1 训练数据。
 
 ### `run_phase1.sh`
 
@@ -133,12 +138,16 @@ python -m scripts.data_factory.generate_supplemental hanzi \
 
 | 文件 | 功能 |
 | --- | --- |
-| `config.py` | 加载配置并校验 Phase 1、混排和补充数据配额。 |
-| `sources.py` | 流式读取 CLUE、Chinese FineWeb、FineWeb-Edu 和外部 JSONL。 |
+| `config.py` | 加载并校验 Phase 1 总配额、专项子配额、窗口与验证配置。 |
+| `sources.py` | 流式读取 CCI3-HQ、WanJuan、Chinese FineWeb、FineWeb-Edu 和外部 JSONL；CLUE 仅保留诊断适配器。 |
 | `prepare.py` | 统一字段、文本清洗、许可与质量过滤。 |
 | `text.py` | NFC 规范化、PII/密钥检测、混排判定、格式校验及 shingle 生成。 |
+| `windowing.py` | 按句子和自然段构造 token 窗口，保护代码围栏、展示公式和 Markdown 表格。 |
+| `candidate_features.py` | 分类基础候选池，并抽取被裁多字 token 与新增汉字命中窗口。 |
 | `dedup.py` | SQLite 精确去重、MinHash 近似去重、评测去污染及 registry 导出。 |
-| `sample.py` | 使用字符 tokenizer 计数，按 2B 配额采样、打乱、分片并检查汉字覆盖。 |
+| `prescan.py` | 全量轻量扫描、全局桥接词统计、来源平衡预选和分片级恢复。 |
+| `sample.py` | 构建候选索引，先预留验证父文档，再按 1B 配额采样、打乱和分片。 |
+| `selection.py` | 执行父文档互斥分组、新增汉字覆盖及被裁多字 token 桥接采样。 |
 | `io_utils.py` | JSON/JSONL、路径展开、哈希和分片写入工具。 |
 | `phase1_config.json` | 默认数据路径、清洗阈值、去重参数和来源配置。 |
 
@@ -338,29 +347,70 @@ resources/raw/phase1/collected/
 
 无需合并这些 JSONL，现有配置会读取该目录下所有文件。若数量不足，使用新的搜索词重复发现流程，但每批使用不同输出文件名，避免覆盖已有结果。
 
+## Prepare 与去重性能
+
+`prepare` 按原始文件拆分任务并行完成清洗。每个任务先写入 `normalized/.prepare/staging/`，完成后原子提交；状态保存在 `normalized/.prepare/state*.json`。`dedup` 在进程池中并行计算 SHA-256 和 MinHash，主进程仍按固定输入顺序更新全局 SQLite LSH，因此保留跨分片去重和确定性。每完成一个标准化分片即更新 `deduplicated/dedup_state.json`。
+
+首次使用新实现重建：
+
+```bash
+bash scripts/data_factory/run_phase1.sh prepare --overwrite --workers 16
+bash scripts/data_factory/run_phase1.sh dedup --overwrite --workers 16
+```
+
+中断后继续：
+
+```bash
+bash scripts/data_factory/run_phase1.sh prepare --resume --workers 16
+bash scripts/data_factory/run_phase1.sh dedup --resume --workers 16
+```
+
+配置项：
+
+- `prepare_workers`、`dedup_workers`：默认进程数，均为 `8`。
+- `dedup.batch_size`、`dedup.batch_chars`：单个签名计算批次的记录数和字符数上限。
+- `dedup.sqlite_cache_mb`：全局 SQLite 索引缓存上限。
+- `dedup.export_registry_parquet`：完成后是否导出跨阶段 registry，默认开启。
+
+调整 worker、批大小或 SQLite 缓存不会使恢复状态失效。`prepare --resume` 会按文件指纹仅重跑新增、重新下载或配置受影响的任务；只有 prepare 状态结构版本不兼容时才需要 `--overwrite`。标准化输入或去重语义参数发生变化后，`dedup` 仍须使用 `--overwrite` 重建全局索引。进程数过高会争用共享存储和内存带宽，建议从 `8` 开始，根据 CPU、内存和磁盘利用率增加。
+
 ## Sampling performance and resume
 
-The `sample` action uses batched Fast Tokenizer counting and bulk SQLite inserts. Tune these fields in `phase1_config.json`:
+`sample` now runs three stages:
 
-- `sample_batch_size`: maximum records per tokenizer batch; default `512`.
-- `sample_batch_chars`: maximum characters per tokenizer batch; default `1000000`.
-- `sample_workers`: concurrent tokenizer batches and tokenizer threads; default `8`.
+1. Scan every deduplicated shard without tokenization, recording compact byte offsets, estimated window tokens, new-Hanzi hits, and global removed-token frequencies in `document_index.sqlite`.
+2. Rescan only for the global Top-5000 bridge terms and preselect a buffered, source-balanced candidate set.
+3. Run the Fast Tokenizer and exact windowing only on preselected documents, storing exact candidates in `candidate_index.sqlite` before validation reservation and quota selection.
 
-Start with `--workers 8` or `--workers 16`. Higher values increase the number of in-flight long-text batches and memory usage; they may not improve throughput after CPU or storage is saturated.
+Tune these fields in `phase1_config.json`:
 
-Resume an interrupted sampling run without deleting `candidate_index.sqlite`:
+- `sample_batch_size`: maximum records per exact-tokenizer batch; default `512`.
+- `sample_batch_chars`: maximum characters per exact-tokenizer batch; default `1000000`.
+- `sample_workers`: prescan processes and concurrent exact-tokenizer batches; default `8`.
+- `preselection_buffer_ratio`: estimated-token safety margin before exact tokenization; default `1.25`.
+
+Start with `--workers 8` or `--workers 16`. More workers increase Aho-Corasick copies and in-flight tokenizer memory, so stop increasing the value after CPU, memory, or storage is saturated.
+
+Resume an interrupted run with both SQLite indexes intact:
 
 ```bash
 bash scripts/data_factory/run_phase1.sh sample --resume --workers 16
 ```
 
-Use `--overwrite` only when the candidate index must be rebuilt from scratch. `--resume` and `--overwrite` are mutually exclusive.
+The first run after this pipeline upgrade must use `sample --overwrite` because the old full-tokenization candidate index is incompatible. Afterwards, use `--resume`; `--overwrite` deletes both indexes and the per-shard prescan cache.
+
 ## Phase 1 validation set
 
-After the `sample` action has completed, build a document-level held-out validation set from candidates that were not selected for training:
+`sample` 会在训练采样前按父文档预留验证数据，并同时输出：
+
+- `data/semantic_alignment/validation/validation_natural.jsonl`：约 2.5M token。
+- `data/semantic_alignment/validation/validation_alignment.jsonl`：约 1M token。
+- `data/semantic_alignment/reports/phase1_validation_report.json`：配额和训练重叠检查。
+
+如文件被删除，可从已有 `candidate_index.sqlite` 重新导出，不会重新选择或扫描原始语料：
 
 ```bash
-python -m scripts.data_factory.build_phase1_validation --overwrite
+bash scripts/data_factory/run_phase1.sh validation --overwrite
 ```
 
-The default target is `1,000,000` tokens. The output is `data/semantic_alignment/validation/validation.jsonl`, and the report is `data/semantic_alignment/reports/phase1_validation_report.json`. Whole documents are retained, so individual category counts may slightly exceed their targets. A category with no held-out candidates is recorded in `category_shortfalls` and does not stop the build. Use `--target-tokens`, `--output-path`, `--report-path`, or `--database-path` to override the defaults.
+`sample --resume` reuses completed lightweight-scan shards and exact-tokenized documents. Changes to windowing, vocabulary-alignment metadata, priority-Hanzi resources, or preselection settings require `sample --overwrite`.

@@ -6,93 +6,150 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.data_factory.build_phase1_validation import build_validation_set, scale_quotas
-from scripts.data_factory.config import MIXED_QUOTAS, PHASE1_QUOTAS, SUPPLEMENTAL_QUOTAS
+from scripts.data_factory.build_phase1_validation import build_validation_set
+from scripts.data_factory.config import PHASE1_QUOTAS
 from scripts.data_factory.sample import CandidateIndex
+from scripts.data_factory.selection import Phase1Selector, parent_split_overlap, scale_quotas
 
 
 class QuotaScalingTest(unittest.TestCase):
     def test_scaled_quotas_sum_to_target(self) -> None:
-        scaled = scale_quotas(PHASE1_QUOTAS, 1_000_000)
+        scaled = scale_quotas({"a": 3, "b": 1}, 10)
 
-        self.assertEqual(sum(scaled.values()), 1_000_000)
-        self.assertEqual(scaled["chinese_general"], 400_000)
-        self.assertEqual(scaled["chinese_high_quality"], 200_000)
+        self.assertEqual(scaled, {"a": 8, "b": 2})
 
 
 class ValidationSetTest(unittest.TestCase):
-    def test_builds_held_out_validation_set(self) -> None:
+    def test_reserves_parent_exclusive_splits_and_exports_both_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             database_path = root / "candidate_index.sqlite"
             index = CandidateIndex(database_path)
             rows: list[tuple[dict, int]] = []
 
-            def add_pool(pool: str, count: int, quota_groups: list[str | None]) -> None:
+            def add_base(pool: str, count: int, quota_group: str | None = None) -> None:
                 for item in range(count):
-                    quota_group = quota_groups[item % len(quota_groups)]
                     rows.append(
                         (
                             {
-                                "doc_id": f"{pool}-{item}",
+                                "doc_id": f"{pool}-{quota_group}-{item}",
+                                "parent_doc_id": f"{pool}-{quota_group}-{item}",
                                 "category": pool,
+                                "candidate_pool": pool,
+                                "candidate_roles": ["base"],
                                 "quota_group": quota_group,
                                 "source": f"{pool}-source",
+                                "license": "MIT",
+                                "license_status": "verified",
                                 "text": f"{pool} document {item}",
                             },
                             10,
                         )
                     )
 
-            add_pool("chinese_general", 100, [None])
-            add_pool("chinese_high_quality", 100, [None])
-            add_pool("non_chinese", 100, [None])
-            add_pool("mixed_zh_en", 100, list(MIXED_QUOTAS))
-            add_pool("supplemental", 100, list(SUPPLEMENTAL_QUOTAS))
+            add_base("chinese_natural", 10)
+            add_base("non_chinese", 5)
+            add_base("mixed_zh_en", 3)
+            for group in ("code", "math_science", "structured"):
+                add_base("specialized", 2, group)
+
+            rows.extend(
+                [
+                    (
+                        {
+                            "doc_id": "feature-new",
+                            "parent_doc_id": "feature-parent",
+                            "category": "chinese_natural",
+                            "candidate_pool": "chinese_natural",
+                            "candidate_roles": ["base", "new_hanzi_coverage"],
+                            "source": "feature-source",
+                            "text": "new",
+                            "eligible_new_hanzi": True,
+                            "new_hanzi_hits": {"㐀": 1},
+                        },
+                        10,
+                    ),
+                    (
+                        {
+                            "doc_id": "feature-bridge",
+                            "parent_doc_id": "feature-parent",
+                            "category": "chinese_natural",
+                            "candidate_pool": "chinese_natural",
+                            "candidate_roles": ["multi_hanzi_bridge"],
+                            "source": "feature-source",
+                            "text": "bridge",
+                            "eligible_bridge": True,
+                            "bridge_hits": {"7": 1},
+                        },
+                        10,
+                    ),
+                    (
+                        {
+                            "doc_id": "bridge-only",
+                            "parent_doc_id": "bridge-only",
+                            "category": "chinese_natural",
+                            "candidate_pool": "chinese_natural",
+                            "candidate_roles": ["multi_hanzi_bridge"],
+                            "source": "feature-source",
+                            "text": "bridge only",
+                            "eligible_bridge": True,
+                            "bridge_hits": {"8": 1},
+                        },
+                        10,
+                    ),
+                ]
+            )
             try:
                 index.add_many(rows, seed=7)
-                index.connection.execute(
-                    "UPDATE candidates SET selected_category = 'chinese_general' "
-                    "WHERE doc_id = 'chinese_general-0'"
-                )
-                index.connection.execute(
-                    "UPDATE candidates SET selected_category = 'mixed_zh_en' "
-                    "WHERE pool = 'mixed_zh_en'"
-                )
-                index.connection.commit()
                 index.create_sampling_indexes()
+                config = SimpleNamespace(
+                    path=root / "phase1.json",
+                    phase_root=root,
+                    reports_dir=root / "reports",
+                    quotas=PHASE1_QUOTAS,
+                    validation=SimpleNamespace(natural_tokens=80, alignment_tokens=40),
+                )
+                selector = Phase1Selector(index.connection, config)
+                selector.reset()
+                reservation = selector.reserve_validation()
+                self.assertEqual(parent_split_overlap(index.connection), 0)
+                self.assertEqual(
+                    index.connection.execute(
+                        "SELECT COUNT(*) FROM parent_assignments "
+                        "WHERE parent_doc_id = 'feature-parent'"
+                    ).fetchone()[0],
+                    1,
+                )
             finally:
                 index.close()
 
-            output_path = root / "validation" / "validation.jsonl"
-            report_path = root / "reports" / "validation.json"
-            config = SimpleNamespace(
-                path=root / "phase1_config.json",
-                quotas=PHASE1_QUOTAS,
-                mixed_quotas=MIXED_QUOTAS,
-                supplemental_quotas=SUPPLEMENTAL_QUOTAS,
-            )
             report = build_validation_set(
-                config=config,
-                target_tokens=1_000,
-                output_path=output_path,
-                report_path=report_path,
-                database_path=database_path,
+                config,
+                database_path,
+                overwrite=True,
             )
 
-            output_rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+            natural_path = root / "validation" / "validation_natural.jsonl"
+            alignment_path = root / "validation" / "validation_alignment.jsonl"
+            natural_rows = [
+                json.loads(line)
+                for line in natural_path.read_text(encoding="utf-8").splitlines()
+            ]
+            alignment_rows = [
+                json.loads(line)
+                for line in alignment_path.read_text(encoding="utf-8").splitlines()
+            ]
             self.assertTrue(report["passed"])
-            self.assertFalse(report["target_reached"])
-            self.assertFalse(report["category_quotas_met"])
-            self.assertEqual(report["category_shortfalls"]["mixed_zh_en"]["actual_tokens"], 0)
-            self.assertGreater(report["actual_tokens"], 0)
-            self.assertLess(report["actual_tokens"], 1_000)
-            self.assertEqual(report["training_overlap_records"], 0)
-            self.assertNotIn("chinese_general-0", {row["doc_id"] for row in output_rows})
-            self.assertEqual(
-                sum(report["category_checks"][key]["target_tokens"] for key in PHASE1_QUOTAS),
-                1_000,
+            self.assertTrue(reservation["natural"]["target_reached"])
+            self.assertTrue(reservation["alignment"]["target_reached"])
+            self.assertGreater(len(natural_rows), 0)
+            self.assertGreater(len(alignment_rows), 0)
+            self.assertTrue(
+                {row["parent_doc_id"] for row in natural_rows}.isdisjoint(
+                    {row["parent_doc_id"] for row in alignment_rows}
+                )
             )
+            self.assertNotIn("bridge_hits", alignment_rows[0])
 
 
 if __name__ == "__main__":

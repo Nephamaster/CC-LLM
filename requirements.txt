@@ -8,3 +8,4 @@ datasketch
 requests
 huggingface_hub
 PyYAML
+pyahocorasick

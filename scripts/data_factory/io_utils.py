@@ -65,6 +65,7 @@ class JsonlShardWriter:
         self.directory.mkdir(parents=True, exist_ok=True)
         self._file = None
         self._path: Path | None = None
+        self._digest = None
         self._shard_index = 0
         self._records_in_shard = 0
         self.total_records = 0
@@ -73,7 +74,8 @@ class JsonlShardWriter:
     def _open_next(self) -> None:
         self.close_shard()
         self._path = self.directory / f"{self.prefix}-{self._shard_index:05d}.jsonl"
-        self._file = self._path.open("wt", encoding="utf-8", newline="\n")
+        self._file = self._path.open("wb")
+        self._digest = hashlib.sha256()
         self._shard_index += 1
         self._records_in_shard = 0
 
@@ -81,24 +83,28 @@ class JsonlShardWriter:
         if self._file is None or self._records_in_shard >= self.max_records:
             self._open_next()
         assert self._file is not None
-        self._file.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
-        self._file.write("\n")
+        assert self._digest is not None
+        payload = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        self._file.write(payload)
+        self._digest.update(payload)
         self._records_in_shard += 1
         self.total_records += 1
 
     def close_shard(self) -> None:
         if self._file is None or self._path is None:
             return
+        assert self._digest is not None
         self._file.close()
         self.files.append(
             {
                 "path": str(self._path),
                 "records": self._records_in_shard,
-                "sha256": file_sha256(self._path),
+                "sha256": self._digest.hexdigest(),
             }
         )
         self._file = None
         self._path = None
+        self._digest = None
 
     def close(self) -> None:
         self.close_shard()

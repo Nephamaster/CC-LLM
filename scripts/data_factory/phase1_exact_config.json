@@ -3,17 +3,59 @@
   "phase_root": "data/semantic_alignment",
   "tokenizer_path": "models/Qwen3-1.7B-Base-Char",
   "seed": 20260714,
-  "tolerance": 0.05,
+  "tolerance": 0.01,
   "normalized_shard_records": 100000,
   "deduplicated_shard_records": 100000,
   "final_shard_tokens": 100000000,
+  "sample_batch_size": 512,
+  "sample_batch_chars": 1000000,
+  "sample_workers": 8,
+  "preselection_buffer_ratio": 1.25,
+  "quotas": {
+    "chinese_natural": 450000000,
+    "multi_hanzi_bridge": 150000000,
+    "new_hanzi_coverage": 50000000,
+    "non_chinese": 150000000,
+    "mixed_zh_en": 100000000,
+    "specialized": 100000000
+  },
+  "specialized_quotas": {
+    "code": 40000000,
+    "math_science": 40000000,
+    "structured": 20000000
+  },
+  "vocab_alignment": {
+    "removed_multi_hanzi_tokens_path": "models/Qwen3-1.7B-Base-Char/removed_multi_hanzi_tokens.json",
+    "new_hanzi_token_ids_path": "models/Qwen3-1.7B-Base-Char/new_hanzi_token_ids.json",
+    "bridge_top_token_count": 5000,
+    "bridge_min_contexts": 256,
+    "priority_hanzi_min_documents": 128,
+    "priority_hanzi_coverage": 0.95,
+    "priority_hanzi_paths": [
+      "resources/hanzi/tghz2013.txt",
+      "resources/hanzi/common_traditional.txt",
+      "resources/hanzi/rare_high_freq.txt"
+    ]
+  },
+  "windowing": {
+    "min_tokens": 128,
+    "target_tokens": 512,
+    "max_tokens": 1024
+  },
+  "validation": {
+    "natural_tokens": 2500000,
+    "alignment_tokens": 1000000
+  },
   "quality": {
     "min_chars": 10,
     "min_printable_ratio": 0.98,
     "mixed_min_hanzi": 20,
     "mixed_min_latin_words": 5,
-    "mixed_min_hanzi_ratio": 0.15,
-    "mixed_max_hanzi_ratio": 0.85
+    "mixed_min_hanzi_ratio": 0.2,
+    "mixed_max_hanzi_ratio": 0.8,
+    "mixed_min_latin_ratio": 0.05,
+    "mixed_max_latin_ratio": 0.5,
+    "mixed_min_boundaries": 2
   },
   "dedup": {
     "near_min_chars": 2147483647,
@@ -24,35 +66,64 @@
     "code_band_size": 4,
     "code_threshold": 0.85,
     "candidate_limit_per_bucket": 2000,
-    "decontamination_paths": ["data/validation/*.jsonl"]
+    "decontamination_paths": [
+      "data/validation/*.jsonl"
+    ],
+    "batch_size": 128,
+    "batch_chars": 1000000,
+    "sqlite_cache_mb": 1024,
+    "export_registry_parquet": true
   },
   "sources": {
     "clue": {
-      "enabled": true,
+      "enabled": false,
       "path": "/share/project/wuhaiming/data/dataset/clue",
       "license": "unknown",
-      "license_note": "Explicit Phase 1 research exception; the dataset card declares the license as unknown.",
+      "license_note": "Retained for diagnostics only; excluded from Phase 1 training.",
       "allow_unverified_license": true
     },
     "fineweb_chinese": {
       "enabled": true,
-      "paths": ["/share/project/wuhaiming/data/dataset/fineweb-edu-chinese-v2.2/4_5/*.parquet"],
+      "paths": [
+        "/share/project/wuhaiming/data/dataset/fineweb-edu-chinese-v2.2/4_5/*.parquet"
+      ],
       "license": "Apache-2.0",
       "license_note": "The OpenCSG Community License also applies."
     },
+    "cci3_hq": {
+      "enabled": true,
+      "paths": [
+        "/share/project/wuhaiming/data/dataset/CCI3-HQ/data/part_*.jsonl"
+      ],
+      "license": "Apache-2.0",
+      "license_note": "The CCI3-HQ user agreement also applies."
+    },
+    "wanjuan": {
+      "enabled": true,
+      "paths": [
+        "/share/project/wuhaiming/data/dataset/WanJuan1_dot_0/raw/nlp/CN/*/*.jsonl.tar.gz"
+      ],
+      "license": "CC-BY-4.0",
+      "license_note": "Verify any subset-specific terms before redistribution."
+    },
     "fineweb_english": {
       "enabled": true,
-      "paths": ["/share/project/wuhaiming/data/dataset/fineweb-edu/sample/10BT/*.parquet"],
+      "paths": [
+        "/share/project/wuhaiming/data/dataset/fineweb-edu/sample/10BT/*.parquet"
+      ],
       "license": "ODC-By-1.0",
       "language_score_min": 0.9
     },
     "external": [
       {
         "name": "phase1_external",
-        "paths": ["resources/raw/phase1/collected/**/*.jsonl"],
+        "paths": [
+          "resources/raw/phase1/collected/**/*.jsonl"
+        ],
         "optional": true
       }
     ]
-  }
+  },
+  "prepare_workers": 8,
+  "dedup_workers": 8
 }
-

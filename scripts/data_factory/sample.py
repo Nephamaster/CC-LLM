@@ -15,8 +15,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scripts.data_factory.candidate_features import CandidateSkip, Phase1CandidateBuilder
 from scripts.data_factory.config import PipelineConfig
-from scripts.data_factory.io_utils import TokenJsonlShardWriter, iter_jsonl, utc_now_iso, write_json
+from scripts.data_factory.io_utils import (
+    TokenJsonlShardWriter,
+    file_sha256,
+    iter_jsonl,
+    utc_now_iso,
+    write_json,
+)
+from scripts.data_factory.prescan import (
+    PRESCAN_VERSION,
+    DocumentIndex,
+    build_document_index,
+    iter_selected_document_batches,
+    preselect_documents,
+)
 
 
 def _stable_key(seed: int, namespace: str, doc_id: str) -> int:
@@ -25,11 +39,31 @@ def _stable_key(seed: int, namespace: str, doc_id: str) -> int:
 
 
 class CandidateIndex:
+    CANDIDATE_COLUMNS = (
+        "doc_id",
+        "parent_doc_id",
+        "candidate_role",
+        "pool",
+        "quota_group",
+        "source",
+        "token_count",
+        "sample_key",
+        "output_key",
+        "eligible_bridge",
+        "eligible_new_hanzi",
+        "bridge_hit_count",
+        "new_hanzi_count",
+        "row_json",
+        "selected_category",
+    )
     INDEX_NAMES = (
         "candidate_sampling",
         "candidate_sampling_any",
         "candidate_sampling_source",
         "candidate_output",
+        "candidate_parent",
+        "candidate_bridge",
+        "candidate_new_hanzi",
     )
 
     def __init__(self, path: Path) -> None:
@@ -41,12 +75,18 @@ class CandidateIndex:
             """
             CREATE TABLE IF NOT EXISTS candidates (
                 doc_id TEXT PRIMARY KEY,
+                parent_doc_id TEXT NOT NULL,
+                candidate_role TEXT NOT NULL,
                 pool TEXT NOT NULL,
                 quota_group TEXT,
                 source TEXT NOT NULL,
                 token_count INTEGER NOT NULL,
                 sample_key INTEGER NOT NULL,
                 output_key INTEGER NOT NULL,
+                eligible_bridge INTEGER NOT NULL,
+                eligible_new_hanzi INTEGER NOT NULL,
+                bridge_hit_count INTEGER NOT NULL,
+                new_hanzi_count INTEGER NOT NULL,
                 row_json TEXT NOT NULL,
                 selected_category TEXT
             );
@@ -57,9 +97,78 @@ class CandidateIndex:
                 report_json TEXT NOT NULL,
                 completed_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS candidate_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS parent_assignments (
+                parent_doc_id TEXT PRIMARY KEY,
+                split TEXT NOT NULL,
+                category TEXT NOT NULL,
+                source TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS selections (
+                doc_id TEXT PRIMARY KEY,
+                parent_doc_id TEXT NOT NULL,
+                split TEXT NOT NULL,
+                category TEXT NOT NULL,
+                token_count INTEGER NOT NULL,
+                FOREIGN KEY(doc_id) REFERENCES candidates(doc_id),
+                FOREIGN KEY(parent_doc_id) REFERENCES parent_assignments(parent_doc_id)
+            );
+            CREATE INDEX IF NOT EXISTS selection_split ON selections(split, category);
+            CREATE INDEX IF NOT EXISTS selection_parent ON selections(parent_doc_id, split);
             """
         )
+        columns = tuple(
+            str(row[1]) for row in self.connection.execute("PRAGMA table_info(candidates)")
+        )
+        if columns != self.CANDIDATE_COLUMNS:
+            self.connection.close()
+            raise RuntimeError(
+                "candidate index schema is obsolete; rerun the sample action with --overwrite"
+            )
         self.connection.commit()
+
+    def ensure_fingerprint(self, fingerprint: str) -> None:
+        row = self.connection.execute(
+            "SELECT value FROM candidate_metadata WHERE key = 'fingerprint'"
+        ).fetchone()
+        if row is None:
+            records = int(self.connection.execute("SELECT COUNT(*) FROM candidates").fetchone()[0])
+            if records:
+                raise RuntimeError(
+                    "candidate index has no build fingerprint; rerun with --overwrite"
+                )
+            self.connection.execute(
+                "INSERT INTO candidate_metadata(key, value) VALUES ('fingerprint', ?)",
+                (fingerprint,),
+            )
+            self.connection.commit()
+        elif str(row[0]) != fingerprint:
+            raise RuntimeError(
+                "candidate index configuration or vocabulary metadata changed; "
+                "rerun with --overwrite"
+            )
+
+    def set_metadata(self, key: str, value: Any) -> None:
+        serialized = (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        )
+        self.connection.execute(
+            "INSERT OR REPLACE INTO candidate_metadata(key, value) VALUES (?, ?)",
+            (key, serialized),
+        )
+        self.connection.commit()
+
+    def get_metadata(self, key: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT value FROM candidate_metadata WHERE key = ?",
+            (key,),
+        ).fetchone()
+        return None if row is None else str(row[0])
 
     def drop_sampling_indexes(self) -> None:
         for name in self.INDEX_NAMES:
@@ -70,12 +179,17 @@ class CandidateIndex:
         self.connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS candidate_sampling
-                ON candidates(pool, quota_group, selected_category, sample_key);
+                ON candidates(pool, quota_group, sample_key, parent_doc_id);
             CREATE INDEX IF NOT EXISTS candidate_sampling_any
-                ON candidates(pool, selected_category, sample_key);
+                ON candidates(pool, sample_key, parent_doc_id);
             CREATE INDEX IF NOT EXISTS candidate_sampling_source
-                ON candidates(pool, source, selected_category, sample_key);
+                ON candidates(pool, source, sample_key, parent_doc_id);
             CREATE INDEX IF NOT EXISTS candidate_output ON candidates(output_key);
+            CREATE INDEX IF NOT EXISTS candidate_parent ON candidates(parent_doc_id);
+            CREATE INDEX IF NOT EXISTS candidate_bridge
+                ON candidates(eligible_bridge, sample_key, parent_doc_id);
+            CREATE INDEX IF NOT EXISTS candidate_new_hanzi
+                ON candidates(eligible_new_hanzi, sample_key, parent_doc_id);
             """
         )
         self.connection.commit()
@@ -84,33 +198,61 @@ class CandidateIndex:
         values = []
         for row, token_count in rows:
             doc_id = str(row["doc_id"])
+            parent_doc_id = str(row.get("parent_doc_id", doc_id))
+            roles = row.get("candidate_roles", [row.get("candidate_role", "base")])
+            if isinstance(roles, str):
+                roles = [roles]
+            candidate_role = ",".join(sorted(str(role) for role in roles))
+            bridge_hits = row.get("bridge_hits", {})
+            new_hanzi_hits = row.get("new_hanzi_hits", {})
             row["token_count"] = token_count
             values.append(
                 (
                     doc_id,
-                    str(row["category"]),
+                    parent_doc_id,
+                    candidate_role,
+                    str(row.get("candidate_pool", row["category"])),
                     row.get("quota_group"),
                     str(row["source"]),
                     token_count,
                     _stable_key(seed, "sample", doc_id),
                     _stable_key(seed, "output", doc_id),
+                    int(bool(row.get("eligible_bridge", bridge_hits))),
+                    int(bool(row.get("eligible_new_hanzi", new_hanzi_hits))),
+                    sum(int(count) for count in bridge_hits.values()),
+                    sum(int(count) for count in new_hanzi_hits.values()),
                     json.dumps(row, ensure_ascii=False, separators=(",", ":")),
                 )
             )
         before = self.connection.total_changes
         self.connection.executemany(
-            "INSERT OR IGNORE INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            """
+            INSERT OR IGNORE INTO candidates (
+                doc_id, parent_doc_id, candidate_role, pool, quota_group, source,
+                token_count, sample_key, output_key, eligible_bridge,
+                eligible_new_hanzi, bridge_hit_count, new_hanzi_count, row_json,
+                selected_category
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
             values,
         )
         return self.connection.total_changes - before
 
     def existing_doc_ids(self, doc_ids: list[str]) -> set[str]:
+        return self._existing_values("doc_id", doc_ids)
+
+    def existing_parent_doc_ids(self, doc_ids: list[str]) -> set[str]:
+        return self._existing_values("parent_doc_id", doc_ids)
+
+    def _existing_values(self, column: str, values: list[str]) -> set[str]:
         existing: set[str] = set()
-        for start in range(0, len(doc_ids), 900):
-            chunk = doc_ids[start : start + 900]
+        for start in range(0, len(values), 900):
+            chunk = values[start : start + 900]
+            if not chunk:
+                continue
             placeholders = ",".join("?" for _ in chunk)
             rows = self.connection.execute(
-                f"SELECT doc_id FROM candidates WHERE doc_id IN ({placeholders})",
+                f"SELECT DISTINCT {column} FROM candidates WHERE {column} IN ({placeholders})",
                 chunk,
             )
             existing.update(str(row[0]) for row in rows)
@@ -156,76 +298,33 @@ class CandidateIndex:
         ).fetchone()
         return int(row[0]), int(row[1])
 
-    def reset_selection(self) -> None:
-        self.connection.execute("UPDATE candidates SET selected_category = NULL")
-        self.connection.commit()
-
-    def available_tokens(self, pool: str, quota_group: str | None = None, source: str | None = None) -> int:
-        clauses = ["pool = ?", "selected_category IS NULL"]
-        values: list[Any] = [pool]
-        if quota_group is not None:
-            clauses.append("quota_group = ?")
-            values.append(quota_group)
-        if source is not None:
-            clauses.append("source = ?")
-            values.append(source)
+    def feature_inventory(self) -> dict[str, int]:
         row = self.connection.execute(
-            f"SELECT COALESCE(SUM(token_count), 0) FROM candidates WHERE {' AND '.join(clauses)}", values
-        ).fetchone()
-        return int(row[0])
-
-    def select(
-        self,
-        pool: str,
-        category: str,
-        target_tokens: int,
-        quota_group: str | None = None,
-        source: str | None = None,
-    ) -> dict[str, int]:
-        if target_tokens <= 0:
-            return {"records": 0, "tokens": 0}
-        clauses = ["pool = ?", "selected_category IS NULL"]
-        values: list[Any] = [pool]
-        if quota_group is not None:
-            clauses.append("quota_group = ?")
-            values.append(quota_group)
-        if source is not None:
-            clauses.append("source = ?")
-            values.append(source)
-        self.connection.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS current_selection "
-            "(doc_id TEXT PRIMARY KEY, token_count INTEGER NOT NULL)"
-        )
-        self.connection.execute("DELETE FROM current_selection")
-        self.connection.execute(
-            f"""
-            INSERT INTO current_selection(doc_id, token_count)
-            SELECT doc_id, token_count FROM (
-                SELECT
-                    doc_id,
-                    token_count,
-                    SUM(token_count) OVER (
-                        ORDER BY sample_key, doc_id ROWS UNBOUNDED PRECEDING
-                    ) AS cumulative_tokens
-                FROM candidates
-                WHERE {' AND '.join(clauses)}
-            )
-            WHERE cumulative_tokens - token_count < ?
-            """,
-            [*values, target_tokens],
-        )
-        records, tokens = self.connection.execute(
-            "SELECT COUNT(*), COALESCE(SUM(token_count), 0) FROM current_selection"
-        ).fetchone()
-        self.connection.execute(
             """
-            UPDATE candidates SET selected_category = ?
-            WHERE doc_id IN (SELECT doc_id FROM current_selection)
-            """,
-            (category,),
-        )
-        self.connection.commit()
-        return {"records": int(records), "tokens": int(tokens)}
+            SELECT
+                COUNT(DISTINCT parent_doc_id),
+                SUM(eligible_bridge),
+                COUNT(DISTINCT CASE WHEN eligible_bridge = 1 THEN parent_doc_id END),
+                COALESCE(SUM(CASE WHEN eligible_bridge = 1 THEN token_count ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN eligible_bridge = 1 THEN bridge_hit_count ELSE 0 END), 0),
+                SUM(eligible_new_hanzi),
+                COUNT(DISTINCT CASE WHEN eligible_new_hanzi = 1 THEN parent_doc_id END),
+                COALESCE(SUM(CASE WHEN eligible_new_hanzi = 1 THEN token_count ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN eligible_new_hanzi = 1 THEN new_hanzi_count ELSE 0 END), 0)
+            FROM candidates
+            """
+        ).fetchone()
+        return {
+            "parent_records": int(row[0] or 0),
+            "bridge_candidate_records": int(row[1] or 0),
+            "bridge_parent_records": int(row[2] or 0),
+            "bridge_candidate_tokens": int(row[3] or 0),
+            "bridge_occurrences": int(row[4] or 0),
+            "new_hanzi_candidate_records": int(row[5] or 0),
+            "new_hanzi_parent_records": int(row[6] or 0),
+            "new_hanzi_candidate_tokens": int(row[7] or 0),
+            "new_hanzi_occurrences": int(row[8] or 0),
+        }
 
     def inventory(self) -> list[tuple[str, str | None, str, int, int]]:
         return list(
@@ -237,30 +336,9 @@ class CandidateIndex:
             )
         )
 
-    def selected_inventory(self) -> list[tuple[str, str, str | None, int, int]]:
-        return list(
-            self.connection.execute(
-                """
-                SELECT selected_category, source, quota_group, COUNT(*), SUM(token_count)
-                FROM candidates WHERE selected_category IS NOT NULL
-                GROUP BY selected_category, source, quota_group
-                ORDER BY selected_category, source, quota_group
-                """
-            )
-        )
-
-    def selected_rows(self):
-        return self.connection.execute(
-            """
-            SELECT selected_category, token_count, row_json
-            FROM candidates WHERE selected_category IS NOT NULL ORDER BY output_key
-            """
-        )
-
     def close(self) -> None:
         self.connection.commit()
         self.connection.close()
-
 
 @dataclass
 class TokenCountResult:
@@ -464,6 +542,79 @@ class BatchTokenCounter:
         return TokenCountResult(positive, zero_token_records, skipped_by_reason, skipped_examples)
 
 
+class Phase1CandidateProcessor:
+    def __init__(self, config: PipelineConfig, token_counter: BatchTokenCounter) -> None:
+        self.token_counter = token_counter
+        self.builder = Phase1CandidateBuilder(
+            config,
+            self._count_tokens,
+            count_many=self.token_counter._encode_lengths,
+        )
+
+    def _count_tokens(self, text: str) -> int:
+        return self.token_counter._encode_lengths([text])[0]
+
+    def count_rows(self, rows: list[dict[str, Any]]) -> TokenCountResult:
+        counted = self.token_counter.count_rows(rows)
+        candidates: list[tuple[dict[str, Any], int]] = []
+        skipped_by_reason = Counter(counted.skipped_by_reason)
+        skipped_examples = list(counted.skipped_examples)
+
+        for row, full_token_count in counted.rows:
+            text = self.token_counter.normalize_text(str(row["text"]))
+            value = dict(row)
+            value["text"] = text
+            try:
+                candidates.extend(self.builder.build(value, text, full_token_count))
+            except CandidateSkip as error:
+                BatchTokenCounter._add_skip(
+                    skipped_by_reason,
+                    skipped_examples,
+                    row,
+                    error.reason,
+                    str(error),
+                )
+            except Exception as error:
+                BatchTokenCounter._add_skip(
+                    skipped_by_reason,
+                    skipped_examples,
+                    row,
+                    "candidate_build_error",
+                    f"{type(error).__name__}: {error}",
+                )
+
+        return TokenCountResult(
+            rows=candidates,
+            zero_token_records=counted.zero_token_records,
+            skipped_by_reason=skipped_by_reason,
+            skipped_examples=skipped_examples,
+        )
+
+
+def _candidate_index_fingerprint(config: PipelineConfig) -> str:
+    payload = {
+        "pipeline_version": PRESCAN_VERSION,
+        "schema": CandidateIndex.CANDIDATE_COLUMNS,
+        "seed": config.seed,
+        "quality": config.quality,
+        "windowing": {
+            "min_tokens": config.windowing.min_tokens,
+            "target_tokens": config.windowing.target_tokens,
+            "max_tokens": config.windowing.max_tokens,
+        },
+        "vocab_alignment": {
+            "bridge_top_token_count": config.vocab_alignment.bridge_top_token_count,
+            "removed_multi_hanzi_tokens_sha256": file_sha256(
+                config.vocab_alignment.removed_multi_hanzi_tokens_path
+            ),
+            "new_hanzi_token_ids_sha256": file_sha256(
+                config.vocab_alignment.new_hanzi_token_ids_path
+            ),
+        },
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
 def _target_hanzi_token_ids(config: PipelineConfig) -> dict[str, int]:
     path = config.tokenizer_path / "features" / "char_feature_index.jsonl"
     return {
@@ -475,38 +626,158 @@ def _target_hanzi_token_ids(config: PipelineConfig) -> dict[str, int]:
     }
 
 
-def _iter_row_batches(path: Path, max_records: int, max_chars: int):
-    batch: list[dict[str, Any]] = []
-    char_count = 0
-    for row in iter_jsonl([path]):
-        row_chars = len(str(row.get("text", "")))
-        if batch and (len(batch) >= max_records or char_count + row_chars > max_chars):
-            yield batch
-            batch = []
-            char_count = 0
-        batch.append(row)
-        char_count += row_chars
-    if batch:
-        yield batch
+def _filter_candidates_for_intent(
+    rows: list[tuple[dict[str, Any], int]],
+    intents: dict[str, str],
+) -> list[tuple[dict[str, Any], int]]:
+    simple_intents: dict[str, tuple[str, str | None]] = {
+        "chinese_natural": ("chinese_natural", None),
+        "mixed_zh_en": ("mixed_zh_en", None),
+        "non_chinese": ("non_chinese", None),
+        "specialized:code": ("specialized", "code"),
+        "specialized:math_science": ("specialized", "math_science"),
+        "specialized:structured": ("specialized", "structured"),
+    }
+    filtered: list[tuple[dict[str, Any], int]] = []
+    for row, token_count in rows:
+        parent_doc_id = str(row.get("parent_doc_id", row.get("doc_id", "")))
+        intent = intents.get(parent_doc_id)
+        roles = row.get("candidate_roles", [])
+        if isinstance(roles, str):
+            roles = [roles]
+
+        value = dict(row)
+        if intent == "new_hanzi_coverage":
+            if not value.get("eligible_new_hanzi"):
+                continue
+            value["candidate_roles"] = ["new_hanzi_coverage"]
+            value["eligible_bridge"] = False
+            value["bridge_hits"] = {}
+        elif intent == "multi_hanzi_bridge":
+            if not value.get("eligible_bridge"):
+                continue
+            value["candidate_roles"] = ["multi_hanzi_bridge"]
+            value["eligible_new_hanzi"] = False
+            value["new_hanzi_hits"] = {}
+        elif intent in simple_intents:
+            if "base" not in roles:
+                continue
+            pool, quota_group = simple_intents[intent]
+            value["candidate_pool"] = pool
+            value["quota_group"] = quota_group
+            value["candidate_roles"] = ["base"]
+            value["eligible_bridge"] = False
+            value["eligible_new_hanzi"] = False
+            value["bridge_hits"] = {}
+            value["new_hanzi_hits"] = {}
+        else:
+            continue
+        filtered.append((value, token_count))
+    return filtered
 
 
-def _summarize_indexing_progress(reports: list[dict[str, Any]]) -> dict[str, Any]:
-    skipped_by_reason: Counter[str] = Counter()
+def _materialize_preselected_candidates(
+    config: PipelineConfig,
+    index: CandidateIndex,
+    document_index: DocumentIndex,
+    *,
+    workers: int,
+) -> dict[str, Any]:
+    token_counter = BatchTokenCounter(config, workers)
+    candidate_processor = Phase1CandidateProcessor(config, token_counter)
+    existing_candidates, _tokens = index.totals()
+    if existing_candidates == 0 and document_index.materialized_count() > 0:
+        document_index.reset_materialized()
+
+    started = time.monotonic()
+    processed = 0
+    inserted = 0
+    reused = 0
+    zero_token_records = 0
+    skipped: Counter[str] = Counter()
     skipped_examples: list[dict[str, str]] = []
-    totals: Counter[str] = Counter()
-    for report in reports:
-        totals["processed_records"] += int(report.get("processed_records", 0))
-        totals["zero_token_records"] += int(report.get("zero_token_records", 0))
-        totals["reused_records"] += int(report.get("reused_records", 0))
-        skipped_by_reason.update(report.get("skipped_by_reason", {}))
-        remaining = 100 - len(skipped_examples)
-        if remaining > 0:
-            skipped_examples.extend(report.get("skipped_examples", [])[:remaining])
+    max_in_flight = max(1, workers * 2)
+    in_flight: dict[
+        Future[TokenCountResult],
+        list[tuple[dict[str, Any], str]],
+    ] = {}
+
+    def consume(completed: set[Future[TokenCountResult]]) -> None:
+        nonlocal processed, inserted, reused, zero_token_records
+        for future in completed:
+            items = in_flight.pop(future)
+            rows = [row for row, _intent in items]
+            intents = {str(row["doc_id"]): intent for row, intent in items}
+            try:
+                result = future.result()
+            except Exception as error:
+                message = f"{type(error).__name__}: {error}"
+                result = TokenCountResult(
+                    rows=[],
+                    zero_token_records=0,
+                    skipped_by_reason=Counter({"worker_error": len(rows)}),
+                    skipped_examples=[
+                        {
+                            "doc_id": str(row.get("doc_id", "unknown")),
+                            "reason": "worker_error",
+                            "error": message,
+                        }
+                        for row in rows[:100]
+                    ],
+                )
+
+            candidates = _filter_candidates_for_intent(result.rows, intents)
+            added = index.add_many(candidates, config.seed)
+            index.connection.commit()
+            document_index.mark_materialized(list(intents))
+            inserted += added
+            reused += len(candidates) - added
+            zero_token_records += result.zero_token_records
+            skipped.update(result.skipped_by_reason)
+            remaining = 100 - len(skipped_examples)
+            if remaining > 0:
+                skipped_examples.extend(result.skipped_examples[:remaining])
+            processed += len(items)
+            if processed % 10_000 < len(items):
+                elapsed = max(time.monotonic() - started, 1e-6)
+                print(
+                    f"exact materialization {processed:,}/"
+                    f"{document_index.selected_count():,} documents "
+                    f"({processed / elapsed:,.0f}/s)"
+                )
+
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="phase1-tokenizer",
+    ) as executor:
+        for batch in iter_selected_document_batches(
+            document_index,
+            max_records=config.sample_batch_size,
+            max_chars=config.sample_batch_chars,
+        ):
+            future = executor.submit(
+                candidate_processor.count_rows,
+                [row for row, _intent in batch],
+            )
+            in_flight[future] = batch
+            if len(in_flight) >= max_in_flight:
+                completed, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
+                consume(completed)
+        while in_flight:
+            completed, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
+            consume(completed)
+
     return {
-        **totals,
-        "skipped_records": sum(skipped_by_reason.values()),
-        "skipped_by_reason": dict(sorted(skipped_by_reason.items())),
+        "selected_documents": document_index.selected_count(),
+        "materialized_documents": document_index.materialized_count(),
+        "processed_this_run": processed,
+        "candidate_records_inserted": inserted,
+        "candidate_records_reused": reused,
+        "zero_token_records": zero_token_records,
+        "skipped_records": sum(skipped.values()),
+        "skipped_by_reason": dict(sorted(skipped.items())),
         "skipped_examples": skipped_examples,
+        "elapsed_seconds": time.monotonic() - started,
     }
 
 
@@ -517,267 +788,133 @@ def _build_candidate_index(
     resume: bool = False,
     workers: int | None = None,
 ) -> dict[str, Any]:
-    paths = sorted(config.deduplicated_dir.glob("part-*.jsonl"))
-    if not paths:
-        raise FileNotFoundError(f"no deduplicated JSONL files found under {config.deduplicated_dir}")
-
     worker_count = config.sample_workers if workers is None else workers
     if worker_count <= 0:
         raise ValueError("workers must be positive")
-    token_counter = BatchTokenCounter(config, worker_count)
-    index = CandidateIndex(database_path)
-    index.drop_sampling_indexes()
+
     started = time.monotonic()
-    processed_this_run = 0
-    resumed_files = 0
-    skipped_this_run: Counter[str] = Counter()
-    next_progress = 100_000
-    last_progress_records = 0
-    last_progress_time = started
-    max_in_flight = max(1, worker_count * 2)
-
-    def advance_progress(count: int) -> None:
-        nonlocal processed_this_run, next_progress, last_progress_records, last_progress_time
-        processed_this_run += count
-        while processed_this_run >= next_progress:
-            now = time.monotonic()
-            interval_seconds = max(now - last_progress_time, 1e-6)
-            interval_records = processed_this_run - last_progress_records
-            interval_rate = interval_records / interval_seconds
-            average_rate = processed_this_run / max(now - started, 1e-6)
-            print(
-                f"processed {processed_this_run:,} records "
-                f"(current {interval_rate:,.0f}/s, average {average_rate:,.0f}/s, "
-                f"skipped {sum(skipped_this_run.values()):,})"
-            )
-            last_progress_records = processed_this_run
-            last_progress_time = now
-            next_progress += 100_000
-
-    def worker_error_result(rows: list[dict[str, Any]], error: Exception) -> TokenCountResult:
-        message = f"{type(error).__name__}: {error}"
-        examples = [
-            {
-                "doc_id": str(row.get("doc_id", "unknown")),
-                "reason": "worker_error",
-                "error": message,
-            }
-            for row in rows[:100]
-        ]
-        return TokenCountResult([], 0, Counter({"worker_error": len(rows)}), examples)
-
-    def consume_futures(
-        futures: set[Future[TokenCountResult]],
-        in_flight: dict[Future[TokenCountResult], tuple[int, list[dict[str, Any]]]],
-        shard_stats: Counter[str],
-        shard_skipped: Counter[str],
-        shard_examples: list[dict[str, str]],
-    ) -> None:
-        for future in futures:
-            batch_records, pending_rows = in_flight.pop(future)
-            try:
-                result = future.result()
-            except Exception as error:
-                result = worker_error_result(pending_rows, error)
-
-            inserted = index.add_many(result.rows, config.seed)
-            shard_stats["reused_records"] += len(result.rows) - inserted
-            shard_stats["zero_token_records"] += result.zero_token_records
-            shard_skipped.update(result.skipped_by_reason)
-            skipped_this_run.update(result.skipped_by_reason)
-            remaining_examples = 100 - len(shard_examples)
-            if remaining_examples > 0:
-                shard_examples.extend(result.skipped_examples[:remaining_examples])
-            index.connection.commit()
-            advance_progress(batch_records)
-
+    document_path = database_path.with_name("document_index.sqlite")
+    document_index, prescan_report = build_document_index(
+        config,
+        document_path,
+        resume=resume,
+        workers=worker_count,
+    )
     try:
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="phase1-tokenizer") as executor:
-            for path in paths:
-                if resume and index.input_is_complete(path):
-                    resumed_files += 1
-                    print(f"resumed completed shard: {path.name}")
-                    continue
-
-                shard_stats: Counter[str] = Counter()
-                shard_skipped: Counter[str] = Counter()
-                shard_examples: list[dict[str, str]] = []
-                in_flight: dict[Future[TokenCountResult], tuple[int, list[dict[str, Any]]]] = {}
-
-                for batch in _iter_row_batches(path, config.sample_batch_size, config.sample_batch_chars):
-                    shard_stats["processed_records"] += len(batch)
-                    pending = batch
-                    if resume:
-                        doc_ids = [str(row["doc_id"]) for row in batch if "doc_id" in row]
-                        existing = index.existing_doc_ids(doc_ids)
-                        if existing:
-                            pending = [
-                                row
-                                for row in batch
-                                if "doc_id" not in row or str(row["doc_id"]) not in existing
-                            ]
-                            shard_stats["reused_records"] += len(batch) - len(pending)
-
-                    if not pending:
-                        advance_progress(len(batch))
-                        continue
-
-                    future = executor.submit(token_counter.count_rows, pending)
-                    in_flight[future] = (len(batch), pending)
-                    if len(in_flight) >= max_in_flight:
-                        completed, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
-                        consume_futures(
-                            completed,
-                            in_flight,
-                            shard_stats,
-                            shard_skipped,
-                            shard_examples,
-                        )
-
-                while in_flight:
-                    completed, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
-                    consume_futures(
-                        completed,
-                        in_flight,
-                        shard_stats,
-                        shard_skipped,
-                        shard_examples,
-                    )
-
-                index.mark_input_complete(
-                    path,
-                    {
-                        "path": str(path),
-                        "processed_records": shard_stats["processed_records"],
-                        "zero_token_records": shard_stats["zero_token_records"],
-                        "reused_records": shard_stats["reused_records"],
-                        "skipped_by_reason": dict(sorted(shard_skipped.items())),
-                        "skipped_examples": shard_examples,
-                    },
+        top_bridge = document_index.top_bridge_tokens(
+            config.vocab_alignment.bridge_top_token_count
+        )
+        preselection_report = preselect_documents(
+            document_index,
+            config,
+            top_bridge,
+        )
+        if not preselection_report["target_reached"]:
+            raise RuntimeError(
+                "insufficient preselected candidates: "
+                + json.dumps(
+                    preselection_report["shortfalls"],
+                    ensure_ascii=False,
                 )
-                print(f"completed input shard: {path.name}")
-        print("building SQLite sampling indexes")
-        index.create_sampling_indexes()
-        records, tokens = index.totals()
-        progress = _summarize_indexing_progress(index.progress_reports())
-        inventory = [
-            {
-                "pool": pool,
-                "quota_group": quota_group,
-                "source": source,
-                "records": inventory_records,
-                "tokens": inventory_tokens,
-            }
-            for pool, quota_group, source, inventory_records, inventory_tokens in index.inventory()
-        ]
+            )
+
+        index = CandidateIndex(database_path)
+        try:
+            index.ensure_fingerprint(_candidate_index_fingerprint(config))
+            index.set_metadata("bridge_top_tokens", top_bridge)
+            index.drop_sampling_indexes()
+            materialization_report = _materialize_preselected_candidates(
+                config,
+                index,
+                document_index,
+                workers=worker_count,
+            )
+            print("building SQLite sampling indexes")
+            index.create_sampling_indexes()
+            records, tokens = index.totals()
+            feature_inventory = index.feature_inventory()
+            inventory = [
+                {
+                    "pool": pool,
+                    "quota_group": quota_group,
+                    "source": source,
+                    "records": inventory_records,
+                    "tokens": inventory_tokens,
+                }
+                for pool, quota_group, source, inventory_records, inventory_tokens
+                in index.inventory()
+            ]
+        finally:
+            index.close()
     finally:
-        index.close()
+        document_index.close()
 
     return {
         "records": records,
+        "parent_records": feature_inventory["parent_records"],
         "tokens": tokens,
-        **progress,
-        "input_files": len(paths),
-        "resumed_files": resumed_files,
-        "processed_this_run": processed_this_run,
+        "candidate_records": records,
+        "feature_inventory": feature_inventory,
+        "input_files": prescan_report["input_files"],
+        "processed_this_run": materialization_report["processed_this_run"],
         "elapsed_seconds": time.monotonic() - started,
         "batch_size": config.sample_batch_size,
         "batch_chars": config.sample_batch_chars,
         "workers": worker_count,
         "inventory": inventory,
+        "prescan": prescan_report,
+        "preselection": preselection_report,
+        "materialization": materialization_report,
+        "document_database": str(document_path),
     }
-
-
-def _add_result(target: dict[str, int], value: dict[str, int]) -> None:
-    target["records"] += value["records"]
-    target["tokens"] += value["tokens"]
-
-
-def _select_quotas(index: CandidateIndex, config: PipelineConfig) -> dict[str, Any]:
-    index.reset_selection()
-    details: dict[str, Any] = {}
-
-    high_quality = {"records": 0, "tokens": 0}
-    _add_result(
-        high_quality,
-        index.select("chinese_high_quality", "chinese_high_quality", config.quotas["chinese_high_quality"]),
-    )
-    details["chinese_high_quality"] = high_quality
-
-    general = {"records": 0, "tokens": 0, "parts": {}}
-    clue_available = index.available_tokens("chinese_general", source="clue_benchmark")
-    clue_target = min(config.quotas["chinese_general"], clue_available)
-    clue_result = index.select(
-        "chinese_general", "chinese_general", clue_target, source="clue_benchmark"
-    )
-    general["parts"]["clue_benchmark"] = clue_result
-    _add_result(general, clue_result)
-    remaining = max(0, config.quotas["chinese_general"] - general["tokens"])
-    other_general = index.select("chinese_general", "chinese_general", remaining)
-    general["parts"]["other_general"] = other_general
-    _add_result(general, other_general)
-    remaining = max(0, config.quotas["chinese_general"] - general["tokens"])
-    chinese_fallback = index.select("chinese_high_quality", "chinese_general", remaining)
-    general["parts"]["fineweb_chinese_fallback"] = chinese_fallback
-    _add_result(general, chinese_fallback)
-    details["chinese_general"] = general
-
-    non_chinese = index.select("non_chinese", "non_chinese", config.quotas["non_chinese"])
-    details["non_chinese"] = non_chinese
-
-    mixed = {"records": 0, "tokens": 0, "parts": {}}
-    for quota_group, target in config.mixed_quotas.items():
-        result = index.select("mixed_zh_en", "mixed_zh_en", target, quota_group=quota_group)
-        mixed["parts"][quota_group] = result
-        _add_result(mixed, result)
-    remaining = max(0, config.quotas["mixed_zh_en"] - mixed["tokens"])
-    fallback = index.select("mixed_zh_en", "mixed_zh_en", remaining)
-    mixed["parts"]["fallback"] = fallback
-    _add_result(mixed, fallback)
-    details["mixed_zh_en"] = mixed
-
-    supplemental = {"records": 0, "tokens": 0, "parts": {}}
-    for quota_group, target in config.supplemental_quotas.items():
-        result = index.select("supplemental", "supplemental", target, quota_group=quota_group)
-        supplemental["parts"][quota_group] = result
-        _add_result(supplemental, result)
-    remaining = max(0, config.quotas["supplemental"] - supplemental["tokens"])
-    fallback = index.select("supplemental", "supplemental", remaining)
-    supplemental["parts"]["fallback"] = fallback
-    _add_result(supplemental, fallback)
-    details["supplemental"] = supplemental
-    return details
-
-
-def _target_hanzi(config: PipelineConfig) -> set[str]:
-    return set(_target_hanzi_token_ids(config))
 
 def _emit_final(
     index: CandidateIndex,
     config: PipelineConfig,
-    target_hanzi: set[str],
-) -> tuple[TokenJsonlShardWriter, dict[str, Counter[str]], set[str]]:
+) -> tuple[TokenJsonlShardWriter, dict[str, Counter[str]]]:
+    from scripts.data_factory.selection import materialize_row, split_rows
+
     writer = TokenJsonlShardWriter(config.final_dir, "train", config.final_shard_tokens)
-    missing_hanzi = set(target_hanzi)
     stats: dict[str, Counter[str]] = {
         "categories": Counter(),
+        "specialized": Counter(),
         "sources": Counter(),
         "licenses": Counter(),
         "license_status": Counter(),
     }
-    for category, token_count, row_json in index.selected_rows():
-        row = json.loads(row_json)
-        row["category"] = category
-        row["token_count"] = int(token_count)
+    for category, token_count, row_json in split_rows(index.connection, "train"):
+        row = materialize_row(str(category), int(token_count), str(row_json))
         writer.write(row)
-        if missing_hanzi:
-            missing_hanzi.difference_update(str(row["text"]))
-        stats["categories"][str(category)] += int(token_count)
-        stats["sources"][str(row.get("source", "unknown"))] += int(token_count)
-        stats["licenses"][str(row.get("license", "unknown"))] += int(token_count)
-        stats["license_status"][str(row.get("license_status", "unknown"))] += int(token_count)
+        tokens = int(token_count)
+        stats["categories"][str(category)] += tokens
+        if category == "specialized":
+            stats["specialized"][str(row.get("quota_group", "unknown"))] += tokens
+        stats["sources"][str(row.get("source", "unknown"))] += tokens
+        stats["licenses"][str(row.get("license", "unknown"))] += tokens
+        stats["license_status"][str(row.get("license_status", "unknown"))] += tokens
     writer.close()
-    return writer, stats, missing_hanzi
+    return writer, stats
+
+
+def _category_checks(
+    actual: Counter[str],
+    targets: dict[str, int],
+    tolerance: float,
+) -> tuple[dict[str, Any], bool]:
+    checks: dict[str, Any] = {}
+    passed = True
+    for category, target in targets.items():
+        value = int(actual.get(category, 0))
+        relative_error = abs(value - target) / target
+        category_passed = relative_error <= tolerance
+        checks[category] = {
+            "target_tokens": target,
+            "actual_tokens": value,
+            "relative_error": relative_error,
+            "passed": category_passed,
+        }
+        passed = passed and category_passed
+    return checks, passed
 
 
 def sample_phase1(
@@ -786,95 +923,208 @@ def sample_phase1(
     resume: bool = False,
     workers: int | None = None,
 ) -> dict[str, Any]:
+    from scripts.data_factory.build_phase1_validation import export_validation_sets
+    from scripts.data_factory.selection import (
+        CHINESE_TRAIN_CATEGORIES,
+        Phase1Selector,
+        parent_split_overlap,
+        selection_inventory,
+    )
+
     config.final_dir.mkdir(parents=True, exist_ok=True)
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     database_path = config.final_dir / "candidate_index.sqlite"
+    document_database_path = config.final_dir / "document_index.sqlite"
+    prescan_cache_dir = config.final_dir / ".prescan"
     final_files = list(config.final_dir.glob("train-*.jsonl"))
+    manifest_path = config.final_dir / "manifest.json"
+    validation_dir = config.phase_root / "validation"
+    validation_files = [
+        validation_dir / "validation_natural.jsonl",
+        validation_dir / "validation_alignment.jsonl",
+        config.reports_dir / "phase1_validation_report.json",
+    ]
+
     if overwrite and resume:
         raise ValueError("--overwrite and --resume cannot be used together")
-    if (database_path.exists() or final_files) and not (overwrite or resume):
+    if (
+        database_path.exists()
+        or document_database_path.exists()
+        or final_files
+    ) and not (overwrite or resume):
         raise FileExistsError(
             f"final outputs already exist under {config.final_dir}; pass --overwrite or --resume"
         )
     if overwrite:
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{database_path}{suffix}").unlink(missing_ok=True)
+        for sqlite_path in (database_path, document_database_path):
+            for suffix in ("", "-wal", "-shm"):
+                Path(f"{sqlite_path}{suffix}").unlink(missing_ok=True)
+        if prescan_cache_dir.is_dir():
+            for cache_path in prescan_cache_dir.iterdir():
+                if cache_path.is_file():
+                    cache_path.unlink()
+            prescan_cache_dir.rmdir()
     if overwrite or resume:
-        for path in final_files:
-            path.unlink()
+        for path in [*final_files, manifest_path, *validation_files]:
+            path.unlink(missing_ok=True)
 
-    index_report = _build_candidate_index(config, database_path, resume=resume, workers=workers)
+    index_report = _build_candidate_index(
+        config,
+        database_path,
+        resume=resume,
+        workers=workers,
+    )
     index = CandidateIndex(database_path)
-    target_hanzi = _target_hanzi(config)
     try:
-        selection = _select_quotas(index, config)
-        selected_inventory = [
-            {
-                "category": category,
-                "source": source,
-                "quota_group": quota_group,
-                "records": records,
-                "tokens": tokens,
-            }
-            for category, source, quota_group, records, tokens in index.selected_inventory()
-        ]
-        writer, stats, missing_hanzi = _emit_final(index, config, target_hanzi)
+        selector = Phase1Selector(index.connection, config)
+        selector.reset()
+        validation_selection = selector.reserve_validation()
+        selection, alignment_coverage = selector.select_training()
+        overlap = parent_split_overlap(index.connection)
+        selected_inventory = selection_inventory(index.connection, "train")
+        writer, stats = _emit_final(index, config)
     finally:
         index.close()
 
-    category_checks: dict[str, Any] = {}
-    passed = True
-    for category, target in config.quotas.items():
-        actual = int(stats["categories"].get(category, 0))
-        relative_error = abs(actual - target) / target
-        category_passed = relative_error <= config.tolerance
-        passed = passed and category_passed
-        category_checks[category] = {
-            "target_tokens": target,
-            "actual_tokens": actual,
-            "relative_error": relative_error,
-            "passed": category_passed,
+    validation_report = export_validation_sets(
+        config,
+        database_path,
+        overwrite=True,
+        reservation_report=validation_selection,
+    )
+
+    category_checks, categories_passed = _category_checks(
+        stats["categories"],
+        config.quotas,
+        config.tolerance,
+    )
+    specialized_checks, specialized_passed = _category_checks(
+        stats["specialized"],
+        config.specialized_quotas,
+        config.tolerance,
+    )
+
+    chinese_source_tokens: Counter[str] = Counter()
+    for row in selected_inventory:
+        if row["category"] in CHINESE_TRAIN_CATEGORIES:
+            chinese_source_tokens[row["source"]] += int(row["tokens"])
+    chinese_target = sum(config.quotas[name] for name in CHINESE_TRAIN_CATEGORIES)
+    source_cap = int(chinese_target * 0.40)
+    source_concentration = {
+        source: {
+            "tokens": tokens,
+            "ratio": tokens / chinese_target,
+            "passed": tokens <= source_cap,
         }
+        for source, tokens in sorted(chinese_source_tokens.items())
+    }
+    source_concentration_passed = all(
+        item["passed"] for item in source_concentration.values()
+    )
 
-    hanzi_coverage = 1.0 - len(missing_hanzi) / len(target_hanzi) if target_hanzi else 1.0
-    passed = passed and not missing_hanzi
+    unknown_license_tokens = int(stats["licenses"].get("unknown", 0))
+    conflicting_status_tokens = sum(
+        int(stats["license_status"].get(status, 0))
+        for status in ("unknown", "conflict", "unverified")
+    )
+    licenses_passed = unknown_license_tokens == 0 and conflicting_status_tokens == 0
+    coverage_passed = all(
+        bool(report["passed"]) for report in alignment_coverage.values()
+    )
+    passed = all(
+        (
+            categories_passed,
+            specialized_passed,
+            source_concentration_passed,
+            licenses_passed,
+            coverage_passed,
+            validation_report["passed"],
+            overlap == 0,
+        )
+    )
 
-    approved_exceptions = int(stats["license_status"].get("approved_exception", 0))
+    generated_at = utc_now_iso()
+    coverage_report = {
+        "generated_at": generated_at,
+        "passed": coverage_passed,
+        **alignment_coverage,
+    }
+    write_json(
+        config.reports_dir / "phase1_alignment_coverage_report.json",
+        coverage_report,
+    )
+
     report = {
-        "generated_at": utc_now_iso(),
+        "generated_at": generated_at,
         "passed": passed,
         "target_tokens": sum(config.quotas.values()),
         "actual_tokens": writer.total_tokens,
         "tolerance": config.tolerance,
         "category_checks": category_checks,
-        "hanzi_coverage": {
-            "target_chars": len(target_hanzi),
-            "covered_chars": len(target_hanzi) - len(missing_hanzi),
-            "coverage": hanzi_coverage,
-            "missing_count": len(missing_hanzi),
-            "missing_chars": sorted(missing_hanzi)[:1000],
-            "passed": not missing_hanzi,
-        },
+        "specialized_checks": specialized_checks,
         "selection": selection,
+        "validation_selection": validation_selection,
+        "validation_passed": validation_report["passed"],
+        "parent_split_overlap_records": overlap,
+        "alignment_coverage": {
+            name: {
+                key: value
+                for key, value in coverage.items()
+                if key != "character_stats" and key != "token_stats"
+            }
+            for name, coverage in alignment_coverage.items()
+        },
         "candidate_index": index_report,
         "selected_inventory": selected_inventory,
         "tokens_by_source": dict(sorted(stats["sources"].items())),
         "tokens_by_license": dict(sorted(stats["licenses"].items())),
         "tokens_by_license_status": dict(sorted(stats["license_status"].items())),
-        "approved_license_exception_tokens": approved_exceptions,
-        "approved_license_exception_note": "CLUE benchmark license is unknown and is retained only by explicit Phase 1 approval.",
+        "license_checks": {
+            "unknown_license_tokens": unknown_license_tokens,
+            "conflicting_or_unverified_status_tokens": conflicting_status_tokens,
+            "passed": licenses_passed,
+        },
+        "source_concentration": {
+            "chinese_target_tokens": chinese_target,
+            "single_source_token_cap": source_cap,
+            "passed": source_concentration_passed,
+            "sources": source_concentration,
+        },
         "files": writer.files,
         "candidate_database": str(database_path),
+        "validation_report": str(
+            config.reports_dir / "phase1_validation_report.json"
+        ),
+        "alignment_coverage_report": str(
+            config.reports_dir / "phase1_alignment_coverage_report.json"
+        ),
     }
     write_json(config.reports_dir / "phase1_build_report.json", report)
-    write_json(
-        config.final_dir / "manifest.json",
+
+    validation_outputs = [
         {
-            "generated_at": report["generated_at"],
-            "records": writer.total_records,
-            "tokens": writer.total_tokens,
-            "files": writer.files,
+            "path": validation_report["natural"]["output_path"],
+            "records": validation_report["natural"]["records"],
+            "tokens": validation_report["natural"]["tokens"],
+            "sha256": validation_report["natural"]["output_sha256"],
+        },
+        {
+            "path": validation_report["alignment"]["output_path"],
+            "records": validation_report["alignment"]["records"],
+            "tokens": validation_report["alignment"]["tokens"],
+            "sha256": validation_report["alignment"]["output_sha256"],
+        },
+    ]
+    write_json(
+        manifest_path,
+        {
+            "generated_at": generated_at,
+            "train": {
+                "records": writer.total_records,
+                "tokens": writer.total_tokens,
+                "files": writer.files,
+            },
+            "validation": validation_outputs,
         },
     )
     return report
-
