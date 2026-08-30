@@ -9,3 +9,4 @@ requests
 huggingface_hub
 PyYAML
 pyahocorasick
+tokenizers

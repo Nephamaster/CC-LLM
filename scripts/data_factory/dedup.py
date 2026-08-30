@@ -67,13 +67,25 @@ def _signature(text: str, kind: str, num_perm: int, seed: int) -> bytes | None:
     return minhash.hashvalues.tobytes() if count else None
 
 
-def _feature(row: dict[str, Any], dedup_config: dict[str, Any], seed: int) -> dict[str, Any]:
+def _feature(
+    row: dict[str, Any],
+    dedup_config: dict[str, Any],
+    seed: int,
+    *,
+    normalized_text: bool = False,
+) -> dict[str, Any]:
     text = str(row["text"])
     kind = dedup_kind(row)
-    digest = content_hash(text)
+    digest = (
+        hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if normalized_text
+        else content_hash(text)
+    )
     num_perm, _, _ = _settings(dedup_config, kind)
     signature = None
-    if len(text) >= int(dedup_config.get("near_min_chars", 50)):
+    if dedup_config.get("near_duplicate_enabled", True) and len(text) >= int(
+        dedup_config.get("near_min_chars", 50)
+    ):
         signature = _signature(text, kind, num_perm, seed)
     return {
         "digest": digest,
@@ -92,7 +104,10 @@ def _init_feature_worker(dedup_config: dict[str, Any], seed: int) -> None:
 def _compute_feature_batch(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if _WORKER_DEDUP_CONFIG is None:
         raise RuntimeError("dedup feature worker is not initialized")
-    return [_feature(row, _WORKER_DEDUP_CONFIG, _WORKER_SEED) for row in rows]
+    return [
+        _feature(row, _WORKER_DEDUP_CONFIG, _WORKER_SEED, normalized_text=True)
+        for row in rows
+    ]
 
 
 class DedupIndex:
@@ -102,6 +117,7 @@ class DedupIndex:
         cache_mb = max(64, int(config.dedup.get("sqlite_cache_mb", 1024)))
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=NORMAL")
+        self.connection.execute("PRAGMA locking_mode=EXCLUSIVE")
         self.connection.execute("PRAGMA temp_store=MEMORY")
         self.connection.execute(f"PRAGMA cache_size=-{cache_mb * 1024}")
         self.connection.execute(f"PRAGMA mmap_size={cache_mb * 1024 * 1024}")
@@ -118,7 +134,7 @@ class DedupIndex:
                 source TEXT NOT NULL,
                 phase TEXT NOT NULL,
                 input_shard TEXT NOT NULL
-            );
+            ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS lsh (
                 kind TEXT NOT NULL,
                 band INTEGER NOT NULL,
@@ -133,10 +149,15 @@ class DedupIndex:
         self.connection.commit()
         self.pending = 0
         self._candidate_query_cache: dict[int, str] = {}
+        self._exact_insert_query_cache: dict[int, str] = {}
         self.commit_interval = max(1000, int(config.dedup.get("commit_interval", 5000)))
 
     def _settings(self, kind: str) -> tuple[int, int, float]:
         return _settings(self.config.dedup, kind)
+
+    @property
+    def near_duplicate_enabled(self) -> bool:
+        return bool(self.config.dedup.get("near_duplicate_enabled", True))
 
     @staticmethod
     def _buckets(signature: np.ndarray, band_size: int) -> Iterator[tuple[int, bytes]]:
@@ -184,6 +205,116 @@ class DedupIndex:
                 values[str(doc_id)] = (signature, int(num_perm), str(phase))
         return values
 
+    def _find_exact_conflict(
+        self,
+        doc_id: str,
+        digest: str,
+    ) -> tuple[str, str, float | None]:
+        existing_doc_id = self.connection.execute(
+            "SELECT content_hash FROM documents WHERE doc_id = ?", (doc_id,)
+        ).fetchone()
+        if existing_doc_id is not None:
+            reason = "exact" if str(existing_doc_id[0]) == digest else "doc_id_conflict"
+            return reason, doc_id, 1.0 if reason == "exact" else None
+        exact = self.connection.execute(
+            "SELECT doc_id, phase FROM documents WHERE content_hash = ?", (digest,)
+        ).fetchone()
+        if exact is None:
+            raise RuntimeError("exact dedup insert was ignored without a matching document")
+        reason = "contamination_exact" if exact[1] == "evaluation" else "exact"
+        return reason, str(exact[0]), 1.0
+
+    def insert_or_find_exact(
+        self,
+        row: dict[str, Any],
+        feature: dict[str, Any],
+        *,
+        phase: str,
+        input_shard: str,
+    ) -> tuple[str | None, str | None, float | None]:
+        digest = str(feature["digest"])
+        doc_id = str(row["doc_id"])
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO documents VALUES (?, ?, NULL, 0, ?, ?, ?, ?, ?)",
+            (
+                doc_id,
+                digest,
+                str(feature["kind"]),
+                str(row["category"]),
+                str(row["source"]),
+                phase,
+                input_shard,
+            ),
+        )
+        if cursor.rowcount == 1:
+            self.pending += 1
+            if self.pending >= self.commit_interval:
+                self.commit()
+            return None, None, None
+
+        return self._find_exact_conflict(doc_id, digest)
+
+    def insert_exact_batch(
+        self,
+        rows: list[dict[str, Any]],
+        features: list[dict[str, Any]],
+        *,
+        phase: str,
+        input_shard: str,
+    ) -> list[tuple[str | None, str | None, float | None]]:
+        if sqlite3.sqlite_version_info < (3, 35, 0):
+            return [
+                self.insert_or_find_exact(
+                    row,
+                    feature,
+                    phase=phase,
+                    input_shard=input_shard,
+                )
+                for row, feature in zip(rows, features, strict=True)
+            ]
+
+        results: list[tuple[str | None, str | None, float | None]] = []
+        for start in range(0, len(rows), 100):
+            row_chunk = rows[start : start + 100]
+            feature_chunk = features[start : start + 100]
+            query = self._exact_insert_query_cache.get(len(row_chunk))
+            if query is None:
+                values = ",".join("(?, ?, NULL, 0, ?, ?, ?, ?, ?)" for _ in row_chunk)
+                query = (
+                    "INSERT OR IGNORE INTO documents VALUES "
+                    + values
+                    + " RETURNING doc_id, content_hash"
+                )
+                self._exact_insert_query_cache[len(row_chunk)] = query
+            parameters: list[Any] = []
+            for row, feature in zip(row_chunk, feature_chunk, strict=True):
+                parameters.extend(
+                    (
+                        str(row["doc_id"]),
+                        str(feature["digest"]),
+                        str(feature["kind"]),
+                        str(row["category"]),
+                        str(row["source"]),
+                        phase,
+                        input_shard,
+                    )
+                )
+            inserted = Counter(
+                (str(doc_id), str(digest))
+                for doc_id, digest in self.connection.execute(query, parameters)
+            )
+            inserted_count = sum(inserted.values())
+            self.pending += inserted_count
+            for row, feature in zip(row_chunk, feature_chunk, strict=True):
+                pair = (str(row["doc_id"]), str(feature["digest"]))
+                if inserted[pair]:
+                    inserted[pair] -= 1
+                    results.append((None, None, None))
+                else:
+                    results.append(self._find_exact_conflict(*pair))
+            if self.pending >= self.commit_interval:
+                self.commit()
+        return results
     def find_duplicate(
         self,
         row: dict[str, Any],
@@ -446,10 +577,21 @@ def _apply_feature_batch(
 ) -> None:
     if len(rows) != len(features):
         raise RuntimeError("dedup worker returned a mismatched feature batch")
-    for row, feature in zip(rows, features, strict=True):
+    exact_results = None
+    if not index.near_duplicate_enabled:
+        exact_results = index.insert_exact_batch(
+            rows,
+            features,
+            phase="phase1",
+            input_shard=input_shard,
+        )
+    for position, (row, feature) in enumerate(zip(rows, features, strict=True)):
         source = str(row.get("source", "unknown"))
         source_stats = by_source.setdefault(source, Counter())
-        reason, duplicate_of, similarity = index.find_duplicate(row, feature)
+        if exact_results is None:
+            reason, duplicate_of, similarity = index.find_duplicate(row, feature)
+        else:
+            reason, duplicate_of, similarity = exact_results[position]
         if reason is not None:
             reasons[reason] += 1
             source_stats[f"removed_{reason}"] += 1
@@ -464,7 +606,8 @@ def _apply_feature_batch(
             )
             continue
         row["content_hash"] = feature["digest"]
-        index.insert(row, feature, phase="phase1", input_shard=input_shard)
+        if index.near_duplicate_enabled:
+            index.insert(row, feature, phase="phase1", input_shard=input_shard)
         output_writer.write(row)
         source_stats["kept"] += 1
 
@@ -509,7 +652,7 @@ def _process_shard(
     try:
         if executor is None:
             for rows in _iter_batches(input_path, max_records, max_chars):
-                consume(rows, [_feature(row, config.dedup, config.seed) for row in rows])
+                consume(rows, [_feature(row, config.dedup, config.seed, normalized_text=True) for row in rows])
         else:
             pending: deque[tuple[Future[list[dict[str, Any]]], list[dict[str, Any]]]] = deque()
             max_in_flight = max(2, workers * 2)

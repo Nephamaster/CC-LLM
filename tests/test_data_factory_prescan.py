@@ -6,13 +6,25 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
+from scripts.data_factory.config import load_config
 from scripts.data_factory.prescan import (
     DocumentIndex,
+    _preselection_targets,
     _select_simple_documents,
     iter_selected_document_batches,
+    refill_documents,
 )
 
+
+class CandidateBudgetTest(unittest.TestCase):
+    def test_preselection_targets_match_candidate_budget(self) -> None:
+        config = load_config(Path("scripts/data_factory/phase1_config.json"))
+        targets = _preselection_targets(config, config.candidate_tokens)
+
+        self.assertEqual(sum(targets.values()), 1_100_000_000)
+        self.assertTrue(all(tokens > 0 for tokens in targets.values()))
 
 class DocumentIndexTest(unittest.TestCase):
     def test_merge_preselect_and_offset_resume(self) -> None:
@@ -123,6 +135,55 @@ class DocumentIndexTest(unittest.TestCase):
             finally:
                 index.close()
 
+    def test_refill_uses_only_unselected_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            index = DocumentIndex(root / "documents.sqlite")
+            try:
+                rows = [
+                    (
+                        f"doc-{item}",
+                        str(root / "normalized.jsonl"),
+                        item,
+                        1,
+                        "source",
+                        "non_chinese",
+                        None,
+                        10,
+                        item,
+                        item,
+                        "{}",
+                        "non_chinese" if item == 0 else None,
+                    )
+                    for item in range(3)
+                ]
+                index.connection.executemany(
+                    """
+                    INSERT INTO documents (
+                        doc_id, input_path, byte_offset, byte_length, source,
+                        pool, quota_group, estimated_tokens, sample_key,
+                        output_key, new_hanzi_hits, selected_intent
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+                index.connection.commit()
+
+                report = refill_documents(
+                    index,
+                    SimpleNamespace(),
+                    [],
+                    {"non_chinese": 12},
+                )
+
+                self.assertEqual(report["added_documents"], 2)
+                self.assertEqual(
+                    report["selection"]["non_chinese"]["estimated_tokens"],
+                    20,
+                )
+                self.assertEqual(index.selected_count(), 3)
+            finally:
+                index.close()
 
 if __name__ == "__main__":
     unittest.main()

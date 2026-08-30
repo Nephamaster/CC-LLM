@@ -30,11 +30,14 @@ class Phase1ConfigTest(unittest.TestCase):
             ["tghz2013.txt", "common_traditional.txt", "rare_high_freq.txt"],
         )
         self.assertEqual(config.tolerance, 0.01)
+        self.assertEqual(config.candidate_tokens, 1_100_000_000)
         self.assertEqual(config.preselection_buffer_ratio, 1.25)
         self.assertEqual(config.prepare_workers, 8)
         self.assertEqual(config.dedup_workers, 8)
-        self.assertEqual(config.dedup["batch_size"], 128)
-        self.assertEqual(config.dedup["batch_chars"], 1_000_000)
+        self.assertFalse(config.dedup["near_duplicate_enabled"])
+        self.assertEqual(config.dedup["batch_size"], 2_048)
+        self.assertEqual(config.dedup["batch_chars"], 4_000_000)
+        self.assertEqual(config.dedup["commit_interval"], 20_000)
         self.assertEqual(config.dedup["sqlite_cache_mb"], 1024)
 
     def test_rejects_specialized_quota_mismatch(self) -> None:

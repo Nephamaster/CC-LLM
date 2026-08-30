@@ -10,15 +10,6 @@ from typing import Any
 
 from transformers import AutoTokenizer
 
-from .unicode_ranges import is_cjk_hanzi
-
-
-class UnsupportedHanziError(ValueError):
-    def __init__(self, char: str):
-        self.char = char
-        super().__init__(f"Hanzi is missing from char tokenizer vocab: {char} U+{ord(char):04X}")
-
-
 @dataclass(frozen=True)
 class Qwen3CharTokenizerConfig:
     tokenizer_dir: str | Path = Path("models/Qwen3-1.7B-Base-Char")
@@ -104,27 +95,48 @@ class Qwen3CharTokenizer:
                 continue
 
             char = text[position]
-            if is_cjk_hanzi(char):
-                token_id = self.char_token_ids.get(char)
-                if token_id is None:
-                    raise UnsupportedHanziError(char)
+            token_id = self.char_token_ids.get(char)
+            if token_id is not None:
+                # Characters explicitly covered by the Char vocabulary are hard
+                # boundaries and must always remain exactly one semantic token.
                 input_ids.append(token_id)
                 feature_ids.append(self._feature_for_token(token_id))
                 position += 1
                 continue
 
+            # Everything outside the explicit Char vocabulary, including rare CJK
+            # Extension characters, falls back to the preserved Qwen byte/BPE
+            # tokenizer.  Stop only at an explicitly covered Hanzi or a special
+            # token so the fallback path cannot absorb a target Hanzi.
             next_position = position + 1
             while next_position < len(text):
-                if self._match_special_token(text, next_position) is not None or is_cjk_hanzi(text[next_position]):
+                if (
+                    self._match_special_token(text, next_position) is not None
+                    or text[next_position] in self.char_token_ids
+                ):
                     break
                 next_position += 1
+
             span = text[position:next_position]
             span_ids = self.tokenizer.encode(span, add_special_tokens=False)
-            for token_id in span_ids:
-                token_id = int(token_id)
-                self._assert_non_hanzi_token(token_id)
-                input_ids.append(token_id)
-                feature_ids.append(self._feature_for_token(token_id))
+            if not span_ids:
+                raise ValueError(f"Fallback tokenizer produced no tokens for span: {span!r}")
+
+            decoded_span = self.tokenizer.decode(
+                span_ids,
+                clean_up_tokenization_spaces=False,
+            )
+            if decoded_span != span:
+                raise ValueError(
+                    "Fallback tokenizer is not reversible for span: "
+                    f"span={span!r}, decoded={decoded_span!r}"
+                )
+
+            for fallback_token_id in span_ids:
+                fallback_token_id = int(fallback_token_id)
+                self._assert_fallback_token(fallback_token_id)
+                input_ids.append(fallback_token_id)
+                feature_ids.append(self._feature_for_token(fallback_token_id))
             position = next_position
 
         if add_special_tokens:
@@ -145,11 +157,16 @@ class Qwen3CharTokenizer:
     def _feature_for_token(self, token_id: int) -> dict:
         return self.feature_rows.get(int(token_id), self.none_feature)
 
-    def _assert_non_hanzi_token(self, token_id: int) -> None:
+    def _assert_fallback_token(self, token_id: int) -> None:
         token = self.tokenizer.convert_ids_to_tokens(int(token_id))
         decoded = self.tokenizer.decode([int(token_id)], clean_up_tokenization_spaces=False)
-        if any(is_cjk_hanzi(char) for char in decoded):
-            raise ValueError(f"Non-Hanzi span produced Hanzi token: id={token_id}, token={token!r}, decoded={decoded!r}")
+        target_hanzi = [char for char in decoded if char in self.char_token_ids]
+        if target_hanzi:
+            raise ValueError(
+                "Fallback span produced a token containing an explicitly covered Hanzi: "
+                f"id={token_id}, token={token!r}, decoded={decoded!r}, "
+                f"target_hanzi={target_hanzi!r}"
+            )
 
     def __call__(self, text: str, add_special_tokens: bool = False) -> dict[str, list[Any]]:
         return self.encode(text, add_special_tokens=add_special_tokens)

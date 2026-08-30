@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import threading
 import time
@@ -19,6 +18,7 @@ from scripts.data_factory.candidate_features import CandidateSkip, Phase1Candida
 from scripts.data_factory.config import PipelineConfig
 from scripts.data_factory.io_utils import (
     TokenJsonlShardWriter,
+    expand_paths,
     file_sha256,
     iter_jsonl,
     utc_now_iso,
@@ -30,7 +30,27 @@ from scripts.data_factory.prescan import (
     build_document_index,
     iter_selected_document_batches,
     preselect_documents,
+    refill_documents,
 )
+from scripts.data_factory.text import content_hash
+
+
+def _load_exact_exclusions(
+    config: PipelineConfig,
+) -> tuple[set[str], list[Path], int]:
+    paths = expand_paths(
+        config.dedup.get("decontamination_paths", []),
+        config.repo_root,
+    )
+    hashes: set[str] = set()
+    records = 0
+    for row in iter_jsonl(paths):
+        text = row.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        hashes.add(content_hash(text))
+        records += 1
+    return hashes, paths, records
 
 
 def _stable_key(seed: int, namespace: str, doc_id: str) -> int:
@@ -116,6 +136,16 @@ class CandidateIndex:
                 FOREIGN KEY(doc_id) REFERENCES candidates(doc_id),
                 FOREIGN KEY(parent_doc_id) REFERENCES parent_assignments(parent_doc_id)
             );
+            CREATE TABLE IF NOT EXISTS candidate_parent_hashes (
+                content_hash TEXT PRIMARY KEY,
+                parent_doc_id TEXT NOT NULL UNIQUE
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS candidate_filter_events (
+                parent_doc_id TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                duplicate_of TEXT
+            ) WITHOUT ROWID;
             CREATE INDEX IF NOT EXISTS selection_split ON selections(split, category);
             CREATE INDEX IF NOT EXISTS selection_parent ON selections(parent_doc_id, split);
             """
@@ -238,6 +268,128 @@ class CandidateIndex:
         )
         return self.connection.total_changes - before
 
+    def filter_exact_parents(
+        self,
+        rows: list[tuple[dict[str, Any], str]],
+        exclusion_hashes: set[str],
+    ) -> tuple[list[tuple[dict[str, Any], str]], list[str]]:
+        values = [
+            (
+                row,
+                intent,
+                str(row["doc_id"]),
+                hashlib.sha256(str(row["text"]).encode("utf-8")).hexdigest(),
+            )
+            for row, intent in rows
+        ]
+        parent_ids = [
+            parent_doc_id
+            for _row, _intent, parent_doc_id, _digest in values
+        ]
+        digests = [digest for _row, _intent, _parent_doc_id, digest in values]
+
+        def existing_values(
+            table: str,
+            key_column: str,
+            value_column: str,
+            keys: list[str],
+        ) -> dict[str, str]:
+            result: dict[str, str] = {}
+            for start in range(0, len(keys), 900):
+                chunk = keys[start : start + 900]
+                placeholders = ",".join("?" for _ in chunk)
+                result.update(
+                    (str(key), str(value))
+                    for key, value in self.connection.execute(
+                        f"SELECT {key_column}, {value_column} FROM {table} "
+                        f"WHERE {key_column} IN ({placeholders})",
+                        chunk,
+                    )
+                )
+            return result
+
+        prior_events = existing_values(
+            "candidate_filter_events",
+            "parent_doc_id",
+            "reason",
+            parent_ids,
+        )
+        claimed_hashes = existing_values(
+            "candidate_parent_hashes",
+            "content_hash",
+            "parent_doc_id",
+            digests,
+        )
+        accepted: list[tuple[dict[str, Any], str]] = []
+        rejected: list[str] = []
+        hash_rows: list[tuple[str, str]] = []
+        event_rows: list[tuple[str, str, str, str | None]] = []
+
+        for row, intent, parent_doc_id, digest in values:
+            if parent_doc_id in prior_events:
+                rejected.append(parent_doc_id)
+                continue
+            if digest in exclusion_hashes:
+                event_rows.append(
+                    (parent_doc_id, "contamination_exact", digest, None)
+                )
+                rejected.append(parent_doc_id)
+                continue
+
+            duplicate_of = claimed_hashes.get(digest)
+            if duplicate_of is None:
+                claimed_hashes[digest] = parent_doc_id
+                hash_rows.append((digest, parent_doc_id))
+                accepted.append((row, intent))
+            elif duplicate_of == parent_doc_id:
+                accepted.append((row, intent))
+            else:
+                event_rows.append(
+                    (parent_doc_id, "exact", digest, duplicate_of)
+                )
+                rejected.append(parent_doc_id)
+
+        self.connection.executemany(
+            """
+            INSERT OR IGNORE INTO candidate_parent_hashes(content_hash, parent_doc_id)
+            VALUES (?, ?)
+            """,
+            hash_rows,
+        )
+        self.connection.executemany(
+            """
+            INSERT OR IGNORE INTO candidate_filter_events
+                (parent_doc_id, reason, content_hash, duplicate_of)
+            VALUES (?, ?, ?, ?)
+            """,
+            event_rows,
+        )
+        self.connection.commit()
+        return accepted, rejected
+
+    def exact_filter_report(self) -> dict[str, Any]:
+        reasons = {
+            str(reason): int(count)
+            for reason, count in self.connection.execute(
+                """
+                SELECT reason, COUNT(*)
+                FROM candidate_filter_events
+                GROUP BY reason ORDER BY reason
+                """
+            )
+        }
+        accepted = int(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM candidate_parent_hashes"
+            ).fetchone()[0]
+        )
+        return {
+            "processed_parent_records": accepted + sum(reasons.values()),
+            "accepted_parent_records": accepted,
+            "removed_parent_records": sum(reasons.values()),
+            "removed_by_reason": reasons,
+        }
+
     def existing_doc_ids(self, doc_ids: list[str]) -> set[str]:
         return self._existing_values("doc_id", doc_ids)
 
@@ -336,9 +488,25 @@ class CandidateIndex:
             )
         )
 
+    def chinese_source_tokens(self) -> Counter[str]:
+        return Counter(
+            {
+                str(source): int(tokens)
+                for source, tokens in self.connection.execute(
+                    """
+                    SELECT source, SUM(token_count)
+                    FROM candidates
+                    WHERE pool IN ('chinese_natural', 'mixed_zh_en')
+                    GROUP BY source
+                    """
+                )
+            }
+        )
+
     def close(self) -> None:
         self.connection.commit()
         self.connection.close()
+
 
 @dataclass
 class TokenCountResult:
@@ -356,7 +524,6 @@ class BatchTokenCounter:
         from transformers import AutoTokenizer
 
         from src.vocab.qwen3_char_tokenizer import normalize_text
-        from src.vocab.unicode_ranges import CJK_RANGES
 
         self.auto_tokenizer_class = AutoTokenizer
         self.tokenizer_path = config.tokenizer_path
@@ -364,10 +531,7 @@ class BatchTokenCounter:
         if not self._get_tokenizer().is_fast:
             raise RuntimeError("Phase 1 sampling requires a fast tokenizer")
         self.normalize_text = normalize_text
-        ranges = "".join(f"{chr(item.start)}-{chr(item.end)}" for item in CJK_RANGES)
-        self.hanzi_pattern = re.compile(f"[{ranges}]")
         self.hanzi_token_ids = _target_hanzi_token_ids(config)
-        self.supported_hanzi = set(self.hanzi_token_ids)
         self._validate_hanzi_alignment()
 
     def _get_tokenizer(self):
@@ -441,13 +605,6 @@ class BatchTokenCounter:
             position = next_position
         return input_ids
 
-    def _unsupported_hanzi(self, text: str) -> str | None:
-        for match in self.hanzi_pattern.finditer(text):
-            char = match.group(0)
-            if char not in self.supported_hanzi:
-                return char
-        return None
-
     def _encode_lengths(self, texts: list[str]) -> list[int]:
         encoded = self._get_tokenizer()(
             texts,
@@ -503,16 +660,6 @@ class BatchTokenCounter:
                     row,
                     "invalid_text",
                     f"{type(error).__name__}: {error}",
-                )
-                continue
-            unsupported = self._unsupported_hanzi(text)
-            if unsupported is not None:
-                self._add_skip(
-                    skipped_by_reason,
-                    skipped_examples,
-                    row,
-                    "unsupported_hanzi",
-                    f"Hanzi is missing from char tokenizer vocab: {unsupported} U+{ord(unsupported):04X}",
                 )
                 continue
             prepared.append((row, text))
@@ -592,11 +739,18 @@ class Phase1CandidateProcessor:
 
 
 def _candidate_index_fingerprint(config: PipelineConfig) -> str:
+    exclusion_paths = expand_paths(
+        config.dedup.get("decontamination_paths", []),
+        config.repo_root,
+    )
     payload = {
         "pipeline_version": PRESCAN_VERSION,
         "schema": CandidateIndex.CANDIDATE_COLUMNS,
         "seed": config.seed,
         "quality": config.quality,
+        "exact_decontamination": {
+            str(path): file_sha256(path) for path in exclusion_paths
+        },
         "windowing": {
             "min_tokens": config.windowing.min_tokens,
             "target_tokens": config.windowing.target_tokens,
@@ -682,11 +836,18 @@ def _materialize_preselected_candidates(
     document_index: DocumentIndex,
     *,
     workers: int,
+    exclusion_hashes: set[str] | None = None,
 ) -> dict[str, Any]:
+    exclusion_hashes = set() if exclusion_hashes is None else exclusion_hashes
     token_counter = BatchTokenCounter(config, workers)
     candidate_processor = Phase1CandidateProcessor(config, token_counter)
     existing_candidates, _tokens = index.totals()
-    if existing_candidates == 0 and document_index.materialized_count() > 0:
+    exact_filter = index.exact_filter_report()
+    if (
+        existing_candidates == 0
+        and exact_filter["processed_parent_records"] == 0
+        and document_index.materialized_count() > 0
+    ):
         document_index.reset_materialized()
 
     started = time.monotonic()
@@ -755,11 +916,16 @@ def _materialize_preselected_candidates(
             max_records=config.sample_batch_size,
             max_chars=config.sample_batch_chars,
         ):
+            accepted, rejected = index.filter_exact_parents(batch, exclusion_hashes)
+            if rejected:
+                document_index.mark_materialized(rejected)
+            if not accepted:
+                continue
             future = executor.submit(
                 candidate_processor.count_rows,
-                [row for row, _intent in batch],
+                [row for row, _intent in accepted],
             )
-            in_flight[future] = batch
+            in_flight[future] = accepted
             if len(in_flight) >= max_in_flight:
                 completed, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
                 consume(completed)
@@ -777,6 +943,7 @@ def _materialize_preselected_candidates(
         "skipped_records": sum(skipped.values()),
         "skipped_by_reason": dict(sorted(skipped.items())),
         "skipped_examples": skipped_examples,
+        "exact_filter": index.exact_filter_report(),
         "elapsed_seconds": time.monotonic() - started,
     }
 
@@ -785,6 +952,8 @@ def _build_candidate_index(
     config: PipelineConfig,
     database_path: Path,
     *,
+    candidate_tokens: int,
+    exclusion_hashes: set[str],
     resume: bool = False,
     workers: int | None = None,
 ) -> dict[str, Any]:
@@ -808,15 +977,8 @@ def _build_candidate_index(
             document_index,
             config,
             top_bridge,
+            candidate_tokens,
         )
-        if not preselection_report["target_reached"]:
-            raise RuntimeError(
-                "insufficient preselected candidates: "
-                + json.dumps(
-                    preselection_report["shortfalls"],
-                    ensure_ascii=False,
-                )
-            )
 
         index = CandidateIndex(database_path)
         try:
@@ -828,6 +990,7 @@ def _build_candidate_index(
                 index,
                 document_index,
                 workers=worker_count,
+                exclusion_hashes=exclusion_hashes,
             )
             print("building SQLite sampling indexes")
             index.create_sampling_indexes()
@@ -850,6 +1013,7 @@ def _build_candidate_index(
         document_index.close()
 
     return {
+        "candidate_token_budget": candidate_tokens,
         "records": records,
         "parent_records": feature_inventory["parent_records"],
         "tokens": tokens,
@@ -917,11 +1081,53 @@ def _category_checks(
     return checks, passed
 
 
+def _selection_shortfalls(
+    validation_selection: dict[str, Any],
+    selection: dict[str, Any],
+) -> dict[str, int]:
+    shortfalls: Counter[str] = Counter()
+
+    def add(intent: str, report: dict[str, Any]) -> None:
+        missing = int(report["target_tokens"]) - int(report["tokens"])
+        if missing > 0:
+            shortfalls[intent] += missing
+
+    add("new_hanzi_coverage", selection["new_hanzi_coverage"])
+    add("multi_hanzi_bridge", selection["multi_hanzi_bridge"])
+    add("mixed_zh_en", selection["mixed_zh_en"])
+    add("chinese_natural", selection["chinese_natural"])
+    add("non_chinese", selection["non_chinese"])
+    for group, report in selection["specialized"]["parts"].items():
+        add(f"specialized:{group}", report)
+
+    natural_intents = {
+        "chinese_natural": "chinese_natural",
+        "non_chinese": "non_chinese",
+        "mixed_zh_en": "mixed_zh_en",
+        "code": "specialized:code",
+        "math_science": "specialized:math_science",
+        "structured": "specialized:structured",
+    }
+    for category, report in validation_selection["natural"]["categories"].items():
+        add(natural_intents[category], report)
+
+    alignment_intents = {
+        "new_hanzi_coverage": "new_hanzi_coverage",
+        "multi_hanzi_bridge": "multi_hanzi_bridge",
+        "original_hanzi": "chinese_natural",
+        "non_chinese": "non_chinese",
+    }
+    for category, report in validation_selection["alignment"]["categories"].items():
+        add(alignment_intents[category], report)
+    return dict(sorted(shortfalls.items()))
+
+
 def sample_phase1(
     config: PipelineConfig,
     overwrite: bool = False,
     resume: bool = False,
     workers: int | None = None,
+    candidate_tokens: int | None = None,
 ) -> dict[str, Any]:
     from scripts.data_factory.build_phase1_validation import export_validation_sets
     from scripts.data_factory.selection import (
@@ -931,6 +1137,24 @@ def sample_phase1(
         selection_inventory,
     )
 
+    candidate_token_budget = (
+        config.candidate_tokens if candidate_tokens is None else candidate_tokens
+    )
+    minimum_candidate_tokens = (
+        sum(config.quotas.values())
+        + config.validation.natural_tokens
+        + config.validation.alignment_tokens
+    )
+    if candidate_token_budget < minimum_candidate_tokens:
+        raise ValueError(
+            f"candidate token budget must be at least {minimum_candidate_tokens:,}"
+        )
+    worker_count = config.sample_workers if workers is None else workers
+    if worker_count <= 0:
+        raise ValueError("workers must be positive")
+    exclusion_hashes, exclusion_paths, exclusion_records = _load_exact_exclusions(
+        config
+    )
     config.final_dir.mkdir(parents=True, exist_ok=True)
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     database_path = config.final_dir / "candidate_index.sqlite"
@@ -971,18 +1195,79 @@ def sample_phase1(
     index_report = _build_candidate_index(
         config,
         database_path,
+        candidate_tokens=candidate_token_budget,
+        exclusion_hashes=exclusion_hashes,
         resume=resume,
-        workers=workers,
+        workers=worker_count,
     )
+    refill_reports: list[dict[str, Any]] = []
     index = CandidateIndex(database_path)
     try:
-        selector = Phase1Selector(index.connection, config)
-        selector.reset()
-        validation_selection = selector.reserve_validation()
-        selection, alignment_coverage = selector.select_training()
+        for refill_round in range(9):
+            selector = Phase1Selector(index.connection, config)
+            selector.reset()
+            validation_selection = selector.reserve_validation()
+            selection, alignment_coverage = selector.select_training()
+            shortfalls = _selection_shortfalls(
+                validation_selection,
+                selection,
+            )
+            if not shortfalls:
+                break
+            if refill_round >= 8:
+                raise RuntimeError(
+                    "candidate refill limit reached: "
+                    + json.dumps(shortfalls, ensure_ascii=False)
+                )
+
+            document_index = DocumentIndex(document_database_path)
+            try:
+                top_bridge = document_index.top_bridge_tokens(
+                    config.vocab_alignment.bridge_top_token_count
+                )
+                refill_report = refill_documents(
+                    document_index,
+                    config,
+                    top_bridge,
+                    shortfalls,
+                    chinese_source_tokens=index.chinese_source_tokens(),
+                )
+                if refill_report["added_documents"] == 0:
+                    raise RuntimeError(
+                        "no unused normalized candidates remain for shortfalls: "
+                        + json.dumps(shortfalls, ensure_ascii=False)
+                    )
+                index.drop_sampling_indexes()
+                refill_report["materialization"] = (
+                    _materialize_preselected_candidates(
+                        config,
+                        index,
+                        document_index,
+                        workers=worker_count,
+                        exclusion_hashes=exclusion_hashes,
+                    )
+                )
+                index.create_sampling_indexes()
+                refill_reports.append(refill_report)
+            finally:
+                document_index.close()
+        else:
+            raise RuntimeError("candidate refill loop did not converge")
+
         overlap = parent_split_overlap(index.connection)
         selected_inventory = selection_inventory(index.connection, "train")
         writer, stats = _emit_final(index, config)
+        records, tokens = index.totals()
+        index_report.update(
+            {
+                "records": records,
+                "candidate_records": records,
+                "tokens": tokens,
+                "feature_inventory": index.feature_inventory(),
+                "exact_filter": index.exact_filter_report(),
+                "refill_rounds": refill_reports,
+            }
+        )
     finally:
         index.close()
 
@@ -1059,6 +1344,7 @@ def sample_phase1(
         "passed": passed,
         "target_tokens": sum(config.quotas.values()),
         "actual_tokens": writer.total_tokens,
+        "candidate_token_budget": candidate_token_budget,
         "tolerance": config.tolerance,
         "category_checks": category_checks,
         "specialized_checks": specialized_checks,
@@ -1075,6 +1361,11 @@ def sample_phase1(
             for name, coverage in alignment_coverage.items()
         },
         "candidate_index": index_report,
+        "exact_decontamination": {
+            "files": [str(path) for path in exclusion_paths],
+            "input_records": exclusion_records,
+            "unique_hashes": len(exclusion_hashes),
+        },
         "selected_inventory": selected_inventory,
         "tokens_by_source": dict(sorted(stats["sources"].items())),
         "tokens_by_license": dict(sorted(stats["licenses"].items())),

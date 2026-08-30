@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import re
 import tempfile
 import threading
 import time
@@ -49,15 +49,52 @@ class CandidateIndexTest(unittest.TestCase):
             finally:
                 index.close()
 
+    def test_exact_candidate_filter_and_decontamination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            index = CandidateIndex(Path(temporary_dir) / "candidates.sqlite")
+            shared = "normalized duplicate"
+            contaminated = "evaluation text"
+            exclusion_hash = hashlib.sha256(contaminated.encode("utf-8")).hexdigest()
+            rows = [
+                ({"doc_id": "a", "text": shared}, "chinese_natural"),
+                ({"doc_id": "b", "text": shared}, "chinese_natural"),
+                ({"doc_id": "c", "text": contaminated}, "chinese_natural"),
+            ]
+            try:
+                accepted, rejected = index.filter_exact_parents(
+                    rows,
+                    {exclusion_hash},
+                )
+                resumed, resumed_rejected = index.filter_exact_parents(
+                    [rows[0]],
+                    {exclusion_hash},
+                )
+
+                self.assertEqual([row["doc_id"] for row, _intent in accepted], ["a"])
+                self.assertEqual(rejected, ["b", "c"])
+                self.assertEqual([row["doc_id"] for row, _intent in resumed], ["a"])
+                self.assertEqual(resumed_rejected, [])
+                self.assertEqual(
+                    index.exact_filter_report(),
+                    {
+                        "processed_parent_records": 3,
+                        "accepted_parent_records": 1,
+                        "removed_parent_records": 2,
+                        "removed_by_reason": {
+                            "contamination_exact": 1,
+                            "exact": 1,
+                        },
+                    },
+                )
+            finally:
+                index.close()
 
 class BatchTokenCounterTest(unittest.TestCase):
-    def test_unsupported_hanzi_and_tokenization_errors_are_skipped(self) -> None:
+    def test_unlisted_hanzi_falls_back_and_tokenization_errors_are_skipped(self) -> None:
         supported = "\u4e2d"
-        unsupported = "\U0002543b"
+        unlisted_cjk = "\U0002543b"
         counter = BatchTokenCounter.__new__(BatchTokenCounter)
         counter.normalize_text = lambda text: text
-        counter.supported_hanzi = {supported}
-        counter.hanzi_pattern = re.compile(f"[{supported}{unsupported}]")
 
         def encode_lengths(texts: list[str]) -> list[int]:
             if "bad" in texts:
@@ -68,15 +105,21 @@ class BatchTokenCounterTest(unittest.TestCase):
         result = counter.count_rows(
             [
                 {"doc_id": "valid", "category": "pool", "source": "source", "text": supported + "A"},
-                {"doc_id": "unsupported", "category": "pool", "source": "source", "text": unsupported},
+                {"doc_id": "fallback", "category": "pool", "source": "source", "text": unlisted_cjk},
                 {"doc_id": "bad", "category": "pool", "source": "source", "text": "bad"},
                 {"doc_id": "empty", "category": "pool", "source": "source", "text": ""},
             ]
         )
 
-        self.assertEqual(result.rows, [({"doc_id": "valid", "category": "pool", "source": "source", "text": supported + "A"}, 2)])
+        self.assertEqual(
+            result.rows,
+            [
+                ({"doc_id": "valid", "category": "pool", "source": "source", "text": supported + "A"}, 2),
+                ({"doc_id": "fallback", "category": "pool", "source": "source", "text": unlisted_cjk}, 1),
+            ],
+        )
         self.assertEqual(result.zero_token_records, 1)
-        self.assertEqual(result.skipped_by_reason["unsupported_hanzi"], 1)
+        self.assertNotIn("unsupported_hanzi", result.skipped_by_reason)
         self.assertEqual(result.skipped_by_reason["tokenization_error"], 1)
 
 class ConcurrentMaterializationTest(unittest.TestCase):

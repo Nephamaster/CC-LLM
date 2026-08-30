@@ -27,9 +27,10 @@ from scripts.data_factory.selection import (
 )
 
 
-PRESCAN_VERSION = "phase1_prescan_v1"
+PRESCAN_VERSION = "phase1_prescan_v2"
 BRIDGE_CONTEXT_BUFFER_FACTOR = 2.0
 BRIDGE_FILL_BUFFER_FACTOR = 2.0
+REFILL_BUFFER_FACTOR = 1.25
 _SCAN_WORKER: "LightweightScanner | None" = None
 _BRIDGE_WORKER: "TopBridgeScanner | None" = None
 
@@ -762,10 +763,10 @@ def build_document_index(
     resume: bool,
     workers: int,
 ) -> tuple[DocumentIndex, dict[str, Any]]:
-    paths = sorted(config.deduplicated_dir.glob("part-*.jsonl"))
+    paths = sorted(config.normalized_dir.glob("*.jsonl"))
     if not paths:
         raise FileNotFoundError(
-            f"no deduplicated JSONL files found under {config.deduplicated_dir}"
+            f"no normalized JSONL files found under {config.normalized_dir}"
         )
     cache_dir = config.final_dir / ".prescan"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -881,7 +882,7 @@ def _load_new_hanzi(config: PipelineConfig) -> set[str]:
     }
 
 
-def _preselection_targets(config: PipelineConfig) -> dict[str, int]:
+def _required_candidate_targets(config: PipelineConfig) -> dict[str, int]:
     natural = scale_quotas(
         NATURAL_VALIDATION_WEIGHTS,
         config.validation.natural_tokens,
@@ -890,7 +891,7 @@ def _preselection_targets(config: PipelineConfig) -> dict[str, int]:
         {name: 1 for name in ALIGNMENT_VALIDATION_GROUPS},
         config.validation.alignment_tokens,
     )
-    base_targets = {
+    return {
         "new_hanzi_coverage": (
             config.quotas["new_hanzi_coverage"] + alignment["new_hanzi_coverage"]
         ),
@@ -916,10 +917,17 @@ def _preselection_targets(config: PipelineConfig) -> dict[str, int]:
             config.specialized_quotas["structured"] + natural["structured"]
         ),
     }
-    return {
-        name: math.ceil(tokens * config.preselection_buffer_ratio)
-        for name, tokens in base_targets.items()
-    }
+
+
+def _preselection_targets(
+    config: PipelineConfig,
+    candidate_tokens: int,
+) -> dict[str, int]:
+    required = _required_candidate_targets(config)
+    minimum = sum(required.values())
+    if candidate_tokens < minimum:
+        raise ValueError(f"candidate token budget must be at least {minimum:,}")
+    return scale_quotas(required, candidate_tokens)
 
 
 def _preselection_fingerprint(
@@ -1190,8 +1198,9 @@ def preselect_documents(
     index: DocumentIndex,
     config: PipelineConfig,
     top_bridge: list[dict[str, int]],
+    candidate_tokens: int,
 ) -> dict[str, Any]:
-    targets = _preselection_targets(config)
+    targets = _preselection_targets(config, candidate_tokens)
     fingerprint = _preselection_fingerprint(config, targets)
     stored_fingerprint = index.get_metadata("preselection_fingerprint")
     stored_report = index.get_metadata("preselection_report")
@@ -1277,7 +1286,7 @@ def preselect_documents(
     }
 
     report = {
-        "buffer_ratio": config.preselection_buffer_ratio,
+        "candidate_token_budget": candidate_tokens,
         "targets": targets,
         "selection": details,
         "target_reached": not shortfalls,
@@ -1293,6 +1302,117 @@ def preselect_documents(
     index.set_metadata("preselection_fingerprint", fingerprint)
     index.set_metadata("preselection_report", report)
     return report
+
+
+def refill_documents(
+    index: DocumentIndex,
+    config: PipelineConfig,
+    top_bridge: list[dict[str, int]],
+    shortfalls: dict[str, int],
+    *,
+    chinese_source_tokens: Counter[str] | None = None,
+) -> dict[str, Any]:
+    targets = {
+        intent: math.ceil(tokens * REFILL_BUFFER_FACTOR)
+        for intent, tokens in shortfalls.items()
+        if tokens > 0
+    }
+    selected_before = index.selected_count()
+    chinese_intents = (
+        "new_hanzi_coverage",
+        "multi_hanzi_bridge",
+        "mixed_zh_en",
+        "chinese_natural",
+    )
+    if chinese_source_tokens is None:
+        chinese_source_tokens = Counter(
+            {
+                str(source): int(tokens)
+                for source, tokens in index.connection.execute(
+                    f"""
+                    SELECT source, SUM(estimated_tokens)
+                    FROM documents
+                    WHERE selected_intent IN ({','.join('?' for _ in chinese_intents)})
+                    GROUP BY source
+                    """,
+                    chinese_intents,
+                )
+            }
+        )
+    else:
+        chinese_source_tokens = Counter(chinese_source_tokens)
+    selected_chinese_tokens = sum(chinese_source_tokens.values())
+    requested_chinese_tokens = sum(
+        targets.get(intent, 0) for intent in chinese_intents
+    )
+    chinese_source_cap = math.ceil(
+        (selected_chinese_tokens + requested_chinese_tokens) * 0.40
+    )
+
+    details: dict[str, Any] = {}
+    if "new_hanzi_coverage" in targets:
+        details["new_hanzi_coverage"] = _select_new_hanzi_documents(
+            index,
+            config,
+            targets["new_hanzi_coverage"],
+            chinese_source_tokens,
+            chinese_source_cap,
+        )
+    if "multi_hanzi_bridge" in targets:
+        details["multi_hanzi_bridge"] = _select_bridge_documents(
+            index,
+            config,
+            targets["multi_hanzi_bridge"],
+            top_bridge,
+            chinese_source_tokens,
+            chinese_source_cap,
+        )
+    if "mixed_zh_en" in targets:
+        details["mixed_zh_en"] = _select_simple_documents(
+            index,
+            intent="mixed_zh_en",
+            target_tokens=targets["mixed_zh_en"],
+            pool="mixed_zh_en",
+            source_tokens=chinese_source_tokens,
+            source_token_cap=chinese_source_cap,
+        )
+    for group in ("code", "math_science", "structured"):
+        intent = f"specialized:{group}"
+        if intent in targets:
+            details[intent] = _select_simple_documents(
+                index,
+                intent=intent,
+                target_tokens=targets[intent],
+                pool="specialized",
+                quota_group=group,
+            )
+    if "chinese_natural" in targets:
+        details["chinese_natural"] = _select_simple_documents(
+            index,
+            intent="chinese_natural",
+            target_tokens=targets["chinese_natural"],
+            pool="chinese_natural",
+            source_tokens=chinese_source_tokens,
+            source_token_cap=chinese_source_cap,
+        )
+    if "non_chinese" in targets:
+        details["non_chinese"] = _select_simple_documents(
+            index,
+            intent="non_chinese",
+            target_tokens=targets["non_chinese"],
+            pool="non_chinese",
+        )
+
+    selected_after = index.selected_count()
+    return {
+        "requested_missing_tokens": shortfalls,
+        "target_estimated_tokens": targets,
+        "selection": details,
+        "selected_documents_before": selected_before,
+        "selected_documents_after": selected_after,
+        "added_documents": selected_after - selected_before,
+    }
+
 
 def iter_selected_document_batches(
     index: DocumentIndex,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -98,9 +100,60 @@ class PrepareAndDedupTests(unittest.TestCase):
             changed_output = config.normalized_dir / "cci3_hq-t00001-00000.jsonl"
             self.assertEqual(len(list(iter_jsonl([changed_output]))), 3)
 
+    def test_prepare_commits_successful_tasks_when_another_task_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source_root = root / "cci"
+            source_root.mkdir()
+            good_input = source_root / "part_000000.jsonl"
+            bad_input = source_root / "part_000001.jsonl"
+            good_input.write_text(
+                json.dumps(
+                    {"id": "good", "text": "可以正常完成处理的中文文本。", "score": 1.0},
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bad_input.write_bytes(b'{"id":"bad","text":"\xbb"}\n')
+            config = self._config(
+                root,
+                {
+                    "cci3_hq": {
+                        "enabled": True,
+                        "paths": [str(source_root / "part_*.jsonl")],
+                        "license": "Apache-2.0",
+                    },
+                    "external": [],
+                },
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "successful tasks were committed"):
+                prepare_sources(config, overwrite=True, workers=2)
+
+            good_output = config.normalized_dir / "cci3_hq-t00000-00000.jsonl"
+            self.assertTrue(good_output.is_file())
+            good_mtime = good_output.stat().st_mtime_ns
+            state = json.loads(
+                (config.normalized_dir / ".prepare" / "state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(set(state["tasks"]), {"cci3_hq-t00000"})
+            self.assertEqual(len(state["failed_tasks"]), 1)
+
+            bad_input.write_text(
+                json.dumps(
+                    {"id": "bad", "text": "重新下载后可以正常处理的中文文本。", "score": 1.0},
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report = prepare_sources(config, resume=True, workers=2)
+            self.assertEqual(report["sources"]["cci3_hq"]["kept"], 2)
+            self.assertEqual(good_output.stat().st_mtime_ns, good_mtime)
     def test_dedup_is_global_across_shards_and_resumes(self) -> None:
         if importlib.util.find_spec("numpy") is None:
-            self.skipTest("numpy is not installed in the local interpreter")
+            sys.modules.setdefault("numpy", types.ModuleType("numpy"))
         from scripts.data_factory.dedup import deduplicate
 
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -108,6 +161,13 @@ class PrepareAndDedupTests(unittest.TestCase):
             config = self._config(root, {"external": []})
             config.normalized_dir.mkdir(parents=True)
             shared = "跨分片重复文本。" * 8
+            contaminated = "评测集精确污染文本。" * 8
+            evaluation_path = root / "evaluation.jsonl"
+            evaluation_path.write_text(
+                json.dumps({"text": contaminated, "source": "evaluation"}, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            config.dedup["decontamination_paths"] = [str(evaluation_path)]
             shards = [
                 [
                     {"doc_id": "a", "text": shared, "source": "s1", "category": "chinese_natural"},
@@ -116,6 +176,7 @@ class PrepareAndDedupTests(unittest.TestCase):
                 [
                     {"doc_id": "c", "text": shared, "source": "s2", "category": "chinese_natural"},
                     {"doc_id": "d", "text": "唯一文本乙。" * 8, "source": "s2", "category": "chinese_natural"},
+                    {"doc_id": "e", "text": contaminated, "source": "s2", "category": "chinese_natural"},
                 ],
             ]
             for shard_index, rows in enumerate(shards):
@@ -124,16 +185,22 @@ class PrepareAndDedupTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-            report = deduplicate(config, overwrite=True, workers=2)
-            self.assertEqual(report["input_records"], 4)
+            report = deduplicate(config, overwrite=True, workers=1)
+            self.assertEqual(report["input_records"], 5)
             self.assertEqual(report["kept_records"], 3)
-            self.assertEqual(report["removed_by_reason"], {"exact": 1})
+            self.assertEqual(
+                report["removed_by_reason"],
+                {"contamination_exact": 1, "exact": 1},
+            )
             kept = list(iter_jsonl(sorted(config.deduplicated_dir.glob("part-*.jsonl"))))
             self.assertEqual([row["doc_id"] for row in kept], ["a", "b", "d"])
 
             resumed = deduplicate(config, resume=True, workers=1)
             self.assertEqual(resumed["kept_records"], 3)
-            self.assertEqual(resumed["removed_by_reason"], {"exact": 1})
+            self.assertEqual(
+                resumed["removed_by_reason"],
+                {"contamination_exact": 1, "exact": 1},
+            )
 
 
 if __name__ == "__main__":

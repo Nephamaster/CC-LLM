@@ -2,16 +2,65 @@
 
 Phase 1 语义对齐数据构建工具。默认配置为 `scripts/data_factory/phase1_config.json`，所有命令均在项目根目录执行。
 
-## 快速使用
+
+## 推荐：Fast Phase 1 流水线
+
+对于 1B token 语义对齐数据，推荐使用新的 `cache -> calibrate -> fast_sample` 管线。它避免旧版 `document_index.sqlite/candidate_index.sqlite` 的逐文档索引，并保证全量语料扫描阶段不调用 tokenizer。
 
 ```bash
-# 完整执行：清洗 -> 去重 -> 候选索引 -> 验证预留 -> 配额采样与分片
+# 一次执行（首次会构建可复用 Parquet cache）
+bash scripts/data_factory/run_phase1_fast.sh
+
+# 或分阶段
+python -m scripts.data_factory.build_phase1 cache --workers 8
+python -m scripts.data_factory.build_phase1 calibrate --workers 8
+python -m scripts.data_factory.build_phase1 fast_sample --workers 8
+```
+
+数据路径：
+
+```text
+data/semantic_alignment/
+├── cache_parquet/        # 原始数据只清洗/解压一次，可被 Phase1/Phase2 重用
+├── fast_candidates/      # 约 1.2x token budget；尚未精确 tokenize
+├── fast_tokenized/       # candidate-only，一次 exact tokenization 后的 input_ids
+├── fast_final/
+│   ├── train/            # 与旧流程兼容的 text JSONL
+│   ├── validation/
+│   └── packed/           # 推荐训练直接使用的 pre-tokenized Parquet
+└── reports/
+    ├── phase1_fast_cache_report.json
+    ├── phase1_token_calibration.json
+    ├── phase1_fast_prescan_report.json
+    ├── phase1_fast_tokenization_report.json
+    └── phase1_fast_final_report.json
+```
+
+Fast pipeline 的执行顺序：
+
+1. `cache`：WanJuan `.tar.gz`、CCI JSONL、FineWeb Parquet 等统一清洗并缓存成中等大小 Parquet shard；之后不再反复解压/JSON parse。
+2. `calibrate`：每个 source 仅确定性抽样约 50K 文档，使用底层 Rust `tokenizers` 做 batch tokenize，拟合 `hanzi/latin/digit/other -> token_count` estimator。
+3. `fast_sample` 第一阶段：全量 cache 只做 cheap classifier、Aho-Corasick bridge、新汉字统计和 estimated-token sampling；按 source 配额过采样 20%，feature pool 过采样 50%。
+4. candidate pool 先做 exact hash dedup 和 exact benchmark decontamination。
+5. 只对 candidate pool 执行一次 `encode_batch()`；`input_ids` 写入 Parquet。
+6. validation、1B quota、rare-Hanzi/bridge coverage 和最终 packing 全部基于已经保存的 token ids，不再次 tokenize。
+
+`phase1_config.json` 的 `fast_pipeline` 控制缓存分片、校准样本数、oversampling、Rayon 线程数和 packing 长度。第一次 `cache` 成本较高，但 Phase1 重建、配额消融以及后续 Phase2 都可以直接复用。
+
+旧的 `prepare/sample` SQLite 管线暂时保留用于结果对照和回退，不建议再作为 1B 主构建路径。
+
+## 旧版流水线：快速使用
+
+```bash
+# 完整执行：清洗 -> 1.1B 候选预选 -> 精确过滤 -> 缺额补采 -> 分片
 bash scripts/data_factory/run_phase1.sh all
 
 # 分阶段执行
 bash scripts/data_factory/run_phase1.sh prepare
+bash scripts/data_factory/run_phase1.sh sample --candidate-tokens 1100000000
+
+# 可选：旧实验所需的全量精确去重，不属于默认 all 流程
 bash scripts/data_factory/run_phase1.sh dedup
-bash scripts/data_factory/run_phase1.sh sample
 # 仅从已有选择重新导出两套验证集
 bash scripts/data_factory/run_phase1.sh validation --overwrite
 ```
@@ -31,15 +80,16 @@ Phase 1 主执行门面。
 ```bash
 python -m scripts.data_factory.build_phase1 ACTION \
   --config scripts/data_factory/phase1_config.json \
-  [--overwrite | --resume] [--workers N]
+  [--overwrite | --resume] [--workers N] [--candidate-tokens N]
 ```
 
-- `ACTION`：`prepare`、`dedup`、`sample`、`validation` 或 `all`。
+- `ACTION`：旧版为 `prepare`、`dedup`、`sample`、`validation`、`all`；Fast pipeline 为 `cache`、`calibrate`、`fast_sample`、`fast_all`。
 - `--config`：配置文件路径，默认 `scripts/data_factory/phase1_config.json`。
 - `--overwrite`：删除对应阶段的已有产物后重新构建。
 - `--resume`：用于 `prepare`、`dedup`、`sample`，从各阶段已提交的文件或分片继续。
-- `--workers N`：覆盖对应阶段的进程数；默认分别读取 `prepare_workers`、`dedup_workers`、`sample_workers`。
-- `--source NAME`：仅用于 `prepare`，只处理指定来源；可重复传入。与 `--overwrite` 合用时只覆盖该来源的标准化分片。
+- `--workers N`：覆盖对应阶段的进程数；默认分别读取 `prepare_workers`、`dedup_workers`、sample_workers。
+- `--candidate-tokens N`：仅用于 `sample`/`all`，从 `normalized` 预选的估算 token 预算，默认 `1100000000`。
+- `--source NAME`：用于 `prepare` 或 `cache`，只处理指定来源；可重复传入。Fast cache 支持分来源逐步构建并保留其他已完成来源。
 
 仅处理单个来源并保留其他已生成数据：
 
@@ -126,7 +176,7 @@ python -m scripts.data_factory.generate_supplemental chat \
 
 # 为未覆盖汉字生成补充样本
 python -m scripts.data_factory.generate_supplemental hanzi \
-  --observed 'data/semantic_alignment/deduplicated/*.jsonl' \
+  --observed 'data/semantic_alignment/normalized/*.jsonl' \
   --output resources/raw/phase1/collected/hanzi.jsonl \
   --license CC0-1.0 \
   --revision 2026-07-15
@@ -144,14 +194,18 @@ python -m scripts.data_factory.generate_supplemental hanzi \
 | `text.py` | NFC 规范化、PII/密钥检测、混排判定、格式校验及 shingle 生成。 |
 | `windowing.py` | 按句子和自然段构造 token 窗口，保护代码围栏、展示公式和 Markdown 表格。 |
 | `candidate_features.py` | 分类基础候选池，并抽取被裁多字 token 与新增汉字命中窗口。 |
-| `dedup.py` | SQLite 精确去重、MinHash 近似去重、评测去污染及 registry 导出。 |
+| `dedup.py` | SQLite 精确哈希去重、精确评测去污染、可选 MinHash 近似去重及 registry 导出。 |
 | `prescan.py` | 全量轻量扫描、全局桥接词统计、来源平衡预选和分片级恢复。 |
-| `sample.py` | 构建候选索引，先预留验证父文档，再按 1B 配额采样、打乱和分片。 |
+| `sample.py` | 从 `normalized` 预选候选，执行候选级精确去重/去污染、缺额补采、验证预留和 1B 分片。 |
 | `selection.py` | 执行父文档互斥分组、新增汉字覆盖及被裁多字 token 桥接采样。 |
 | `io_utils.py` | JSON/JSONL、路径展开、哈希和分片写入工具。 |
+| `source_cache.py` | 将不同原始来源一次性标准化为可复用 Parquet cache，按原始文件并行并支持 artifact resume。 |
+| `token_calibration.py` | 每来源小样本 exact tokenization，拟合 token estimator，避免全量精确计数。 |
+| `fast_common.py` | Fast pipeline 的 deterministic sampling、Parquet writer 和 token estimator。 |
+| `fast_sample.py` | Cheap prescan、source-aware oversampling、candidate-only exact tokenization、quota finalize 与 token-level packing。 |
 | `phase1_config.json` | 默认数据路径、清洗阈值、去重参数和来源配置。 |
 
-默认产物位于 `data/semantic_alignment/` 下的 `raw_manifest/`、`normalized/`、`deduplicated/`、`final/` 和 `reports/`。
+默认产物位于 `data/semantic_alignment/` 下的 `raw_manifest/`、`normalized/`、`final/` 和 `reports/`；`deduplicated/` 仅在显式运行旧式全量 `dedup` 时生成。
 
 ## 来源发现
 
@@ -347,11 +401,11 @@ resources/raw/phase1/collected/
 
 无需合并这些 JSONL，现有配置会读取该目录下所有文件。若数量不足，使用新的搜索词重复发现流程，但每批使用不同输出文件名，避免覆盖已有结果。
 
-## Prepare 与去重性能
+## Prepare 与可选全量去重性能
 
-`prepare` 按原始文件拆分任务并行完成清洗。每个任务先写入 `normalized/.prepare/staging/`，完成后原子提交；状态保存在 `normalized/.prepare/state*.json`。`dedup` 在进程池中并行计算 SHA-256 和 MinHash，主进程仍按固定输入顺序更新全局 SQLite LSH，因此保留跨分片去重和确定性。每完成一个标准化分片即更新 `deduplicated/dedup_state.json`。
+`prepare` 按原始文件拆分任务并行完成清洗。每个任务先写入 `normalized/.prepare/staging/`，完成后原子提交；状态保存在 `normalized/.prepare/state*.json`。单个任务失败不会阻止其他成功任务提交，失败清单写入状态的 `failed_tasks`，命令最终仍以非零状态退出。显式 `dedup` 仅用于旧实验的全量精确去重，不是当前 `sample` 的依赖；MinHash/LSH 默认关闭。
 
-首次使用新实现重建：
+如需复现旧式全量去重：
 
 ```bash
 bash scripts/data_factory/run_phase1.sh prepare --overwrite --workers 16
@@ -368,7 +422,9 @@ bash scripts/data_factory/run_phase1.sh dedup --resume --workers 16
 配置项：
 
 - `prepare_workers`、`dedup_workers`：默认进程数，均为 `8`。
-- `dedup.batch_size`、`dedup.batch_chars`：单个签名计算批次的记录数和字符数上限。
+- `dedup.near_duplicate_enabled`：是否执行 MinHash 近似去重；当前为 `false`。
+- `dedup.batch_size`、`dedup.batch_chars`：单个哈希计算批次上限，精确模式默认为 `2048` 条、`4000000` 字符。
+- `dedup.commit_interval`：SQLite 提交间隔，精确模式默认为 `20000` 条。
 - `dedup.sqlite_cache_mb`：全局 SQLite 索引缓存上限。
 - `dedup.export_registry_parquet`：完成后是否导出跨阶段 registry，默认开启。
 
@@ -376,29 +432,37 @@ bash scripts/data_factory/run_phase1.sh dedup --resume --workers 16
 
 ## Sampling performance and resume
 
-`sample` now runs three stages:
+`sample` 依次执行：
 
-1. Scan every deduplicated shard without tokenization, recording compact byte offsets, estimated window tokens, new-Hanzi hits, and global removed-token frequencies in `document_index.sqlite`.
-2. Rescan only for the global Top-5000 bridge terms and preselect a buffered, source-balanced candidate set.
-3. Run the Fast Tokenizer and exact windowing only on preselected documents, storing exact candidates in `candidate_index.sqlite` before validation reservation and quota selection.
+1. 轻量扫描全部 `normalized` 分片，只记录偏移、估算 token、类别和对齐特征。
+2. 按训练/验证配额，从 `normalized` 预选 `candidate_tokens` 候选，默认 1.1B 估算 token。
+3. 仅对候选执行 SHA-256 精确去重和评测集精确去污染，再运行 Fast Tokenizer 和窗口构建。
+4. 按实际 token 选择训练集与验证集；若配额不足，从未选文档中按缺额乘 1.25 自动补采，最多 8 轮。
 
-Tune these fields in `phase1_config.json`:
+主要配置：
 
-- `sample_batch_size`: maximum records per exact-tokenizer batch; default `512`.
-- `sample_batch_chars`: maximum characters per exact-tokenizer batch; default `1000000`.
-- `sample_workers`: prescan processes and concurrent exact-tokenizer batches; default `8`.
-- `preselection_buffer_ratio`: estimated-token safety margin before exact tokenization; default `1.25`.
+- `candidate_tokens`：初始候选预算，默认 `1100000000`，可由 `--candidate-tokens` 覆盖。
+- `sample_batch_size`：精确 tokenizer 单批最大记录数，默认 `512`。
+- `sample_batch_chars`：精确 tokenizer 单批最大字符数，默认 `1000000`。
+- `sample_workers`：预扫描进程和 tokenizer 并发数，默认 `8`。
+- `preselection_buffer_ratio`：稀有汉字和桥接上下文的覆盖安全系数，默认 `1.25`。
 
-Start with `--workers 8` or `--workers 16`. More workers increase Aho-Corasick copies and in-flight tokenizer memory, so stop increasing the value after CPU, memory, or storage is saturated.
+首次使用新流程必须重建 sample 状态：
 
-Resume an interrupted run with both SQLite indexes intact:
+```bash
+bash scripts/data_factory/run_phase1.sh sample \
+  --overwrite \
+  --workers 16 \
+  --candidate-tokens 1100000000
+```
+
+中断后继续：
 
 ```bash
 bash scripts/data_factory/run_phase1.sh sample --resume --workers 16
 ```
 
-The first run after this pipeline upgrade must use `sample --overwrite` because the old full-tokenization candidate index is incompatible. Afterwards, use `--resume`; `--overwrite` deletes both indexes and the per-shard prescan cache.
-
+`--resume` 会复用已完成的轻量扫描、已过滤父文档和已 tokenizer 化候选。规范化输入、窗口配置、词表对齐元数据、去污染文件或候选预算变化后，应使用 `sample --overwrite`。
 ## Phase 1 validation set
 
 `sample` 会在训练采样前按父文档预留验证数据，并同时输出：

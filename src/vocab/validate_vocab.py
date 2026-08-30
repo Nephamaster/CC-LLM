@@ -14,8 +14,8 @@ from transformers import AutoTokenizer
 
 from .bpe_state import BpeState, write_json
 from .hanzi_set import read_hanzi_file
-from .qwen3_char_tokenizer import Qwen3CharTokenizer, Qwen3CharTokenizerConfig
-from .unicode_ranges import count_hanzi
+from .qwen3_char_tokenizer import Qwen3CharTokenizer, Qwen3CharTokenizerConfig, normalize_text
+from .unicode_ranges import CJK_RANGES, count_hanzi
 
 
 @dataclass(frozen=True)
@@ -255,6 +255,26 @@ class VocabValidator:
         ]
         failures: list[dict] = []
 
+        # Find at least one CJK character intentionally outside the explicit
+        # single-Hanzi vocabulary.  It must remain reversible through the
+        # preserved byte/BPE fallback instead of raising or being discarded.
+        fallback_char = None
+        preferred_codepoints = (0x20122, 0x2543B, 0x20000, 0x30000, 0x31350)
+        for codepoint in preferred_codepoints:
+            char = chr(codepoint)
+            if char not in wrapper.char_token_ids and any(r.contains(char) for r in CJK_RANGES):
+                fallback_char = char
+                break
+        if fallback_char is None:
+            for range_ in CJK_RANGES:
+                for codepoint in range(range_.start, range_.end + 1):
+                    char = chr(codepoint)
+                    if char not in wrapper.char_token_ids:
+                        fallback_char = char
+                        break
+                if fallback_char is not None:
+                    break
+
         for start in range(0, len(hanzi_chars), 512):
             chars = hanzi_chars[start : start + 512]
             text = "".join(chars)
@@ -290,10 +310,47 @@ class VocabValidator:
             elif len(auto_ids) != len(encoded["feature_ids"]):
                 failures.append({"kind": "feature_length", "text": text})
 
+        fallback_check: dict[str, Any] = {"checked": False}
+        if fallback_char is not None:
+            fallback_text = f"中国{fallback_char}ABC"
+            auto_ids = tokenizer.encode(fallback_text, add_special_tokens=False)
+            encoded = wrapper.encode(fallback_text, add_special_tokens=False)
+            fallback_only = wrapper.encode(fallback_char, add_special_tokens=False)
+            decoded = wrapper.decode(
+                encoded["input_ids"],
+                clean_up_tokenization_spaces=False,
+            )
+            fallback_passed = (
+                auto_ids == encoded["input_ids"]
+                and decoded == normalize_text(fallback_text)
+                and bool(fallback_only["input_ids"])
+                and len(fallback_only["input_ids"]) == len(fallback_only["feature_ids"])
+                and all(not bool(feature.get("is_hanzi")) for feature in fallback_only["feature_ids"])
+            )
+            fallback_check = {
+                "checked": True,
+                "passed": fallback_passed,
+                "char": fallback_char,
+                "codepoint": f"U+{ord(fallback_char):04X}",
+                "token_count": len(fallback_only["input_ids"]),
+            }
+            if not fallback_passed:
+                failures.append(
+                    {
+                        "kind": "unlisted_cjk_fallback",
+                        "text": fallback_text,
+                        "decoded": decoded,
+                        "auto_ids": auto_ids,
+                        "wrapper_ids": encoded["input_ids"],
+                        "fallback_feature_ids": fallback_only["feature_ids"],
+                    }
+                )
+
         return {
             "passed": not failures,
             "hanzi_checked": len(hanzi_chars),
             "sample_count": len(samples),
+            "unlisted_cjk_fallback": fallback_check,
             "auto_tokenizer_class": type(tokenizer).__name__,
             "failures": failures[:20],
         }

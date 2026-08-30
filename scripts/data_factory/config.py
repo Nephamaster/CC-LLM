@@ -9,6 +9,7 @@ from typing import Any
 
 
 PHASE1_TOTAL_TOKENS = 1_000_000_000
+PHASE1_DEFAULT_CANDIDATE_TOKENS = 1_100_000_000
 PHASE1_QUOTAS = {
     "chinese_natural": 450_000_000,
     "multi_hanzi_bridge": 150_000_000,
@@ -79,6 +80,51 @@ class ValidationConfig:
             raise ValueError("validation token targets must be positive")
 
 
+
+
+@dataclass(frozen=True)
+class FastPipelineConfig:
+    cache_rows_per_shard: int
+    parquet_compression: str
+    calibration_docs_per_source: int
+    calibration_batch_size: int
+    candidate_rows_per_shard: int
+    tokenized_rows_per_shard: int
+    oversample_ratio: float
+    feature_oversample_ratio: float
+    source_cap_ratio: float
+    tokenizer_rayon_threads: int
+    exact_batch_size: int
+    exact_batch_chars: int
+    pack_sequence_length: int
+    pack_shard_tokens: int
+    keep_candidate_text: bool
+
+    def __post_init__(self) -> None:
+        positive = {
+            "cache_rows_per_shard": self.cache_rows_per_shard,
+            "calibration_docs_per_source": self.calibration_docs_per_source,
+            "calibration_batch_size": self.calibration_batch_size,
+            "candidate_rows_per_shard": self.candidate_rows_per_shard,
+            "tokenized_rows_per_shard": self.tokenized_rows_per_shard,
+            "tokenizer_rayon_threads": self.tokenizer_rayon_threads,
+            "exact_batch_size": self.exact_batch_size,
+            "exact_batch_chars": self.exact_batch_chars,
+            "pack_sequence_length": self.pack_sequence_length,
+            "pack_shard_tokens": self.pack_shard_tokens,
+        }
+        for name, value in positive.items():
+            if value <= 0:
+                raise ValueError(f"fast_pipeline.{name} must be positive")
+        if not 1 < self.oversample_ratio <= 2:
+            raise ValueError("fast_pipeline.oversample_ratio must be in (1, 2]")
+        if not self.oversample_ratio <= self.feature_oversample_ratio <= 3:
+            raise ValueError(
+                "fast_pipeline.feature_oversample_ratio must be >= oversample_ratio and <= 3"
+            )
+        if not 0 < self.source_cap_ratio <= 1:
+            raise ValueError("fast_pipeline.source_cap_ratio must be in (0, 1]")
+
 @dataclass(frozen=True)
 class PipelineConfig:
     path: Path
@@ -87,6 +133,7 @@ class PipelineConfig:
     tokenizer_path: Path
     seed: int
     tolerance: float
+    candidate_tokens: int
     normalized_shard_records: int
     deduplicated_shard_records: int
     final_shard_tokens: int
@@ -96,6 +143,7 @@ class PipelineConfig:
     prepare_workers: int
     dedup_workers: int
     preselection_buffer_ratio: float
+    fast_pipeline: FastPipelineConfig
     sources: dict[str, Any]
     quotas: dict[str, int]
     specialized_quotas: dict[str, int]
@@ -116,10 +164,28 @@ class PipelineConfig:
             raise ValueError("prepare_workers must be positive")
         if self.dedup_workers <= 0:
             raise ValueError("dedup_workers must be positive")
+        target_tokens = sum(self.quotas.values())
+
+        if target_tokens <= 0:
+            raise ValueError("Phase 1 quotas must sum to a positive token target")
+
+        required_tokens = (
+            target_tokens
+            + self.validation.natural_tokens
+            + self.validation.alignment_tokens
+        )
+
+        if self.candidate_tokens < required_tokens:
+            raise ValueError(
+                "candidate_tokens must be at least "
+                f"{required_tokens:,} "
+                f"(train={target_tokens:,}, "
+                f"validation={self.validation.natural_tokens + self.validation.alignment_tokens:,})"
+            )
+
         if not 1 < self.preselection_buffer_ratio <= 2:
             raise ValueError("preselection_buffer_ratio must be in (1, 2]")
-        if sum(self.quotas.values()) != PHASE1_TOTAL_TOKENS:
-            raise ValueError("Phase 1 quotas must sum to 1B tokens")
+
         if sum(self.specialized_quotas.values()) != self.quotas["specialized"]:
             raise ValueError("specialized_quotas must sum to the specialized quota")
 
@@ -142,6 +208,26 @@ class PipelineConfig:
     @property
     def reports_dir(self) -> Path:
         return self.phase_root / "reports"
+
+    @property
+    def fast_cache_dir(self) -> Path:
+        return self.phase_root / "cache_parquet"
+
+    @property
+    def fast_candidate_dir(self) -> Path:
+        return self.phase_root / "fast_candidates"
+
+    @property
+    def fast_tokenized_dir(self) -> Path:
+        return self.phase_root / "fast_tokenized"
+
+    @property
+    def fast_final_dir(self) -> Path:
+        return self.phase_root / "fast_final"
+
+    @property
+    def fast_calibration_path(self) -> Path:
+        return self.reports_dir / "phase1_token_calibration.json"
 
 
 def _resolve_path(value: str | Path, repo_root: Path) -> Path:
@@ -228,6 +314,26 @@ def load_config(path: Path) -> PipelineConfig:
         alignment_tokens=int(validation_raw.get("alignment_tokens", 1_000_000)),
     )
 
+
+    fast_raw = _object(raw.get("fast_pipeline"), "fast_pipeline")
+    fast_pipeline = FastPipelineConfig(
+        cache_rows_per_shard=int(fast_raw.get("cache_rows_per_shard", 250_000)),
+        parquet_compression=str(fast_raw.get("parquet_compression", "zstd")),
+        calibration_docs_per_source=int(fast_raw.get("calibration_docs_per_source", 50_000)),
+        calibration_batch_size=int(fast_raw.get("calibration_batch_size", 1024)),
+        candidate_rows_per_shard=int(fast_raw.get("candidate_rows_per_shard", 100_000)),
+        tokenized_rows_per_shard=int(fast_raw.get("tokenized_rows_per_shard", 25_000)),
+        oversample_ratio=float(fast_raw.get("oversample_ratio", 1.20)),
+        feature_oversample_ratio=float(fast_raw.get("feature_oversample_ratio", 1.50)),
+        source_cap_ratio=float(fast_raw.get("source_cap_ratio", 0.40)),
+        tokenizer_rayon_threads=int(fast_raw.get("tokenizer_rayon_threads", 8)),
+        exact_batch_size=int(fast_raw.get("exact_batch_size", 1024)),
+        exact_batch_chars=int(fast_raw.get("exact_batch_chars", 2_000_000)),
+        pack_sequence_length=int(fast_raw.get("pack_sequence_length", 1024)),
+        pack_shard_tokens=int(fast_raw.get("pack_shard_tokens", 100_000_000)),
+        keep_candidate_text=bool(fast_raw.get("keep_candidate_text", True)),
+    )
+
     tolerance = float(raw.get("tolerance", 0.01))
     if not 0 <= tolerance < 1:
         raise ValueError("tolerance must be in [0, 1)")
@@ -242,6 +348,9 @@ def load_config(path: Path) -> PipelineConfig:
         tokenizer_path=tokenizer_path,
         seed=int(raw.get("seed", 20260714)),
         tolerance=tolerance,
+        candidate_tokens=int(
+            raw.get("candidate_tokens", PHASE1_DEFAULT_CANDIDATE_TOKENS)
+        ),
         normalized_shard_records=int(raw.get("normalized_shard_records", 100_000)),
         deduplicated_shard_records=int(raw.get("deduplicated_shard_records", 100_000)),
         final_shard_tokens=int(raw.get("final_shard_tokens", 100_000_000)),
@@ -251,6 +360,7 @@ def load_config(path: Path) -> PipelineConfig:
         prepare_workers=int(raw.get("prepare_workers", 8)),
         dedup_workers=int(raw.get("dedup_workers", 8)),
         preselection_buffer_ratio=float(raw.get("preselection_buffer_ratio", 1.25)),
+        fast_pipeline=fast_pipeline,
         sources=sources,
         quotas=quotas,
         specialized_quotas=specialized_quotas,

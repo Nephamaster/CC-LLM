@@ -365,6 +365,7 @@ def prepare_sources(
     if worker_count <= 0:
         raise ValueError("workers must be positive")
     finished_count = len(tasks) - len(pending)
+    failures: list[tuple[PrepareTask, Exception]] = []
 
     def commit(task: PrepareTask, result: dict[str, Any]) -> None:
         nonlocal finished_count
@@ -380,9 +381,17 @@ def prepare_sources(
             flush=True,
         )
 
+    def record_failure(task: PrepareTask, error: Exception) -> None:
+        failures.append((task, error))
+        input_name = task.input_paths[0] if task.input_paths else task.source_name
+        print(f"prepare failed: {input_name}: {error}", flush=True)
+
     if worker_count == 1:
         for task in pending:
-            commit(task, _process_task(config, task, staging_root))
+            try:
+                commit(task, _process_task(config, task, staging_root))
+            except Exception as error:
+                record_failure(task, error)
     elif pending:
         with ProcessPoolExecutor(max_workers=min(worker_count, len(pending))) as executor:
             futures = {
@@ -391,8 +400,32 @@ def prepare_sources(
             }
             for future in as_completed(futures):
                 task = futures[future]
-                commit(task, future.result())
+                try:
+                    commit(task, future.result())
+                except Exception as error:
+                    record_failure(task, error)
 
+    if failures:
+        failed_paths = [
+            task.input_paths[0] if task.input_paths else task.source_name
+            for task, _ in failures
+        ]
+        state["failed_tasks"] = [
+            {"key": task.key, "input": path, "error": str(error)}
+            for (task, error), path in zip(failures, failed_paths, strict=True)
+        ]
+        state["updated_at"] = utc_now_iso()
+        write_json(state_path, state)
+        preview = ", ".join(failed_paths[:5])
+        if len(failed_paths) > 5:
+            preview += f", ... ({len(failed_paths)} total)"
+        raise RuntimeError(
+            "prepare tasks failed; successful tasks were committed and can be reused with "
+            f"--resume. Failed inputs: {preview}"
+        ) from failures[0][1]
+
+    state.pop("failed_tasks", None)
+    write_json(state_path, state)
     task_results = [completed[task.key] for task in tasks]
     rejection_path = config.reports_dir / f"prepare_rejections{suffix}.jsonl"
     with rejection_path.open("wt", encoding="utf-8", newline="\n") as rejection_file:
