@@ -10,10 +10,9 @@ Pipeline invariants:
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -34,12 +33,15 @@ from scripts.data_factory.fast_common import (
     json_dumps,
     json_loads,
     parquet_files,
-    short_content_hash,
     stable_fraction,
     stable_key,
     write_fast_report,
 )
 from scripts.data_factory.io_utils import JsonlShardWriter, TokenJsonlShardWriter, expand_paths, iter_jsonl
+from scripts.data_factory.sampling_plan import (
+    allocate_source_targets as _allocate_source_targets,
+    build_sampling_plan,
+)
 from scripts.data_factory.selection import ALIGNMENT_VALIDATION_GROUPS, NATURAL_VALIDATION_WEIGHTS, scale_quotas
 from scripts.data_factory.text import content_hash, normalize_text
 
@@ -87,11 +89,6 @@ PACKED_SCHEMA = pa.schema(
         ("token_count", pa.int32()),
     ]
 )
-
-CHINESE_INTENTS = frozenset(
-    {"chinese_natural", "mixed_zh_en", "multi_hanzi_bridge", "new_hanzi_coverage"}
-)
-FEATURE_INTENTS = frozenset({"multi_hanzi_bridge", "new_hanzi_coverage"})
 
 
 def _cache_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
@@ -191,57 +188,6 @@ def _estimate_row(estimator: TokenEstimator, row: dict[str, Any]) -> int:
     )
 
 
-def _allocate_source_targets(
-    available: dict[str, int],
-    target: int,
-    cap_ratio: float | None,
-) -> dict[str, int]:
-    """Proportionally allocate a target while optionally capping one source's share."""
-    positive = {source: max(0, int(tokens)) for source, tokens in available.items() if tokens > 0}
-    if not positive or target <= 0:
-        return {}
-    target = min(int(target), sum(positive.values()))
-    cap: int | None = None
-    if cap_ratio is not None and len(positive) >= math.ceil(1 / cap_ratio):
-        cap = max(1, int(target * cap_ratio))
-
-    remaining_sources = set(positive)
-    result = {source: 0 for source in positive}
-    remaining_target = target
-    while remaining_sources and remaining_target > 0:
-        available_total = sum(positive[source] for source in remaining_sources)
-        if available_total <= 0:
-            break
-        changed = False
-        for source in list(remaining_sources):
-            share = remaining_target * positive[source] / available_total
-            limit = min(positive[source], cap) if cap is not None else positive[source]
-            if share >= limit:
-                result[source] = int(limit)
-                remaining_target -= int(limit)
-                remaining_sources.remove(source)
-                changed = True
-        if not changed:
-            floors: dict[str, int] = {}
-            remainders: list[tuple[float, str]] = []
-            for source in remaining_sources:
-                raw = remaining_target * positive[source] / available_total
-                value = min(positive[source], int(math.floor(raw)))
-                floors[source] = value
-                remainders.append((raw - value, source))
-            for source, value in floors.items():
-                result[source] = value
-            missing = remaining_target - sum(floors.values())
-            for _fraction, source in sorted(remainders, reverse=True):
-                if missing <= 0:
-                    break
-                if result[source] < positive[source]:
-                    result[source] += 1
-                    missing -= 1
-            remaining_target = 0
-    return {source: tokens for source, tokens in result.items() if tokens > 0}
-
-
 def _load_exclusion_hashes(config: PipelineConfig) -> set[str]:
     hashes: set[str] = set()
     paths = expand_paths(config.dedup.get("decontamination_paths", []), config.repo_root)
@@ -252,7 +198,9 @@ def _load_exclusion_hashes(config: PipelineConfig) -> set[str]:
     return hashes
 
 
-def _iter_cache_rows(config: PipelineConfig) -> Iterator[dict[str, Any]]:
+def _iter_cache_rows(
+    files: Iterable[dict[str, Any]],
+) -> Iterator[tuple[str, dict[str, Any]]]:
     columns = [
         "doc_id",
         "text",
@@ -269,18 +217,20 @@ def _iter_cache_rows(config: PipelineConfig) -> Iterator[dict[str, Any]]:
         "digit_count",
         "meta_json",
     ]
-    for path in parquet_files(config.fast_cache_dir):
-        parquet = pq.ParquetFile(path)
+    for item in files:
+        source_group = str(item["source_group"])
+        parquet = pq.ParquetFile(Path(item["path"]))
         for batch in parquet.iter_batches(batch_size=4096, columns=columns):
-            yield from batch.to_pylist()
+            for row in batch.to_pylist():
+                yield source_group, row
 
-
-def prescan_and_sample_candidates(
+def materialize_candidates(
     config: PipelineConfig,
     estimator: TokenEstimator,
     *,
     overwrite: bool = False,
 ) -> dict[str, Any]:
+    """Materialize candidates in one pass over files selected by the run plan."""
     fast = config.fast_pipeline
     if overwrite:
         shutil.rmtree(config.fast_candidate_dir, ignore_errors=True)
@@ -289,66 +239,34 @@ def prescan_and_sample_candidates(
             f"candidate Parquet already exists under {config.fast_candidate_dir}; use --overwrite"
         )
 
+    targets = _candidate_targets(config)
+    plan = build_sampling_plan(config, targets, overwrite=overwrite)
+    if not plan.get("passed", False):
+        raise RuntimeError(f"sampling plan has token shortfalls: {plan.get('shortfalls', {})}")
+    selected_files = list(plan.get("selected_files", []))
+    if not selected_files:
+        raise RuntimeError("sampling plan selected no cache files")
+
+    calibration = json.loads(config.fast_calibration_path.read_text(encoding="utf-8"))
+    top_bridge_rows = calibration.get("top_bridge_tokens", [])
+    top_bridge = {
+        int(item["old_token_id"])
+        for item in top_bridge_rows
+        if isinstance(item, dict) and isinstance(item.get("old_token_id"), int)
+    }
+    rates = {
+        str(intent): {str(group): float(rate) for group, rate in values.items()}
+        for intent, values in plan.get("sampling_rates", {}).items()
+    }
+
     classifier = CandidateClassifier(config.quality)
     matcher = AlignmentFeatureMatcher(config)
-    available: dict[str, Counter[str]] = defaultdict(Counter)
-    bridge_occurrences: Counter[int] = Counter()
-    bridge_documents: Counter[int] = Counter()
-    new_hanzi_documents: Counter[str] = Counter()
-    scanned = 0
-    skipped: Counter[str] = Counter()
-
-    # Pass 1: only cheap statistics and alignment string matching.
-    for cached in _iter_cache_rows(config):
-        scanned += 1
-        record = _cache_row_to_record(cached)
-        text = str(cached["text"])
-        try:
-            pool, quota_group, _stats = classifier.classify(record, text)
-        except CandidateSkip as error:
-            skipped[error.reason] += 1
-            continue
-        estimated = _estimate_row(estimator, cached)
-        source = str(cached["source"])
-        base = _base_intent(pool, quota_group)
-        available[base][source] += estimated
-        alignment_eligible = pool in ALIGNMENT_POOLS or (
-            pool == "specialized" and quota_group == "math_science"
-        )
-        if alignment_eligible:
-            bridge_hits = matcher.bridge_hits(text)
-            new_hits = matcher.new_hanzi_hits(text)
-            if bridge_hits:
-                available["multi_hanzi_bridge"][source] += estimated
-                bridge_occurrences.update(bridge_hits)
-                bridge_documents.update(bridge_hits.keys())
-            if new_hits:
-                available["new_hanzi_coverage"][source] += estimated
-                new_hanzi_documents.update(new_hits.keys())
-        if scanned % 1_000_000 == 0:
-            print(f"fast prescan: {scanned:,} cached documents")
-
-    top_bridge = {
-        token_id for token_id, _count in bridge_occurrences.most_common(config.vocab_alignment.bridge_top_token_count)
-    }
-    targets = _candidate_targets(config)
-    source_targets: dict[str, dict[str, int]] = {}
-    rates: dict[str, dict[str, float]] = {}
-    for intent, target in targets.items():
-        cap = fast.source_cap_ratio if intent in CHINESE_INTENTS else None
-        allocation = _allocate_source_targets(dict(available.get(intent, {})), target, cap)
-        source_targets[intent] = allocation
-        buffer = fast.feature_oversample_ratio if intent in FEATURE_INTENTS else fast.oversample_ratio
-        rates[intent] = {
-            source: min(1.0, buffer * allocated / max(1, available[intent][source]))
-            for source, allocated in allocation.items()
-        }
-
     exclusions = _load_exclusion_hashes(config)
-    seen_hashes: set[bytes] = set()
+    seen_hashes: set[str] = set()
     candidate_tokens: Counter[str] = Counter()
     candidate_records: Counter[str] = Counter()
     removed: Counter[str] = Counter()
+    scanned = 0
 
     with PartitionedParquetWriter(
         config.fast_candidate_dir,
@@ -357,7 +275,8 @@ def prescan_and_sample_candidates(
         max_rows=fast.candidate_rows_per_shard,
         compression=fast.parquet_compression,
     ) as writer:
-        for cached in _iter_cache_rows(config):
+        for source_group, cached in _iter_cache_rows(selected_files):
+            scanned += 1
             record = _cache_row_to_record(cached)
             text = str(cached["text"])
             try:
@@ -365,6 +284,7 @@ def prescan_and_sample_candidates(
             except CandidateSkip as error:
                 removed[error.reason] += 1
                 continue
+
             source = str(cached["source"])
             base = _base_intent(pool, quota_group)
             estimated = _estimate_row(estimator, cached)
@@ -374,27 +294,41 @@ def prescan_and_sample_candidates(
             bridge_hits = matcher.bridge_hits(text) if alignment_eligible else Counter()
             if top_bridge:
                 bridge_hits = Counter(
-                    {token_id: count for token_id, count in bridge_hits.items() if token_id in top_bridge}
+                    {
+                        token_id: count
+                        for token_id, count in bridge_hits.items()
+                        if token_id in top_bridge
+                    }
                 )
             new_hits = matcher.new_hanzi_hits(text) if alignment_eligible else Counter()
 
             selected: list[str] = []
             if new_hits:
-                rate = rates.get("new_hanzi_coverage", {}).get(source, 0.0)
-                if stable_fraction(config.seed, "candidate:new_hanzi_coverage", str(cached["doc_id"])) < rate:
+                rate = rates.get("new_hanzi_coverage", {}).get(source_group, 0.0)
+                if stable_fraction(
+                    config.seed,
+                    "candidate:new_hanzi_coverage",
+                    str(cached["doc_id"]),
+                ) < rate:
                     selected.append("new_hanzi_coverage")
             if bridge_hits:
-                rate = rates.get("multi_hanzi_bridge", {}).get(source, 0.0)
-                if stable_fraction(config.seed, "candidate:multi_hanzi_bridge", str(cached["doc_id"])) < rate:
+                rate = rates.get("multi_hanzi_bridge", {}).get(source_group, 0.0)
+                if stable_fraction(
+                    config.seed,
+                    "candidate:multi_hanzi_bridge",
+                    str(cached["doc_id"]),
+                ) < rate:
                     selected.append("multi_hanzi_bridge")
-            base_rate = rates.get(base, {}).get(source, 0.0)
-            if stable_fraction(config.seed, f"candidate:{base}", str(cached["doc_id"])) < base_rate:
+            base_rate = rates.get(base, {}).get(source_group, 0.0)
+            if stable_fraction(
+                config.seed,
+                f"candidate:{base}",
+                str(cached["doc_id"]),
+            ) < base_rate:
                 selected.append(base)
             if not selected:
                 continue
 
-            # Alignment intents take priority so the same parent document never pays
-            # exact-tokenization cost twice or leaks across quota categories.
             if "new_hanzi_coverage" in selected:
                 intent = "new_hanzi_coverage"
             elif "multi_hanzi_bridge" in selected:
@@ -402,16 +336,17 @@ def prescan_and_sample_candidates(
             else:
                 intent = base
 
-            if content_hash(text) in exclusions:
+            digest = content_hash(text)
+            if digest in exclusions:
                 removed["contamination_exact"] += 1
                 continue
-            digest = short_content_hash(text)
             if digest in seen_hashes:
                 removed["exact_duplicate"] += 1
                 continue
             seen_hashes.add(digest)
 
             meta = {
+                "source_group": source_group,
                 "source_category": cached.get("category"),
                 "source_quota_group": cached.get("quota_group"),
                 "path": cached.get("path"),
@@ -430,39 +365,45 @@ def prescan_and_sample_candidates(
                     "license": str(cached.get("license") or "unknown"),
                     "license_status": str(cached.get("license_status") or "unknown"),
                     "estimated_tokens": estimated,
-                    "sample_key": stable_key(config.seed, f"candidate-output:{intent}", str(cached["doc_id"])),
-                    "bridge_hits": json_dumps({str(key): value for key, value in bridge_hits.items()}),
+                    "sample_key": stable_key(
+                        config.seed,
+                        f"candidate-output:{intent}",
+                        str(cached["doc_id"]),
+                    ),
+                    "bridge_hits": json_dumps(
+                        {str(key): value for key, value in bridge_hits.items()}
+                    ),
                     "new_hanzi_hits": json_dumps(dict(new_hits)),
                     "meta_json": json_dumps(meta),
                 },
             )
             candidate_tokens[intent] += estimated
             candidate_records[intent] += 1
+            if scanned % 1_000_000 == 0:
+                print(f"candidate materialization: {scanned:,} planned documents")
 
     return write_fast_report(
         config.reports_dir / "phase1_fast_prescan_report.json",
         {
-            "stage": "fast_prescan",
+            "stage": "candidate_materialization",
+            "plan_path": str(config.fast_plan_path),
+            "plan_fingerprint": plan.get("plan_fingerprint"),
+            "planned_files": len(selected_files),
+            "planned_bytes": int(plan.get("selected_bytes", 0)),
             "scanned_documents": scanned,
-            "skipped_by_reason": dict(sorted(skipped.items())),
             "candidate_removed_by_reason": dict(sorted(removed.items())),
-            "available_estimated_tokens": {
-                intent: dict(sorted(values.items())) for intent, values in sorted(available.items())
-            },
             "targets": targets,
-            "source_targets": source_targets,
+            "source_targets": plan.get("source_allocations", {}),
             "sampling_rates": rates,
-            "top_bridge_tokens": [
-                {"old_token_id": token_id, "occurrences": bridge_occurrences[token_id], "documents": bridge_documents[token_id]}
-                for token_id, _count in bridge_occurrences.most_common(config.vocab_alignment.bridge_top_token_count)
-            ],
-            "new_hanzi_document_frequency": dict(new_hanzi_documents.most_common()),
+            "top_bridge_tokens": top_bridge_rows,
+            "new_hanzi_document_frequency": calibration.get(
+                "new_hanzi_document_frequency", {}
+            ),
             "candidate_records": dict(sorted(candidate_records.items())),
             "candidate_estimated_tokens": dict(sorted(candidate_tokens.items())),
             "exact_dedup_keys": len(seen_hashes),
         },
     )
-
 
 def _load_tokenizer(config: PipelineConfig, rayon_threads: int):
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -484,7 +425,7 @@ def tokenize_candidates(
     fast = config.fast_pipeline
     candidate_files = parquet_files(config.fast_candidate_dir)
     if not candidate_files:
-        raise FileNotFoundError("no fast candidates; run fast prescan first")
+        raise FileNotFoundError("no fast candidates; run candidate materialization first")
     if overwrite:
         shutil.rmtree(config.fast_tokenized_dir, ignore_errors=True)
     elif parquet_files(config.fast_tokenized_dir):
@@ -1053,17 +994,18 @@ def build_fast_phase1(
 ) -> dict[str, Any]:
     calibration = json.loads(config.fast_calibration_path.read_text(encoding="utf-8"))
     estimator = TokenEstimator.from_report(calibration)
-    prescan = prescan_and_sample_candidates(config, estimator, overwrite=overwrite)
+    candidates = materialize_candidates(config, estimator, overwrite=overwrite)
     tokenization = tokenize_candidates(config, overwrite=overwrite, workers=workers)
     final = finalize_fast_phase1(config, overwrite=overwrite)
     return {
         "passed": bool(final.get("passed", False)),
         "target_tokens": sum(config.quotas.values()),
         "actual_tokens": int(final.get("train", {}).get("actual_tokens", 0)),
+        "candidate_report": str(config.reports_dir / "phase1_fast_prescan_report.json"),
         "prescan_report": str(config.reports_dir / "phase1_fast_prescan_report.json"),
         "tokenization_report": str(config.reports_dir / "phase1_fast_tokenization_report.json"),
         "final_report": str(config.reports_dir / "phase1_fast_final_report.json"),
-        "prescan": prescan,
+        "candidates": candidates,
         "tokenization": tokenization,
         "final": final,
     }

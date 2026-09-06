@@ -133,6 +133,8 @@
     "cache_rows_per_shard": 250000,
     "parquet_compression": "zstd",
     "calibration_docs_per_source": 50000,
+    "calibration_files_per_source": 32,
+    "calibration_scan_multiplier": 4,
     "calibration_batch_size": 1024,
     "candidate_rows_per_shard": 100000,
     "tokenized_rows_per_shard": 25000,

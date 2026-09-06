@@ -10,3 +10,4 @@ huggingface_hub
 PyYAML
 pyahocorasick
 tokenizers
+datatrove[io,processing]>=0.10,<0.11

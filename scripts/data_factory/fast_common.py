@@ -21,7 +21,7 @@ import pyarrow.parquet as pq
 from scripts.data_factory.io_utils import utc_now_iso
 
 
-FAST_PIPELINE_VERSION = "phase1_fast_v1"
+FAST_PIPELINE_VERSION = "phase_fast_v2"
 
 
 def stable_key(seed: int, namespace: str, doc_id: str) -> int:

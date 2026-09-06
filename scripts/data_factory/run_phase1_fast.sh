@@ -12,6 +12,9 @@ python -m scripts.data_factory.build_phase1 calibrate \
   --config "${CONFIG}" \
   --workers "${WORKERS}"
 
+python -m scripts.data_factory.build_phase1 plan \
+  --config "${CONFIG}"
+
 python -m scripts.data_factory.build_phase1 fast_sample \
   --config "${CONFIG}" \
   --workers "${WORKERS}"

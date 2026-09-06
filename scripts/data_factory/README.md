@@ -478,3 +478,31 @@ bash scripts/data_factory/run_phase1.sh validation --overwrite
 ```
 
 `sample --resume` reuses completed lightweight-scan shards and exact-tokenized documents. Changes to windowing, vocabulary-alignment metadata, priority-Hanzi resources, or preselection settings require `sample --overwrite`.
+## Plan-driven fast pipeline
+
+正式 Phase 1 为 1B token。推荐入口：
+
+```bash
+bash scripts/data_factory/run_phase1_fast.sh
+```
+
+该入口依次执行：
+
+```text
+cache -> calibrate -> plan -> fast_sample
+```
+
+- `cache`：将来源增量转换为可由 Phase 1/2 复用的 Parquet cache。
+- `calibrate`：每来源最多读取 `calibration_files_per_source` 个稳定分片，并将扫描量限制为 `calibration_docs_per_source * calibration_scan_multiplier`。
+- `plan`：根据校准产率、1B 类别配额、来源上限和 oversample ratio 选择 cache 文件，输出 `plans/phase1_fast_sampling_plan.json`。
+- `fast_sample`：只读取 plan 中的文件，单遍完成分类、桥接/新增汉字匹配、候选精确去重和去污染；随后候选只 tokenize 一次并按真实 token 配额选择、验证和 packing。
+
+可以单独检查 plan，不生成候选：
+
+```bash
+python -m scripts.data_factory.build_phase1 plan \
+  --config scripts/data_factory/phase1_config.json \
+  --overwrite
+```
+
+plan 中 `passed=false` 时不会启动昂贵候选处理；应先检查 `shortfalls` 和 calibration 的 `source_groups`。旧的 `prepare/dedup/sample` 入口保留用于已有实验复现，不再作为正式 1B 构建路径。

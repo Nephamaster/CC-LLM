@@ -87,6 +87,8 @@ class FastPipelineConfig:
     cache_rows_per_shard: int
     parquet_compression: str
     calibration_docs_per_source: int
+    calibration_files_per_source: int
+    calibration_scan_multiplier: int
     calibration_batch_size: int
     candidate_rows_per_shard: int
     tokenized_rows_per_shard: int
@@ -104,6 +106,8 @@ class FastPipelineConfig:
         positive = {
             "cache_rows_per_shard": self.cache_rows_per_shard,
             "calibration_docs_per_source": self.calibration_docs_per_source,
+            "calibration_files_per_source": self.calibration_files_per_source,
+            "calibration_scan_multiplier": self.calibration_scan_multiplier,
             "calibration_batch_size": self.calibration_batch_size,
             "candidate_rows_per_shard": self.candidate_rows_per_shard,
             "tokenized_rows_per_shard": self.tokenized_rows_per_shard,
@@ -214,6 +218,14 @@ class PipelineConfig:
         return self.phase_root / "cache_parquet"
 
     @property
+    def fast_plan_dir(self) -> Path:
+        return self.phase_root / "plans"
+
+    @property
+    def fast_plan_path(self) -> Path:
+        return self.fast_plan_dir / "phase1_fast_sampling_plan.json"
+
+    @property
     def fast_candidate_dir(self) -> Path:
         return self.phase_root / "fast_candidates"
 
@@ -320,6 +332,8 @@ def load_config(path: Path) -> PipelineConfig:
         cache_rows_per_shard=int(fast_raw.get("cache_rows_per_shard", 250_000)),
         parquet_compression=str(fast_raw.get("parquet_compression", "zstd")),
         calibration_docs_per_source=int(fast_raw.get("calibration_docs_per_source", 50_000)),
+        calibration_files_per_source=int(fast_raw.get("calibration_files_per_source", 32)),
+        calibration_scan_multiplier=int(fast_raw.get("calibration_scan_multiplier", 4)),
         calibration_batch_size=int(fast_raw.get("calibration_batch_size", 1024)),
         candidate_rows_per_shard=int(fast_raw.get("candidate_rows_per_shard", 100_000)),
         tokenized_rows_per_shard=int(fast_raw.get("tokenized_rows_per_shard", 25_000)),

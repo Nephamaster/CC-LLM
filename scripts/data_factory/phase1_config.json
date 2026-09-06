@@ -4,7 +4,7 @@
   "tokenizer_path": "models/Qwen3-1.7B-Base-Char",
   "seed": 20260714,
   "tolerance": 0.01,
-  "candidate_tokens": 11000000,
+  "candidate_tokens": 1100000000,
   "normalized_shard_records": 100000,
   "deduplicated_shard_records": 100000,
   "final_shard_tokens": 100000000,
@@ -13,17 +13,17 @@
   "sample_workers": 8,
   "preselection_buffer_ratio": 1.25,
   "quotas": {
-  "chinese_natural": 4500000,
-  "multi_hanzi_bridge": 1500000,
-  "new_hanzi_coverage": 500000,
-  "non_chinese": 1500000,
-  "mixed_zh_en": 1000000,
-  "specialized": 1000000
+  "chinese_natural": 450000000,
+  "multi_hanzi_bridge": 150000000,
+  "new_hanzi_coverage": 50000000,
+  "non_chinese": 150000000,
+  "mixed_zh_en": 100000000,
+  "specialized": 100000000
 },
   "specialized_quotas": {
-  "code": 400000,
-  "math_science": 400000,
-  "structured": 200000
+  "code": 40000000,
+  "math_science": 40000000,
+  "structured": 20000000
 },
   "vocab_alignment": {
     "removed_multi_hanzi_tokens_path": "models/Qwen3-1.7B-Base-Char/removed_multi_hanzi_tokens.json",
@@ -44,8 +44,8 @@
     "max_tokens": 1024
   },
   "validation": {
-  "natural_tokens": 25000,
-  "alignment_tokens": 10000
+  "natural_tokens": 2500000,
+  "alignment_tokens": 1000000
 },
   "quality": {
     "min_chars": 10,
@@ -133,6 +133,8 @@
     "cache_rows_per_shard": 250000,
     "parquet_compression": "zstd",
     "calibration_docs_per_source": 50000,
+    "calibration_files_per_source": 32,
+    "calibration_scan_multiplier": 4,
     "calibration_batch_size": 1024,
     "candidate_rows_per_shard": 100000,
     "tokenized_rows_per_shard": 25000,

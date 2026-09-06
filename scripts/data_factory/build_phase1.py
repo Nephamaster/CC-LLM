@@ -18,6 +18,9 @@ def _summary(action: str, report: dict[str, Any]) -> None:
         "removed_records",
         "target_tokens",
         "actual_tokens",
+        "selected_file_count",
+        "selected_bytes",
+        "shortfalls",
         "totals",
     )
     values = {key: report[key] for key in keys if key in report}
@@ -30,7 +33,7 @@ def parse_args() -> argparse.Namespace:
         "action",
         choices=(
             "prepare", "dedup", "sample", "validation", "all",
-            "cache", "calibrate", "fast_sample", "fast_all",
+            "cache", "calibrate", "plan", "fast_sample", "fast_all",
         ),
     )
     parser.add_argument("--config", type=Path, default=Path("scripts/data_factory/phase1_config.json"))
@@ -54,7 +57,7 @@ def main() -> None:
     args = parse_args()
     if args.source and args.action not in {"prepare", "cache"}:
         raise SystemExit("--source can only be used with prepare or cache")
-    if args.resume and args.action in {"validation", "calibrate", "fast_sample", "fast_all"}:
+    if args.resume and args.action in {"validation", "calibrate", "plan", "fast_sample", "fast_all"}:
         raise SystemExit(f"--resume is not supported by the {args.action} action")
     if args.workers is not None and args.action == "validation":
         raise SystemExit("--workers is not supported by the validation action")
@@ -89,6 +92,18 @@ def main() -> None:
                 config,
                 overwrite=args.overwrite,
                 workers=args.workers,
+            ),
+        )
+    if args.action == "plan":
+        from scripts.data_factory.fast_sample import _candidate_targets
+        from scripts.data_factory.sampling_plan import build_sampling_plan
+
+        _summary(
+            "plan",
+            build_sampling_plan(
+                config,
+                _candidate_targets(config),
+                overwrite=args.overwrite,
             ),
         )
     if args.action in {"fast_sample", "fast_all"}:
