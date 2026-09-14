@@ -1,0 +1,146 @@
+version: 2
+
+sources:
+  cci3_hq:
+    reader: jsonl
+    adapter: cci3_hq
+    paths:
+      - /share/project/wuhaiming/data/dataset/CCI3-HQ/data/part_*.jsonl
+    phases: [phase1, phase2]
+    license: Apache-2.0
+    quality_profile: curated_zh
+    default_domain: general
+
+  fineweb_chinese:
+    reader: parquet
+    adapter: fineweb
+    paths:
+      - /share/project/wuhaiming/data/dataset/fineweb-edu-chinese-v2.2/4_5/*.parquet
+    phases: [phase1]
+    license: Apache-2.0
+    quality_profile: web_zh
+    default_domain: general
+
+  fineweb_edu_chinese:
+    reader: parquet
+    adapter: fineweb
+    paths:
+      - /share/project/wuhaiming/data/dataset/fineweb-edu-chinese-v2.2/4_5/*.parquet
+    phases: [phase1, phase2]
+    license: Apache-2.0
+    quality_profile: curated_zh
+    default_domain: knowledge
+
+  wanjuan:
+    reader: tar_jsonl
+    adapter: wanjuan
+    paths:
+      - /share/project/wuhaiming/data/dataset/WanJuan1_dot_0/*/*.jsonl.tar.gz
+    phases: [phase1, phase2]
+    license: CC-BY-4.0
+    quality_profile: broad_zh
+    default_domain: general
+
+  fineweb_edu_english:
+    reader: parquet
+    adapter: fineweb
+    paths:
+      - /share/project/wuhaiming/data/dataset/fineweb-edu/sample/10BT/*.parquet
+    phases: [phase1, phase2]
+    license: ODC-By-1.0
+    quality_profile: curated_en
+    default_domain: general
+    metadata:
+      language_score_min: 0.90
+
+  the_stack_v2:
+    reader: parquet
+    adapter: the_stack_v2
+    paths:
+      - /share/project/wuhaiming/data/dataset/the-stack-v2-train-full-ids/data/*.parquet
+    phases: [phase1, phase2]
+    license_mode: per_record
+    license: ""
+    quality_profile: code
+    default_domain: code
+
+  chinese_cosmopedia:
+    reader: parquet
+    adapter: generic_text
+    paths:
+      - /share/project/wuhaiming/data/dataset/chinese-cosmopedia/data/*.parquet
+    phases: [phase2]
+    license: OpenCSG-Community-License AND Apache-2.0
+    quality_profile: curated_zh
+    default_domain: knowledge
+
+  wikipedia_zh:
+    reader: parquet
+    adapter: generic_text
+    paths:
+      - ${WIKIPEDIA_ZH_PATH}
+    phases: [phase2]
+    license: CC-BY-SA-4.0
+    quality_profile: curated_zh
+    default_domain: knowledge
+
+  fineweb_zhtw:
+    reader: parquet
+    adapter: fineweb
+    paths:
+      - ${FINEWEB_ZHTW_PATH}
+    phases: [phase2]
+    license: ODC-By-1.0
+    quality_profile: web_zh
+    default_domain: knowledge
+
+  wikisource:
+    reader: parquet
+    adapter: generic_text
+    paths:
+      - /share/project/wuhaiming/data/dataset/wikisource/20231201.zh/*.parquet
+    phases: [phase2]
+    license: CC-BY-SA-4.0
+    quality_profile: classical
+    default_domain: knowledge
+
+  ect_krp:
+    reader: parquet
+    adapter: generic_text
+    paths:
+      - ${ECT_KRP_PATH}
+    phases: [phase2]
+    license_mode: per_record
+    license: ""
+    quality_profile: classical
+    default_domain: knowledge
+
+  fineweb2_multilingual:
+    reader: parquet
+    adapter: fineweb
+    paths:
+      - ${FINEWEB2_MULTILINGUAL_PATH}
+    phases: [phase2]
+    license: ODC-By-1.0
+    quality_profile: web_multilingual
+    default_domain: general
+
+  openwebmath:
+    reader: parquet
+    adapter: openwebmath
+    paths:
+      - ${OPENWEBMATH_PATH}
+    phases: [phase2]
+    license: ODC-By-1.0
+    quality_profile: math
+    default_domain: math
+
+  s2orc_open_access:
+    reader: parquet
+    adapter: s2orc
+    paths:
+      - ${S2ORC_OPEN_ACCESS_PATH}
+    phases: [phase2]
+    license: ODC-By-1.0
+    quality_profile: scientific
+    default_domain: scientific

@@ -1,0 +1,103 @@
+version: 2
+phase: phase1
+repo_root: ../../..
+corpus_root: data/corpus
+tokenizer_path: models/Qwen3-1.7B-Base-Char
+source_registry: sources.yaml
+seed: 20260714
+target_tokens: 1000000000
+validation_tokens: 1000000
+
+calibration:
+  documents_per_source: 50000
+  max_files_per_source: 32
+  scan_multiplier: 4
+  batch_size: 1024
+
+candidate:
+  oversample_ratio: 1.20
+  enhancement_oversample_ratio: 1.50
+  priority: [new_char_enhancement, specialized, mixed_zh_en, zh_knowledge, zh_general, english]
+
+buckets:
+  - name: zh_general
+    fraction: 0.30
+    selector: zh_general
+    source_weights:
+      cci3_hq: 0.60
+      fineweb_chinese: 0.30
+      wanjuan: 0.10
+
+  - name: zh_knowledge
+    fraction: 0.20
+    selector: zh_knowledge
+    source_weights:
+      fineweb_edu_chinese: 1.00
+
+  - name: english
+    fraction: 0.15
+    selector: english
+    source_weights:
+      fineweb_edu_english: 1.00
+
+  - name: mixed_zh_en
+    fraction: 0.10
+    selector: mixed_technical
+    source_weights:
+      cci3_hq: 0.35
+      fineweb_chinese: 0.35
+      the_stack_v2: 0.30
+
+  - name: specialized
+    fraction: 0.10
+    selector: specialized
+    source_weights:
+      the_stack_v2: 0.70
+      fineweb_edu_english: 0.30
+    sub_buckets:
+      code: 0.40
+      math_science: 0.40
+      structured: 0.20
+
+  - name: new_char_enhancement
+    fraction: 0.15
+    selector: new_char_coverage
+    source_weights:
+      cci3_hq: 0.25
+      fineweb_chinese: 0.25
+      fineweb_edu_chinese: 0.25
+      wanjuan: 0.25
+
+attributes: {}
+
+dedup:
+  exact:
+    algorithm: sha256
+  minhash:
+    enabled: true
+    profiles:
+      zh: {unit: char, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
+      en: {unit: word, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
+      code: {unit: lexical_token, ngram: 5, threshold: 0.85, num_buckets: 14, hashes_per_bucket: 8}
+  decontamination:
+    registry: scripts/data_factory/configs/benchmarks.yaml
+
+new_char_enhancement:
+  bucket: new_char_enhancement
+  token_ids_path: models/Qwen3-1.7B-Base-Char/new_hanzi_token_ids.json
+  natural_only: true
+  feature_score_weight: 0.25
+  coverage_targets: {1: 0.99, 20: 0.95, 100: 0.90}
+  constraints:
+    single_source_max_fraction: 0.30
+    modern_min_fraction: 0.40
+  synthetic:
+    enabled: false
+    max_fraction: 0.01
+
+sequence:
+  lengths:
+    1024: 0.50
+    2048: 0.50
+  insert_eos: true
+  preserve_long_document_order: true

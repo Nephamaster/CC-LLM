@@ -1,0 +1,47 @@
+version: 1
+
+benchmarks:
+  - name: mmlu
+    paths: ["${MMLU_EVAL_PATH}"]
+    text_fields: [question, choices, answer]
+    required: true
+  - name: ceval
+    paths: ["${CEVAL_EVAL_PATH}"]
+    text_fields: [question, A, B, C, D, answer]
+    required: true
+  - name: cmmlu
+    paths: ["${CMMLU_EVAL_PATH}"]
+    text_fields: [question, A, B, C, D, answer]
+    required: true
+  - name: arc
+    paths: ["${ARC_EVAL_PATH}"]
+    text_fields: [question, choices, answerKey]
+    required: true
+  - name: gsm8k
+    paths: ["${GSM8K_EVAL_PATH}"]
+    text_fields: [question, answer]
+    required: true
+  - name: humaneval
+    paths: ["${HUMANEVAL_EVAL_PATH}"]
+    text_fields: [prompt, canonical_solution, test]
+    required: true
+  - name: mbpp
+    paths: ["${MBPP_EVAL_PATH}"]
+    text_fields: [text, code, test_list]
+    required: true
+  - name: csc
+    paths: ["${CSC_EVAL_PATH}"]
+    text_fields: [text, source, target, sentence]
+    required: true
+  - name: cgec
+    paths: ["${CGEC_EVAL_PATH}"]
+    text_fields: [text, source, target, sentence]
+    required: true
+  - name: c3bench
+    paths: ["${C3BENCH_EVAL_PATH}"]
+    text_fields: [question, context, choices, answer]
+    required: true
+  - name: fuxi
+    paths: ["${FUXI_EVAL_PATH}"]
+    text_fields: [question, context, choices, answer]
+    required: true

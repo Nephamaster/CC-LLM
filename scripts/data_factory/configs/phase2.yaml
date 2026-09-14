@@ -1,0 +1,110 @@
+version: 2
+phase: phase2
+repo_root: ../../..
+corpus_root: data/corpus
+tokenizer_path: models/Qwen3-1.7B-Base-Char-PGCA
+source_registry: sources.yaml
+seed: 20260714
+target_tokens: 10000000000
+validation_tokens: 10000000
+
+calibration:
+  documents_per_source: 50000
+  max_files_per_source: 32
+  scan_multiplier: 4
+  batch_size: 1024
+
+candidate:
+  oversample_ratio: 1.15
+  enhancement_oversample_ratio: 1.30
+  priority: [new_char_enhancement, math_code_science, english_multilingual_mixed, zh_knowledge, zh_general]
+
+buckets:
+  - name: zh_general
+    fraction: 0.30
+    selector: zh_general
+    source_weights:
+      cci3_hq: 0.50
+      fineweb_edu_chinese: 0.35
+      wanjuan: 0.15
+
+  - name: zh_knowledge
+    fraction: 0.25
+    selector: zh_knowledge
+    source_weights:
+      chinese_cosmopedia: 0.40
+      wikipedia_zh: 0.25
+      fineweb_zhtw: 0.20
+      wikisource: 0.10
+      ect_krp: 0.05
+
+  - name: english_multilingual_mixed
+    fraction: 0.20
+    selector: english_multilingual_mixed
+    source_weights:
+      fineweb_edu_english: 0.55
+      fineweb2_multilingual: 0.15
+      fineweb_edu_chinese: 0.30
+
+  - name: math_code_science
+    fraction: 0.15
+    selector: math_code_science
+    source_weights:
+      the_stack_v2: 0.45
+      openwebmath: 0.30
+      s2orc_open_access: 0.25
+
+  - name: new_char_enhancement
+    fraction: 0.10
+    selector: new_char_coverage
+    source_weights:
+      cci3_hq: 0.20
+      fineweb_edu_chinese: 0.20
+      wanjuan: 0.15
+      chinese_cosmopedia: 0.10
+      wikipedia_zh: 0.10
+      fineweb_zhtw: 0.10
+      wikisource: 0.10
+      ect_krp: 0.05
+
+attributes:
+  long_document:
+    min_fraction: 0.10
+  classical_chinese:
+    min_fraction: 0.08
+    max_fraction: 0.12
+
+dedup:
+  exact:
+    algorithm: sha256
+  minhash:
+    enabled: true
+    profiles:
+      zh: {unit: char, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
+      en: {unit: word, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
+      code: {unit: lexical_token, ngram: 5, threshold: 0.85, num_buckets: 14, hashes_per_bucket: 8}
+  decontamination:
+    registry: scripts/data_factory/configs/benchmarks.yaml
+
+new_char_enhancement:
+  bucket: new_char_enhancement
+  token_ids_path: models/Qwen3-1.7B-Base-Char/new_hanzi_token_ids.json
+  natural_only: true
+  feature_score_weight: 0.25
+  coverage_targets: {1: 0.99, 20: 0.95, 100: 0.90}
+  constraints:
+    single_source_max_fraction: 0.30
+    modern_min_fraction: 0.40
+    traditional_min_fraction: 0.15
+    classical_max_fraction: 0.30
+  synthetic:
+    enabled: false
+    max_fraction: 0.01
+
+sequence:
+  lengths:
+    2048: 0.50
+    4096: 0.40
+    8192: 0.10
+  insert_eos: true
+  preserve_long_document_order: true
