@@ -137,3 +137,6 @@ V2不依赖根目录旧Python模块。归档V1时仅保留`scripts/data_factory/
 
 验证：更新后18项V2测试全部通过，包含Stack V3仓库展开、许可/vendor过滤、peS2o过滤和ect-krp文本读取测试。本地仍缺少`zstandard`，需在远程安装requirements后验证peS2o实际压缩文件。
 补充实现结论：Phase 1互斥Bucket优先级调整为`new_char_enhancement -> mixed_zh_en -> specialized -> zh_knowledge -> zh_general -> english`，确保Stack V3中含中文的README/docs进入混排桶，其余代码/结构化文件进入专项桶。V1已由用户归档至`scripts/data_factory/v1/`与`tests/v1/`，根目录重新建立V2专用最小`__init__.py`。
+## Stack V3 Inspection抽样修复（2026-09-14）
+
+Stack V3的一条Parquet记录对应整个仓库，且Adapter会严格过滤vendor文件、非permissive许可和缺少许可证标识的文件。--max-rows 20原先同时限制原始仓库扫描量，可能因前20个仓库均无合格文件而误报passed=false。现仅为	he_stack_v3设置inspect_scan_multiplier=100：仍最多接受20个文档，但允许扫描最多2,000个仓库记录；报告新增aw_rows_scanned用于判断过滤密度。inspect的数据集选择范围保持不变。

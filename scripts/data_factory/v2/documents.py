@@ -634,6 +634,7 @@ def inspect_source(
     paths = expand_source_paths(source)[:max_files]
     errors: list[dict[str, Any]] = []
     raw_fields: Counter[str] = Counter()
+    raw_rows_scanned = 0
     adapted = 0
     accepted = 0
     rejected: Counter[str] = Counter()
@@ -646,6 +647,7 @@ def inspect_source(
         limit=max_rows * scan_multiplier,
         on_error=errors.append,
     ):
+        raw_rows_scanned += 1
         raw_fields.update(record.row.keys())
         try:
             for value in adapt_records(source, record, lambda reason: rejected.update([reason])):
@@ -697,6 +699,7 @@ def inspect_source(
         "source_contract_sha256": source_contract_hash(source),
         "inspected_files": file_details,
         "rows_requested": max_rows,
+        "raw_rows_scanned": raw_rows_scanned,
         "adapted_rows": adapted,
         "accepted_rows": accepted,
         "raw_fields": dict(raw_fields.most_common()),

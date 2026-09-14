@@ -61,6 +61,7 @@ sources:
     metadata:
       download_fraction: 0.10
       require_permissive_license: true
+      inspect_scan_multiplier: 100
 
   chinese_cosmopedia:
     homepage: https://www.modelscope.cn/datasets/opencsg/chinese-cosmopedia
@@ -89,7 +90,7 @@ sources:
     reader: parquet
     adapter: fineweb
     paths:
-      - /share/project/wuhaiming/data/dataset/fineweb_zhtw/data/*.parquet
+      - /share/project/wuhaiming/data/dataset/fineweb-zhtw/data/*.parquet
     phases: [phase1, phase2]
     license: ODC-By-1.0
     quality_profile: web_zh
