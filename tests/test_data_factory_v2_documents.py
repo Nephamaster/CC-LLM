@@ -10,6 +10,7 @@ from scripts.data_factory.v2.documents import (
     RawRecord,
     SourceRecordError,
     adapt_record,
+    adapt_records,
     clean_and_tag,
     inspect_source,
     normalize_text,
@@ -79,22 +80,65 @@ class DataFactoryV2DocumentsTest(unittest.TestCase):
         self.assertIn("答案：A", adapted.text)
         self.assertIn("因为甲符合条件。", adapted.text)
 
-    def test_stack_ids_without_content_fail_explicitly(self) -> None:
-        source = source_spec(
-            name="the_stack_v2",
-            reader="parquet",
-            adapter="the_stack_v2",
-            license_value="",
+    def test_stack_v3_expands_only_permissive_non_vendor_files(self) -> None:
+        source = SourceSpec(
+            name="the_stack_v3", reader="parquet", adapter="stack_v3_train",
+            paths=("unused.parquet",), phases=frozenset({"phase1", "phase2"}),
+            license="", license_mode="per_record", quality_profile="code",
             default_domain="code",
+            metadata={"require_permissive_license": True},
         )
         raw = RawRecord(
-            row={"swhid": "swh:1:cnt:abc", "license": "MIT"},
-            path=Path("ids.parquet"),
-            row_index=0,
+            row={
+                "repo_path": "owner/repo", "repo_id": 7, "commit_id": "abc123",
+                "files": [
+                    {"content_id": "one", "content": "print('ok')", "file_path": "main.py", "language": "Python", "is_vendor": False, "license_type": "permissive", "detected_licenses": ["MIT"]},
+                    {"content_id": "two", "content": "vendor", "file_path": "vendor/x.py", "language": "Python", "is_vendor": True, "license_type": "permissive", "detected_licenses": ["MIT"]},
+                    {"content_id": "three", "content": "unknown", "file_path": "x.py", "language": "Python", "is_vendor": False, "license_type": "no_license", "detected_licenses": []},
+                ],
+            },
+            path=Path("stack.parquet"), row_index=0,
         )
+        rejected: list[str] = []
+        records = list(adapt_records(source, raw, rejected.append))
 
-        with self.assertRaisesRegex(SourceRecordError, "no code content"):
-            adapt_record(source, raw)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].text, "print('ok')")
+        self.assertEqual(records[0].license, "MIT")
+        self.assertEqual(records[0].revision, "abc123")
+        self.assertEqual(records[0].source_path, "main.py")
+        self.assertEqual(rejected, ["stack_vendor_file", "stack_non_permissive"])
+    def test_pes2o_keeps_only_s2orc_full_text(self) -> None:
+        source = SourceSpec(
+            name="peS2o", reader="zstd_jsonl", adapter="pes2o",
+            paths=("unused.zst",), phases=frozenset({"phase2"}),
+            license="ODC-By-1.0", license_mode="fixed",
+            quality_profile="scientific", default_domain="scientific",
+            metadata={"required_source": "s2orc"},
+        )
+        accepted = RawRecord(
+            row={"id": "1", "source": "s2orc", "text": "full paper text"},
+            path=Path("sample.zst"), row_index=0,
+        )
+        rejected = RawRecord(
+            row={"id": "2", "source": "s2ag", "text": "abstract"},
+            path=Path("sample.zst"), row_index=1,
+        )
+        self.assertEqual(adapt_record(source, accepted).text, "full paper text")
+        with self.assertRaisesRegex(SourceRecordError, "s2ag"):
+            adapt_record(source, rejected)
+
+    def test_plain_text_adapter_uses_whole_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "classic.txt"
+            path.write_text("學而時習之，不亦說乎。此為完整古文測試內容。", encoding="utf-8")
+            source = source_spec(
+                name="ect_krp", reader="text", adapter="plain_text",
+                paths=(str(path),), license_value="CC-BY-SA-4.0",
+            )
+            report = inspect_source(source, max_files=1, max_rows=1)
+        self.assertTrue(report["passed"])
+        self.assertIn("學而時習之", report["samples"][0]["text_preview"])
 
     def test_inspection_reports_real_jsonl_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

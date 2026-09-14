@@ -10,7 +10,7 @@ import re
 import tarfile
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -38,6 +38,12 @@ PROVENANCE_KEYS = (
     "swhid",
     "repo_name",
     "repository_name",
+    "repo_path",
+    "repo_id",
+    "commit_id",
+    "content_id",
+    "license_type",
+    "detected_licenses",
     "path",
     "file_path",
     "lang",
@@ -107,6 +113,8 @@ def expand_source_paths(source: SourceSpec) -> list[Path]:
                     "jsonl": ("*.jsonl", "*.jsonl.gz"),
                     "parquet": ("*.parquet",),
                     "tar_jsonl": ("*.tar", "*.tar.gz", "*.tgz"),
+                    "zstd_jsonl": ("*.zst", "*.jsonl.zst"),
+                    "text": ("*.txt",),
                 }[source.reader]
                 matches = [path for pattern in suffixes for path in candidate.rglob(pattern)]
         paths.extend(path.resolve() for path in matches if path.is_file())
@@ -127,6 +135,7 @@ def source_contract_hash(source: SourceSpec) -> str:
         "quality_profile": source.quality_profile,
         "default_domain": source.default_domain,
         "metadata": source.metadata,
+        "homepage": source.homepage,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -252,6 +261,45 @@ def _iter_tar_jsonl(
                 )
 
 
+def _iter_zstd_jsonl(
+    path: Path,
+    on_error: Callable[[dict[str, Any]], None] | None,
+) -> Iterator[RawRecord]:
+    import io
+    import zstandard
+
+    with path.open("rb") as compressed:
+        with zstandard.ZstdDecompressor().stream_reader(compressed) as reader:
+            for row_index, raw_line in enumerate(io.BufferedReader(reader)):
+                if not raw_line.strip():
+                    continue
+                try:
+                    row = json.loads(raw_line.decode("utf-8"))
+                    if not isinstance(row, dict):
+                        raise TypeError("zstd JSONL row is not an object")
+                except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+                    _emit_error(
+                        on_error,
+                        reason="invalid_zstd_jsonl_row",
+                        path=path,
+                        row_index=row_index,
+                        error=error,
+                    )
+                    continue
+                yield RawRecord(row=row, path=path, row_index=row_index)
+
+def _iter_text(
+    path: Path,
+    on_error: Callable[[dict[str, Any]], None] | None,
+) -> Iterator[RawRecord]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        _emit_error(on_error, reason="invalid_text_encoding", path=path, error=error)
+        return
+    yield RawRecord(row={"id": path.stem, "text": text}, path=path, row_index=0)
+
+
 def iter_raw_records(
     source: SourceSpec,
     paths: list[Path],
@@ -263,6 +311,8 @@ def iter_raw_records(
         "jsonl": _iter_jsonl,
         "parquet": _iter_parquet,
         "tar_jsonl": _iter_tar_jsonl,
+        "zstd_jsonl": _iter_zstd_jsonl,
+        "text": _iter_text,
     }
     reader = readers.get(source.reader)
     if reader is None:
@@ -362,16 +412,24 @@ def adapt_record(source: SourceSpec, record: RawRecord) -> AdaptedRecord:
     subset = record.path.parent.name
     if source.adapter == "wanjuan":
         text = _wanjuan_text(row, subset)
-    elif source.adapter == "the_stack_v2":
+    elif source.adapter == "stack_v3_file":
         text = row.get("content") or row.get("text")
         if not isinstance(text, str):
-            raise SourceRecordError(
-                "missing_code_content",
-                "The Stack V2 row contains IDs/metadata but no code content",
-            )
+            raise SourceRecordError("missing_code_content", "Stack V3 file has no content")
     elif source.adapter == "s2orc":
         text = _s2orc_text(row)
-    elif source.adapter in {"cci3_hq", "fineweb", "openwebmath", "generic_text"}:
+    elif source.adapter == "pes2o":
+        required_source = str(source.metadata.get("required_source", "s2orc"))
+        if str(row.get("source")) != required_source:
+            raise SourceRecordError("excluded_pes2o_source", str(row.get("source")))
+        text = row.get("text")
+    elif source.adapter in {
+        "cci3_hq",
+        "fineweb",
+        "openwebmath",
+        "generic_text",
+        "plain_text",
+    }:
         text = _first(row, TEXT_KEYS)
     else:
         raise SourceRecordError("unsupported_adapter", source.adapter)
@@ -380,7 +438,7 @@ def adapt_record(source: SourceSpec, record: RawRecord) -> AdaptedRecord:
 
     path_value = row.get("path") or row.get("file_path") or record.member
     source_path = str(path_value or record.path)
-    revision = row.get("revision") or row.get("dump") or row.get("date")
+    revision = row.get("revision") or row.get("commit_id") or row.get("dump") or row.get("date")
     language = row.get("language") or row.get("lang")
     quality = row.get("quality_score") or row.get("score")
     return AdaptedRecord(
@@ -397,6 +455,68 @@ def adapt_record(source: SourceSpec, record: RawRecord) -> AdaptedRecord:
         quality_prior=float(quality) if isinstance(quality, (int, float)) else None,
         metadata_json=_metadata_json(row),
     )
+
+
+def adapt_records(
+    source: SourceSpec,
+    record: RawRecord,
+    on_reject: Callable[[str], None] | None = None,
+) -> Iterator[AdaptedRecord]:
+    if source.adapter != "stack_v3_train":
+        yield adapt_record(source, record)
+        return
+
+    repository = record.row
+    files = repository.get("files")
+    if not isinstance(files, list):
+        raise SourceRecordError("missing_repository_files", "Stack V3 row has no files array")
+    repo_path = str(repository.get("repo_path") or repository.get("repo_id") or "unknown")
+    require_permissive = bool(source.metadata.get("require_permissive_license", True))
+    file_source = replace(source, adapter="stack_v3_file")
+    for index, file in enumerate(files):
+        if not isinstance(file, dict):
+            if on_reject:
+                on_reject("invalid_stack_file")
+            continue
+        if file.get("is_vendor"):
+            if on_reject:
+                on_reject("stack_vendor_file")
+            continue
+        if require_permissive and file.get("license_type") != "permissive":
+            if on_reject:
+                on_reject("stack_non_permissive")
+            continue
+        licenses = file.get("detected_licenses")
+        if not isinstance(licenses, list) or not licenses:
+            if on_reject:
+                on_reject("stack_missing_license")
+            continue
+        content = file.get("content")
+        if not isinstance(content, str) or not content.strip():
+            if on_reject:
+                on_reject("missing_code_content")
+            continue
+        content_id = file.get("content_id") or f"file-{index}"
+        merged = {
+            **file,
+            "id": f"{repository.get('repo_id', repo_path)}:{content_id}",
+            "repo_path": repo_path,
+            "repo_id": repository.get("repo_id"),
+            "commit_id": repository.get("commit_id"),
+            "path": file.get("file_path"),
+            "language": file.get("language"),
+            "license": licenses,
+            "url": f"https://github.com/{repo_path}",
+        }
+        yield adapt_record(
+            file_source,
+            RawRecord(
+                row=merged,
+                path=record.path,
+                row_index=record.row_index,
+                member=record.member,
+            ),
+        )
 
 
 def normalize_text(text: str) -> str:
@@ -519,23 +639,33 @@ def inspect_source(
     rejected: Counter[str] = Counter()
     samples: list[dict[str, Any]] = []
 
-    for record in iter_raw_records(source, paths, limit=max_rows, on_error=errors.append):
+    scan_multiplier = int(source.metadata.get("inspect_scan_multiplier", 1))
+    for record in iter_raw_records(
+        source,
+        paths,
+        limit=max_rows * scan_multiplier,
+        on_error=errors.append,
+    ):
         raw_fields.update(record.row.keys())
         try:
-            value = adapt_record(source, record)
-            adapted += 1
-            canonical = clean_and_tag(source, value)
-            accepted += 1
-            if len(samples) < 3:
-                samples.append(
-                    {
-                        "doc_id": canonical.doc_id,
-                        "text_preview": canonical.text[:200],
-                        "metadata": canonical.metadata,
-                    }
-                )
+            for value in adapt_records(source, record, lambda reason: rejected.update([reason])):
+                adapted += 1
+                canonical = clean_and_tag(source, value)
+                accepted += 1
+                if len(samples) < 3:
+                    samples.append(
+                        {
+                            "doc_id": canonical.doc_id,
+                            "text_preview": canonical.text[:200],
+                            "metadata": canonical.metadata,
+                        }
+                    )
+                if accepted >= max_rows:
+                    break
         except SourceRecordError as error:
             rejected[error.reason] += 1
+        if accepted >= max_rows:
+            break
 
     file_details: list[dict[str, Any]] = []
     for path in paths:

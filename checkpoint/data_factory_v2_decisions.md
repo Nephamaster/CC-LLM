@@ -110,3 +110,30 @@
 - CLI 新增 `tokenize`、`finalize`。
 
 验证：V2 共 16 项测试全部通过，覆盖标准 ms-swift Messages JSONL、EOS Packing、真实 Char Tokenizer Calibration 和配置契约；全模块语法检查通过，项目内无 `__pycache__`。
+## Dashboard与服务器来源审计（2026-09-14）
+
+根据最新版 `agent/blueprint/data_build/dashboard.md` 和 `scripts/data_factory/configs/sources.yaml` 调整V2：
+
+- Phase 1中文通用改为CCI3-HQ 70% + WanJuan 30%；混排改为CCI3-HQ 40% + FineWeb-Edu-Chinese 40% + The Stack V2 20%；专项改为The Stack V2 70% + OpenWebMath 30%。
+- Phase 1新增汉字主来源为CCI3-HQ/FineWeb-Edu-Chinese/WanJuan，并给FineWeb-zhtw和Wikisource各2.5%小额补充权重。
+- OpenWebMath、FineWeb-zhtw和Wikisource允许进入Phase 1；Phase 2科学语料由旧`s2orc_open_access`名称改为`peS2o`。
+- ect-krp实际为`.txt`，使用整文件Text Reader和`plain_text` Adapter；仓库许可证为CC-BY-SA-4.0。
+- peS2o实际为zstd压缩JSONL，新增流式`zstd_jsonl` Reader和`pes2o` Adapter，只保留`source=s2orc`全文论文。Inspection可扩大扫描以越过被过滤的`s2ag`记录。
+- 所有dashboard数据集网址进入Source Registry的`homepage`，并纳入来源契约Hash与File Manifest。
+- The Stack V2当前路径指向`the-stack-v2-train-full-ids`。该数据通常只有SWHID而没有源码正文；Adapter继续要求`content/text`，Inspection失败时必须先完成Software Heritage代码内容物化，不能绕过。
+- 新增运行依赖`zstandard`。本地work环境未安装该包，peS2o Reader需在远程安装更新后的requirements后验证。
+
+V2不依赖根目录旧Python模块。归档V1时仅保留`scripts/data_factory/__init__.py`和`v2/`、`configs/`；其余根目录Python、旧Shell、旧JSON配置和旧README可移入`v1/`。旧单元测试也需同步归档或修正Import。
+## Stack V3与最终来源配置审计（2026-09-14）
+
+本节覆盖此前关于The Stack V2的判断：
+
+- 代码来源切换为`HuggingFaceCode/stack-v3-train`，Phase 1/2配置统一使用`the_stack_v3`。
+- Stack V3 Train每行是仓库，源码内嵌于`files[].content`；V2的SWHID物化问题不再适用。
+- Adapter将仓库行展开为文件级Canonical文档，只保留`is_vendor=false`、`license_type=permissive`且`detected_licenses`非空的文件，保留repo/commit/path/language/content_id来源信息。
+- 本地只下载全量Parquet的10%；Pipeline不再二次乘0.1，而是以下载后的真实Manifest和Calibration容量为准。应随机选择Shard，不应只下载连续前10%。
+- Phase 1权重按最新dashboard同步，Phase 2科学来源改为peS2o，所有Source Homepage进入来源契约和Manifest。
+- ect-krp使用整文件Text Reader和CC-BY-SA-4.0；peS2o使用zstd JSONL Reader并只保留`source=s2orc`。
+
+验证：更新后18项V2测试全部通过，包含Stack V3仓库展开、许可/vendor过滤、peS2o过滤和ect-krp文本读取测试。本地仍缺少`zstandard`，需在远程安装requirements后验证peS2o实际压缩文件。
+补充实现结论：Phase 1互斥Bucket优先级调整为`new_char_enhancement -> mixed_zh_en -> specialized -> zh_knowledge -> zh_general -> english`，确保Stack V3中含中文的README/docs进入混排桶，其余代码/结构化文件进入专项桶。V1已由用户归档至`scripts/data_factory/v1/`与`tests/v1/`，根目录重新建立V2专用最小`__init__.py`。

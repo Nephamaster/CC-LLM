@@ -143,11 +143,11 @@ DataTrove 内部统一使用 `Document(text, id, metadata)`。写入 Parquet 时
 
 | 一级类别 | 比例 | Token | 默认来源策略 |
 | --- | ---: | ---: | --- |
-| 中文通用 | 30% | 300M | CCI3-HQ 60%、FineWeb-Chinese 30%、WanJuan 10% |
+| 中文通用 | 30% | 300M | CCI3-HQ 70%、WanJuan 30% |
 | 中文高质量知识 | 20% | 200M | FineWeb-Edu-Chinese 为主 |
 | 英文能力保持 | 15% | 150M | FineWeb-Edu-English |
-| 中英混排/技术中文 | 10% | 100M | CCI3-HQ、FineWeb-Chinese、The Stack V2 README/docs 中规则筛选 |
-| 代码/数学/结构化 | 10% | 100M | The Stack V2、OpenWebMath 或现有合规专项数据 |
+| 中英混排/技术中文 | 10% | 100M | CCI3-HQ 40%、FineWeb-Edu-Chinese 40%、The Stack V3 README/docs 20% |
+| 代码/数学/结构化 | 10% | 100M | The Stack V3 70%、OpenWebMath 30% |
 | 新增汉字 Token/边界覆盖 | 15% | 150M | 从全部中文自然候选中覆盖优先选择 |
 
 代码/数学/结构化内部默认按 40%/40%/20% 管理，正式配置允许调整，但不得在构建过程中静默回填。数据不足时 Run Report 标记 Shortfall，由新的来源配置或增量 Plan 解决。
@@ -161,7 +161,7 @@ Phase 1 以高质量短文本和稳定分布为主。自然文本窗口控制在
 | 中文高质量通用 | 30% | 3.0B | CCI3-HQ 50%、FineWeb-Edu-Chinese 35%、WanJuan 15% |
 | 中文知识密集 | 25% | 2.5B | Chinese Cosmopedia 40%、中文 Wikipedia 25%、FineWeb-zhtw 20%、Wikisource 10%、ect-krp 不超过 5% |
 | 英文/多语/中英混排 | 20% | 2.0B | FineWeb-Edu-English 55%、FineWeb2 多语 15%、中英技术混排 30% |
-| 数学/代码/科学 | 15% | 1.5B | The Stack V2 45%、OpenWebMath 30%、S2ORC/Open-access Scientific Text 25% |
+| 数学/代码/科学 | 15% | 1.5B | The Stack V3 45%、OpenWebMath 30%、peS2o 25% |
 | 新增汉字 Token 与音形覆盖 | 10% | 1.0B | 从全部中文自然候选中覆盖优先选择 |
 
 长文本与古汉语是横向属性，不单独占一级 Bucket：

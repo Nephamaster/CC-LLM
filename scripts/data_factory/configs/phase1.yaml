@@ -17,16 +17,15 @@ calibration:
 candidate:
   oversample_ratio: 1.20
   enhancement_oversample_ratio: 1.50
-  priority: [new_char_enhancement, specialized, mixed_zh_en, zh_knowledge, zh_general, english]
+  priority: [new_char_enhancement, mixed_zh_en, specialized, zh_knowledge, zh_general, english]
 
 buckets:
   - name: zh_general
     fraction: 0.30
     selector: zh_general
     source_weights:
-      cci3_hq: 0.60
-      fineweb_chinese: 0.30
-      wanjuan: 0.10
+      cci3_hq: 0.70
+      wanjuan: 0.30
 
   - name: zh_knowledge
     fraction: 0.20
@@ -44,16 +43,16 @@ buckets:
     fraction: 0.10
     selector: mixed_technical
     source_weights:
-      cci3_hq: 0.35
-      fineweb_chinese: 0.35
-      the_stack_v2: 0.30
+      cci3_hq: 0.40
+      fineweb_edu_chinese: 0.40
+      the_stack_v3: 0.20
 
   - name: specialized
     fraction: 0.10
     selector: specialized
     source_weights:
-      the_stack_v2: 0.70
-      fineweb_edu_english: 0.30
+      the_stack_v3: 0.70
+      openwebmath: 0.30
     sub_buckets:
       code: 0.40
       math_science: 0.40
@@ -63,10 +62,11 @@ buckets:
     fraction: 0.15
     selector: new_char_coverage
     source_weights:
-      cci3_hq: 0.25
-      fineweb_chinese: 0.25
-      fineweb_edu_chinese: 0.25
-      wanjuan: 0.25
+      cci3_hq: 0.40
+      fineweb_edu_chinese: 0.40
+      wanjuan: 0.15
+      fineweb_zhtw: 0.025
+      wikisource: 0.025
 
 attributes: {}
 

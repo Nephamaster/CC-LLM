@@ -16,13 +16,12 @@ DataTrove 固定为 `datatrove[io,processing]>=0.10,<0.11`。
 
 ```bash
 export FINEWEB_CHINESE_PATH='/path/to/fineweb_chinese/**/*.parquet'
-export THE_STACK_V2_PATH='/path/to/the_stack_v2/**/*.parquet'
 export CHINESE_COSMOPEDIA_PATH='/path/to/chinese_cosmopedia/**/*.parquet'
 ```
 
 Phase 2 其他变量见 `sources.yaml`。环境变量未设置时，程序会直接报告 unresolved path。
 
-The Stack V2 官方 Hub 数据可能只包含 SWHID 和元数据。只有本地文件实际含有 `content` 或 `text` 字段时才能构建 Cache；`inspect` 会对此做硬检查。
+Stack V3 Train 每行是一个仓库，代码位于 `files[].content`。Adapter 会展开非 vendor、许可明确的文件；已下载的 10% Parquet 分片直接作为可用池，由 Calibration 和 Plan 按实际容量抽样。
 
 ## 3. 检查真实 Schema
 

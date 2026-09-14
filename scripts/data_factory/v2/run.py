@@ -82,6 +82,7 @@ def _file_manifest_rows(config: DataFactoryConfig, source_name: str) -> list[dic
             "reader": source.reader,
             "adapter": source.adapter,
             "source_contract_sha256": source_contract_hash(source),
+            "homepage": source.homepage,
             "rows": None,
             "row_groups": None,
         }

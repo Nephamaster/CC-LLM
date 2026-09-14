@@ -12,7 +12,7 @@ from datatrove.pipeline.writers import ParquetWriter
 from scripts.data_factory.v2.config import DataFactoryConfig, SourceSpec
 from scripts.data_factory.v2.documents import (
     SourceRecordError,
-    adapt_record,
+    adapt_records,
     clean_and_tag,
     expand_source_paths,
     iter_raw_records,
@@ -78,18 +78,24 @@ class CanonicalSourceReader(PipelineStep):
             for raw in iter_raw_records(self.source, [path], on_error=record_read_error):
                 self.stat_update("raw_documents")
                 try:
-                    canonical = clean_and_tag(self.source, adapt_record(self.source, raw))
+                    adapted_records = adapt_records(
+                        self.source,
+                        raw,
+                        lambda reason: self.stat_update(f"dropped_{reason}"),
+                    )
+                    for adapted in adapted_records:
+                        canonical = clean_and_tag(self.source, adapted)
+                        self.stat_update("forwarded_documents")
+                        self.stat_update("forwarded_characters", value=len(canonical.text), unit="doc")
+                        yield Document(
+                            id=canonical.doc_id,
+                            text=canonical.text,
+                            metadata=canonical.metadata,
+                        )
                 except SourceRecordError as error:
                     self.stat_update("dropped_documents")
                     self.stat_update(f"dropped_{error.reason}")
                     continue
-                self.stat_update("forwarded_documents")
-                self.stat_update("forwarded_characters", value=len(canonical.text), unit="doc")
-                yield Document(
-                    id=canonical.doc_id,
-                    text=canonical.text,
-                    metadata=canonical.metadata,
-                )
 
 
 def build_cache_executor(

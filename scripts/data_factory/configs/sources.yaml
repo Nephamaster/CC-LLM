@@ -2,6 +2,7 @@ version: 2
 
 sources:
   cci3_hq:
+    homepage: https://www.modelscope.cn/datasets/BAAI/CCI3-HQ
     reader: jsonl
     adapter: cci3_hq
     paths:
@@ -11,17 +12,8 @@ sources:
     quality_profile: curated_zh
     default_domain: general
 
-  fineweb_chinese:
-    reader: parquet
-    adapter: fineweb
-    paths:
-      - /share/project/wuhaiming/data/dataset/fineweb-edu-chinese-v2.2/4_5/*.parquet
-    phases: [phase1]
-    license: Apache-2.0
-    quality_profile: web_zh
-    default_domain: general
-
   fineweb_edu_chinese:
+    homepage: https://www.modelscope.cn/datasets/opencsg/Fineweb-Edu-Chinese-V2.2
     reader: parquet
     adapter: fineweb
     paths:
@@ -32,6 +24,7 @@ sources:
     default_domain: knowledge
 
   wanjuan:
+    homepage: https://www.modelscope.cn/datasets/Shanghai_AI_Laboratory/WanJuan1_dot_0
     reader: tar_jsonl
     adapter: wanjuan
     paths:
@@ -42,6 +35,7 @@ sources:
     default_domain: general
 
   fineweb_edu_english:
+    homepage: https://www.modelscope.cn/datasets/HuggingFaceFW/fineweb-edu
     reader: parquet
     adapter: fineweb
     paths:
@@ -53,18 +47,23 @@ sources:
     metadata:
       language_score_min: 0.90
 
-  the_stack_v2:
+  the_stack_v3:
+    homepage: https://www.modelscope.cn/datasets/HuggingFaceCode/stack-v3-train
     reader: parquet
-    adapter: the_stack_v2
+    adapter: stack_v3_train
     paths:
-      - /share/project/wuhaiming/data/dataset/the-stack-v2-train-full-ids/data/*.parquet
+      - /share/project/wuhaiming/data/dataset/stack-v3-train/data/*.parquet
     phases: [phase1, phase2]
     license_mode: per_record
     license: ""
     quality_profile: code
     default_domain: code
+    metadata:
+      download_fraction: 0.10
+      require_permissive_license: true
 
   chinese_cosmopedia:
+    homepage: https://www.modelscope.cn/datasets/opencsg/chinese-cosmopedia
     reader: parquet
     adapter: generic_text
     paths:
@@ -75,72 +74,87 @@ sources:
     default_domain: knowledge
 
   wikipedia_zh:
+    homepage: https://www.modelscope.cn/datasets/wikimedia/wikipedia
     reader: parquet
     adapter: generic_text
     paths:
-      - ${WIKIPEDIA_ZH_PATH}
+      - /share/project/wuhaiming/data/dataset/wikipedia/20231201.zh/*.parquet
     phases: [phase2]
     license: CC-BY-SA-4.0
     quality_profile: curated_zh
     default_domain: knowledge
 
   fineweb_zhtw:
+    homepage: https://www.modelscope.cn/datasets/voidful/fineweb-zhtw
     reader: parquet
     adapter: fineweb
     paths:
-      - ${FINEWEB_ZHTW_PATH}
-    phases: [phase2]
+      - /share/project/wuhaiming/data/dataset/fineweb_zhtw/data/*.parquet
+    phases: [phase1, phase2]
     license: ODC-By-1.0
     quality_profile: web_zh
     default_domain: knowledge
 
   wikisource:
+    homepage: https://www.modelscope.cn/datasets/wikimedia/wikisource
     reader: parquet
     adapter: generic_text
     paths:
       - /share/project/wuhaiming/data/dataset/wikisource/20231201.zh/*.parquet
-    phases: [phase2]
+    phases: [phase1, phase2]
     license: CC-BY-SA-4.0
     quality_profile: classical
     default_domain: knowledge
 
   ect_krp:
-    reader: parquet
-    adapter: generic_text
+    homepage: https://github.com/direct-phonology/ect-krp
+    reader: text
+    adapter: plain_text
     paths:
-      - ${ECT_KRP_PATH}
+      - /share/project/wuhaiming/data/dataset/ect-krp-v1.1.0-txt/*/*.txt
     phases: [phase2]
-    license_mode: per_record
-    license: ""
+    license: CC-BY-SA-4.0
     quality_profile: classical
     default_domain: knowledge
 
   fineweb2_multilingual:
+    homepage: https://www.modelscope.cn/datasets/HuggingFaceFW/fineweb-2
     reader: parquet
     adapter: fineweb
     paths:
-      - ${FINEWEB2_MULTILINGUAL_PATH}
+      - /share/project/wuhaiming/data/dataset/FineWeb2/data/jpn_Jpan/train/000_00000.parquet
+      - /share/project/wuhaiming/data/dataset/FineWeb2/data/kor_Hang/train/000_00000.parquet
+      - /share/project/wuhaiming/data/dataset/FineWeb2/data/vie_Latn/train/000_00000.parquet
+      - /share/project/wuhaiming/data/dataset/FineWeb2/data/spa_Latn/train/000_00000.parquet
+      - /share/project/wuhaiming/data/dataset/FineWeb2/data/rus_Cyrl/train/000_00000.parquet
+      - /share/project/wuhaiming/data/dataset/FineWeb2/data/arb_Arab/train/000_00000.parquet
+      - /share/project/wuhaiming/data/dataset/FineWeb2/data/hin_Deva/train/000_00000.parquet
     phases: [phase2]
     license: ODC-By-1.0
     quality_profile: web_multilingual
     default_domain: general
 
   openwebmath:
+    homepage: https://www.modelscope.cn/datasets/jordangong/open-web-math
     reader: parquet
     adapter: openwebmath
     paths:
-      - ${OPENWEBMATH_PATH}
-    phases: [phase2]
+      - /share/project/wuhaiming/data/dataset/openwebmath/data/*.parquet
+    phases: [phase1, phase2]
     license: ODC-By-1.0
     quality_profile: math
     default_domain: math
 
-  s2orc_open_access:
-    reader: parquet
-    adapter: s2orc
+  peS2o:
+    homepage: https://www.modelscope.cn/datasets/allenai/peS2o
+    reader: zstd_jsonl
+    adapter: pes2o
     paths:
-      - ${S2ORC_OPEN_ACCESS_PATH}
+      - /share/project/wuhaiming/data/dataset/peS2o/data/v2/*.zst
     phases: [phase2]
     license: ODC-By-1.0
     quality_profile: scientific
     default_domain: scientific
+    metadata:
+      required_source: s2orc
+      inspect_scan_multiplier: 1000

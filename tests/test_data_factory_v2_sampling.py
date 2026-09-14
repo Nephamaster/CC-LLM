@@ -60,7 +60,7 @@ class DataFactoryV2SamplingTest(unittest.TestCase):
             assign_bucket(
                 config,
                 "def main():\n    return 1",
-                metadata(source="the_stack_v2", language="en", domain="code"),
+                metadata(source="the_stack_v3", language="en", domain="code"),
                 new_chars,
             ),
             "specialized",

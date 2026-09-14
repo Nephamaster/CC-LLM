@@ -50,9 +50,9 @@ buckets:
     fraction: 0.15
     selector: math_code_science
     source_weights:
-      the_stack_v2: 0.45
+      the_stack_v3: 0.45
       openwebmath: 0.30
-      s2orc_open_access: 0.25
+      peS2o: 0.25
 
   - name: new_char_enhancement
     fraction: 0.10

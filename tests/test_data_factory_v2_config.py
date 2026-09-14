@@ -33,11 +33,15 @@ class DataFactoryV2ConfigTest(unittest.TestCase):
         self.assertTrue(config.dedup.minhash_enabled)
         self.assertEqual(config.calibration.documents_per_source, 50_000)
         self.assertEqual(config.candidate_priority[0], "new_char_enhancement")
+        self.assertLess(config.candidate_priority.index("mixed_zh_en"), config.candidate_priority.index("specialized"))
         self.assertTrue(config.enhancement.natural_only)
         self.assertFalse(config.enhancement.synthetic_enabled)
         self.assertEqual(config.enhancement.coverage_targets[1], 0.99)
         self.assertEqual(config.enhancement.constraints["single_source_max_fraction"], 0.30)
         self.assertFalse(any("bridge" in bucket.name for bucket in config.buckets))
+        buckets = {bucket.name: bucket for bucket in config.buckets}
+        self.assertEqual(buckets["zh_general"].source_weights, {"cci3_hq": 0.70, "wanjuan": 0.30})
+        self.assertEqual(buckets["specialized"].source_weights["openwebmath"], 0.30)
 
     def test_phase2_contract(self) -> None:
         config = load_data_factory_config(CONFIG_ROOT / "phase2.yaml")
@@ -56,6 +60,10 @@ class DataFactoryV2ConfigTest(unittest.TestCase):
         self.assertEqual(config.attributes["long_document"]["min_fraction"], 0.10)
         self.assertEqual(config.attributes["classical_chinese"]["min_fraction"], 0.08)
         self.assertEqual(config.attributes["classical_chinese"]["max_fraction"], 0.12)
+        buckets = {bucket.name: bucket for bucket in config.buckets}
+        self.assertEqual(buckets["math_code_science"].source_weights["peS2o"], 0.25)
+        self.assertEqual(config.source_registry.sources["ect_krp"].reader, "text")
+        self.assertEqual(config.source_registry.sources["peS2o"].reader, "zstd_jsonl")
 
     def test_exact_only_profile_disables_only_minhash(self) -> None:
         default = load_data_factory_config(CONFIG_ROOT / "phase1.yaml")

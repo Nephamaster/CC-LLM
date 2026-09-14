@@ -73,6 +73,7 @@ class SourceSpec:
     quality_profile: str
     default_domain: str
     metadata: dict[str, Any]
+    homepage: str | None = None
 
     @classmethod
     def from_raw(cls, name: str, raw: dict[str, Any]) -> "SourceSpec":
@@ -105,6 +106,7 @@ class SourceSpec:
             quality_profile=str(raw.get("quality_profile", "default")),
             default_domain=str(raw.get("default_domain", "general")),
             metadata=dict(_mapping(raw.get("metadata", {}), f"sources.{name}.metadata")),
+            homepage=None if raw.get("homepage") is None else str(raw["homepage"]),
         )
 
 

@@ -6,12 +6,12 @@
 
 | 类别 | 比例 | 数据源 |
 |---|---:|---|
-| 中文通用 | 30% | CCI3.0-HQ 60% + FineWeb-Chinese 30%(to) + WanJuan1.0 10% |
-| 中文高质量知识 | 20% | FineWeb-Edu-Chinese |
+| 中文通用 | 30% | CCI3.0-HQ 70% + WanJuan1.0 30% |
+| 中文高质量知识 | 20% | FineWeb-Edu-Chinese V2.2 |
 | 英文能力保持 | 15% | FineWeb-Edu-English (sample 10BT) |
-| 中英混排/技术中文 | 10% | 从 CCI3.0-HQ、FineWeb-Chinese、The Stack v2 的 README/docs 中规则筛选 |
-| 代码/数学/结构化 | 10% | The Stack v2；优先代码、Markdown、JSON/YAML/TOML、TeX |
-| 新增汉字 Token/边界覆盖 | 15% | 从上述中文语料中二次筛选新增单汉字 token 高覆盖文本，必要时极少量人工补充 |
+| 中英混排/技术中文 | 10% | 从 CCI3.0-HQ 40% 、FineWeb-Edu-Chinese 40%、The Stack v3 20% 的 README/docs 中规则筛选 |
+| 代码/数学/结构化 | 10% | The Stack v3 70% + OpenWebMath 30%；优先代码、Markdown、JSON/YAML/TOML、TeX |
+| 新增汉字 Token/边界覆盖 | 15% | 从CCI3-HQ、FineWeb-Edu-Chinese、WanJuan中二次筛选新增单汉字 token 高覆盖文本；极低覆盖字符允许少量 FineWeb-zhtw/Wikisource 补充 |
 
 Phase1 原则：短文本为主，主要控制在 512–2048 tokens；不需要专门引入大比例古文、繁体或长文档。
 
@@ -25,11 +25,11 @@ Phase1 原则：短文本为主，主要控制在 512–2048 tokens；不需要�
 
 | 类别 | 比例 | 数据源 |
 |---|---:|---|
-| 中文高质量通用 | 30% | CCI3.0-HQ 50% + FineWeb-Edu-Chinese 35% + WanJuan1.0 15% |
-| 中文知识密集 | 25% | Chinese Cosmopedia 40% + 中文 Wikipedia 25%(to) + FineWeb-zhtw 20%(to) + Wikisource 10% + ect-krp ≤5%(to) |
-| 英文/多语/中英混排 | 20% | FineWeb-Edu-English 55% + FineWeb2 多语 15%(to) + 中英技术混排 30% |
-| 数学/代码/科学 | 15% | The Stack v2 45% + OpenWebMath 30%(to) + S2ORC(to)/Open-access scientific text 25% |
-| 新增汉字 Token 与音形覆盖增强 | 10% | 从全部中文候选池二次挖掘，优先覆盖新增单汉字 token、低覆盖多音字、繁体/古文/异体字等自然上下文 |
+| 中文高质量通用 | 30% | CCI3.0-HQ 50% + FineWeb-Edu-Chinese V2.2 35% + WanJuan1.0 15% |
+| 中文知识密集 | 25% | Chinese Cosmopedia 40% + 中文 Wikipedia 25% + FineWeb-zhtw 20% + Wikisource 10% + ect-krp ≤5% |
+| 英文/多语/中英混排 | 20% | FineWeb-Edu-English 55% + FineWeb2 Multi 15% + 中英技术混排 30% |
+| 数学/代码/科学 | 15% | The Stack v3 45% + OpenWebMath 30% + peS2o 25% |
+| 新增汉字 Token 与音形覆盖增强 | 10% | 从全部中文候选池二次筛选，重点覆盖新增单汉字 Token、多音字、繁体、古文、异体字等 |
 
 另外加两个横向约束，不单独占 bucket：
 
@@ -57,3 +57,21 @@ Phase1 原则：短文本为主，主要控制在 512–2048 tokens；不需要�
 - Chinese Classical Corpus：60%
 - HistoryTrans：25%
 - EvaHan 断句/标点：15%
+
+## 附录
+
+### 数据集网址
+
+- CCI3-HQ:https://www.modelscope.cn/datasets/BAAI/CCI3-HQ
+- Finweb-Edu-Chinese: https://www.modelscope.cn/datasets/opencsg/Fineweb-Edu-Chinese-V2.2
+- Wanjuan: https://www.modelscope.cn/datasets/Shanghai_AI_Laboratory/WanJuan1_dot_0
+- Finweb-Edu-English: https://www.modelscope.cn/datasets/HuggingFaceFW/fineweb-edu
+- The-Stack-v3:https://www.modelscope.cn/datasets/HuggingFaceCode/stack-v3-train
+- Chinese-Cosmopedia: https://www.modelscope.cn/datasets/opencsg/chinese-cosmopedia
+- Wikipedia: https://www.modelscope.cn/datasets/wikimedia/wikipedia
+- Finweb-zhtw: https://www.modelscope.cn/datasets/voidful/fineweb-zhtw
+- Wikisource: https://www.modelscope.cn/datasets/wikimedia/wikisource
+- ect-krp: https://github.com/direct-phonology/ect-krp (下载地址：https://github.com/direct-phonology/ect-krp/releases/download/v1.1.0/ect-krp-v1.1.0-txt.zip)
+- Fineweb2_Multilingual: https://www.modelscope.cn/datasets/HuggingFaceFW/fineweb-2
+- OpenWebMath: https://www.modelscope.cn/datasets/jordangong/open-web-math
+- peS2o: https://www.modelscope.cn/datasets/allenai/peS2o (只保留source == "s2orc")
