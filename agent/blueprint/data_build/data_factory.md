@@ -218,7 +218,9 @@ Controller 根据目标配额、Source Weight、Calibration 产率、质量损�
 
 Phase 1 普通 Bucket 默认过采样 1.20 倍，新增汉字 Bucket 默认 1.35-1.50 倍；预计候选总量约 1.2B-1.25B token。Phase 2 普通 Bucket默认 1.15 倍，新增汉字 Bucket默认约 1.30 倍；预计候选总量约 11.5B-11.7B token。
 
-Candidate Materialization 在单遍数据流中完成基础分类、横向标签和稳定采样。实际产量不足时生成 `plan-round-001.jsonl`，只选择未使用 Cache Shard，不回扫已完成文件，也不建立全量文档索引。
+Candidate Materialization 在单遍数据流中完成基础分类、横向标签和稳定采样。普通类别与新增汉字增强资格分别判定，Calibration 分别统计产率，Candidate 对两种抽样结果取并集且每篇文档只保存一次。仅最终入选增强池的父文档从普通桶排除；Phase 2 中 FineWeb 中文的 knowledge 标签允许用于配置指定的中文通用桶，不修改共享 Cache。
+
+Plan 同时预留验证集容量和普通桶被增强选择占用的余量。Mixture/Finalize 输出按 Bucket × Source 的缺额后，可执行 `plan --round 1` 生成 `plan-round-001.json`；仅抽取前轮未使用的 Cache 文件。其后的 candidate、exact_dedup、minhash、decontaminate、mixture、tokenize、finalize 均传相同的 `--round`。去重合并各轮候选重新执行，避免增量重复；候选生成不重扫旧 Cache。无可用新分片时报告容量不足，不改变来源配比。
 
 ### Stage 5：Candidate Quality Filtering
 
@@ -243,7 +245,7 @@ DataTrove 负责分片读取、并行 Hash Step、统计、重复 ID 写出和�
 3. `MinhashDedupCluster` 生成近重复簇和删除 ID。
 4. `MinhashDedupFilter` 回读完全相同的 Candidate 输入并删除重复文档。
 
-自然中文使用 Unicode 字符 5-gram，英文自然文本使用词级 5-gram，代码使用词法 Token 5-gram。默认 Jaccard 阈值分别为 0.80、0.80 和 0.85；参数进入 Profile 并通过 10M Pilot 人工抽查调整。MinHash 输入固定为 Candidate，不能对完整 Raw/Cache 执行。
+自然中文使用 Unicode 字符 5-gram，英文自然文本使用词级 5-gram，代码使用词法 Token 5-gram。配置 threshold 分别为 0.80、0.80 和 0.85，表示 LSH 概率曲线的近似拐点，不是逐对验证的严格 Jaccard 截断。固定 num_buckets 后，由 `(1 / num_buckets) ** (1 / hashes_per_bucket)` 反推整数 hashes_per_bucket，并报告实际拐点。参数通过 Pilot 抽查调整。MinHash 只处理候选池。
 
 DataTrove 默认解决召回、Bucket、聚类和过滤；项目仍负责语言对应 Shingle、阈值和质量感知代表选择。MinHash Filter 必须使用与 Signature 阶段完全一致的输入文件和 Task 数，恢复时不得改变 Task Sharding。
 
@@ -273,7 +275,7 @@ S_{new}(d)=\sum_{c\in U(d)\cap V_{new}}\frac{1}{\sqrt{DF(c)+1}}
 
 主实验不生成自然语料无法覆盖的字符。报告同时给出全体新增汉字覆盖率和自然候选可观测集合覆盖率，不能通过缩小分母掩盖缺口。人工 Coverage 仅存在于单独消融 Profile，比例不超过增强池 1%，并单独标记 Source 和 Synthetic Tag。
 
-增强池内部约束：单一来源不超过 30%，现代自然中文不少于 40%，Phase 2 繁体中文不少于 15%，Phase 2 古汉语不超过增强池 30%。多音字不写入拼音标签，只通过不同自然上下文增加语义多样性。
+增强池内部约束：以既定 source_weights 为准，Phase 1 单一来源上限为 40%，Phase 2 为 30%；配置加载时拒绝权重超过上限。现代自然中文不少于 40%，Phase 2 繁体中文不少于 15%，古汉语不超过增强池 30%。覆盖目标 99%/95%/90% 仅作诊断，不影响 passed，也不会单独触发无限补采。报告保留全体新增汉字分母及候选/选中覆盖。多音字不写入拼音标签。
 
 ### Stage 10：Final Mixture 与验证集
 
@@ -403,12 +405,12 @@ scripts/data_factory/
 - PGCA Feature Index 对训练中目标汉字 Token 的缺失率为 0。
 - Manifest、配置、Tokenizer、输出 Shard Hash 和完整报告齐全。
 
-### 11.2 新增汉字门禁
+### 11.2 新增汉字诊断
 
 - 新增汉字至少具有一个自然上下文的目标覆盖率为 99%。
 - 至少 20 个不同文档覆盖的目标比例为 95%。
 - 至少 100 个不同文档覆盖的目标比例为 90%。
-- 无法达到时必须报告字符、自然候选量和来源，不允许主实验自动生成文本补足。
+- 上述三项仅作诊断参考，不参与 passed；未达到时记录自然候选与选中频率，不允许主实验自动生成文本补足。
 - 人工消融数据比例不超过增强池 1%，并与自然数据分开统计。
 
 ### 11.3 Phase 2 附加门禁
@@ -417,6 +419,10 @@ scripts/data_factory/
 - 古汉语/文言占 8%-12%。
 - 新增汉字增强池单一来源不超过 30%，现代中文不少于 40%，繁体中文不少于 15%。
 - MinHash 完整执行并报告 Cluster 与删除比例。
+
+Mixture 和 Finalize 分别按估算/真实 Token 检查来源配比（允许一个百分点误差）、专项子类及全局横向属性。Finalize 在验证集隔离和裁剪后重新统计训练汉字覆盖。失败报告保留在磁盘，CLI 非零退出，tokenize 拒绝消费失败或其他 Plan 的 Mixture。Schema 从输入继承，tokenize 显式追加 Token 字段。
+
+本次修复升级 Pipeline identity，旧 Run 留作审计。Stack V3 Cache 的子文件清洗错误曾提前终止整个仓库展开，现改为只拒绝单文件，需单独重建 Stack V3 Cache（adapter_revision=2）；其余来源契约不变时复用。两阶段从 calibrate 开始重跑。ect-krp 的既定配额仍需足量真实数据，约 5M 的现有容量不足以满足 175M 配额，不能以软化覆盖门槛绕过容量约束。
 
 ## 12. 实施顺序
 

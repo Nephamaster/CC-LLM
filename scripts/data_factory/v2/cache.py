@@ -84,7 +84,12 @@ class CanonicalSourceReader(PipelineStep):
                         lambda reason: self.stat_update(f"dropped_{reason}"),
                     )
                     for adapted in adapted_records:
-                        canonical = clean_and_tag(self.source, adapted)
+                        try:
+                            canonical = clean_and_tag(self.source, adapted)
+                        except SourceRecordError as error:
+                            self.stat_update("dropped_documents")
+                            self.stat_update(f"dropped_{error.reason}")
+                            continue
                         self.stat_update("forwarded_documents")
                         self.stat_update("forwarded_characters", value=len(canonical.text), unit="doc")
                         yield Document(

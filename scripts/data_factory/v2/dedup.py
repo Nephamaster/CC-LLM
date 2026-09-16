@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from collections import defaultdict
@@ -17,9 +18,19 @@ from datatrove.utils.word_tokenizers import WordTokenizer
 
 from scripts.data_factory.v2.benchmarks import read_benchmark_rows
 from scripts.data_factory.v2.config import DataFactoryConfig
-from scripts.data_factory.v2.runtime import TaskOutputGuard, build_executor
+from scripts.data_factory.v2.runtime import DistributionStats, TaskOutputGuard, build_executor
 
 PROFILE_NAMES = ("zh", "en", "code")
+
+
+def minhash_dimensions(profile: dict[str, Any]) -> tuple[int, int]:
+    buckets = int(profile["num_buckets"])
+    threshold = float(profile["threshold"])
+    if buckets < 2 or not 0 < threshold < 1:
+        raise ValueError("MinHash requires num_buckets >= 2 and 0 < threshold < 1")
+    # DataTrove LSH knee: (1 / buckets) ** (1 / hashes_per_bucket).
+    hashes = max(1, round(math.log(1 / buckets) / math.log(threshold)))
+    return buckets, hashes
 
 
 def _candidate_dir(config: DataFactoryConfig, plan: dict[str, Any]) -> Path:
@@ -306,7 +317,11 @@ def run_exact_dedup(
     plan: dict[str, Any],
     **executor_options: Any,
 ) -> dict[str, Any]:
-    input_files = _parquet_files(_candidate_dir(config, plan))
+    hashes = [*plan.get("previous_plan_hashes", []), plan["plan_sha256"]]
+    input_files = sorted({
+        path for digest in hashes
+        for path in _parquet_files(config.run_root / "candidates" / digest[:16])
+    })
     root = config.run_root / "dedup" / "exact" / str(plan["plan_sha256"])[:16]
     signatures = root / "signatures"
     removals = root / "remove_ids"
@@ -345,6 +360,7 @@ def run_exact_dedup(
     filter_pipeline = [
         ParquetDocumentReader(input_files),
         ExactRemoval(removals),
+        DistributionStats(),
         TaskOutputGuard(documents),
         ParquetWriter(
             output_folder=str(documents),
@@ -418,10 +434,11 @@ def run_minhash(
             results[profile] = {"skipped": True, "reason": "empty profile"}
             continue
         profile_raw = config.dedup.minhash_profiles[profile]
+        num_buckets, hashes_per_bucket = minhash_dimensions(profile_raw)
         mh_config = MinhashConfig(
             n_grams=int(profile_raw["ngram"]),
-            num_buckets=int(profile_raw["num_buckets"]),
-            hashes_per_bucket=int(profile_raw["hashes_per_bucket"]),
+            num_buckets=num_buckets,
+            hashes_per_bucket=hashes_per_bucket,
             seed=config.seed,
             hash_config=HashConfig(precision=64),
         )
@@ -460,6 +477,7 @@ def run_minhash(
             pipeline=[
                 reader(),
                 MinhashDedupFilter(str(removals)),
+                DistributionStats(),
                 TaskOutputGuard(output),
                 ParquetWriter(
                     output_folder=str(output),
@@ -482,7 +500,12 @@ def run_minhash(
             stage2.run()
             stage3.run()
         stage4.run()
-        results[profile] = {"tasks": tasks, "output": str(output)}
+        results[profile] = {
+            "tasks": tasks, "output": str(output),
+            "requested_lsh_threshold": profile_raw["threshold"],
+            "effective_lsh_threshold": (1 / num_buckets) ** (1 / hashes_per_bucket),
+            "num_buckets": num_buckets, "hashes_per_bucket": hashes_per_bucket,
+        }
     return {"stage": "minhash", "root": str(root), "profiles": results}
 
 
@@ -591,6 +614,7 @@ def run_decontamination(
     pipeline = [
         ParquetDocumentReader(files),
         DecontaminationFilter(exact, zh_ngrams, word_ngrams),
+        DistributionStats(),
         TaskOutputGuard(output),
         ParquetWriter(
             output_folder=str(output),
@@ -604,7 +628,7 @@ def run_decontamination(
     ]
     executor = build_executor(
         pipeline=pipeline,
-        logging_dir=config.run_root / "logs" / "decontamination",
+        logging_dir=config.run_root / "logs" / "decontamination" / str(plan["plan_sha256"])[:16],
         job_name=f"cc_decontam_{config.phase}",
         tasks=tasks,
         **_executor_kwargs(executor_options),

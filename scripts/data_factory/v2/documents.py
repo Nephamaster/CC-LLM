@@ -147,6 +147,8 @@ def source_cache_id(source: SourceSpec, manifest_sha256: str) -> str:
         "source_contract_sha256": source_contract_hash(source),
         "manifest_sha256": manifest_sha256,
     }
+    if source.adapter == "stack_v3_train":
+        payload["adapter_revision"] = 2
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
 
@@ -625,13 +627,27 @@ def clean_and_tag(source: SourceSpec, adapted: AdaptedRecord) -> CanonicalRecord
     return CanonicalRecord(doc_id=adapted.doc_id, text=text, metadata=metadata)
 
 
+def _select_inspection_paths(paths: list[Path], max_files: int) -> list[Path]:
+    if max_files <= 0:
+        raise ValueError("max_files must be positive")
+    if len(paths) <= max_files:
+        return paths
+    if max_files == 1:
+        return [paths[len(paths) // 2]]
+    return [
+        paths[round(index * (len(paths) - 1) / (max_files - 1))]
+        for index in range(max_files)
+    ]
+
+
 def inspect_source(
     source: SourceSpec,
     *,
     max_files: int = 3,
     max_rows: int = 20,
 ) -> dict[str, Any]:
-    paths = expand_source_paths(source)[:max_files]
+    available_paths = expand_source_paths(source)
+    paths = _select_inspection_paths(available_paths, max_files)
     errors: list[dict[str, Any]] = []
     raw_fields: Counter[str] = Counter()
     raw_rows_scanned = 0
@@ -641,36 +657,48 @@ def inspect_source(
     samples: list[dict[str, Any]] = []
 
     scan_multiplier = int(source.metadata.get("inspect_scan_multiplier", 1))
-    for record in iter_raw_records(
-        source,
-        paths,
-        limit=max_rows * scan_multiplier,
-        on_error=errors.append,
-    ):
-        raw_rows_scanned += 1
-        raw_fields.update(record.row.keys())
-        try:
-            for value in adapt_records(source, record, lambda reason: rejected.update([reason])):
-                adapted += 1
-                canonical = clean_and_tag(source, value)
-                accepted += 1
-                if len(samples) < 3:
-                    samples.append(
-                        {
-                            "doc_id": canonical.doc_id,
-                            "text_preview": canonical.text[:200],
-                            "metadata": canonical.metadata,
-                        }
-                    )
-                if accepted >= max_rows:
-                    break
-        except SourceRecordError as error:
-            rejected[error.reason] += 1
+    if scan_multiplier <= 0:
+        raise ValueError("inspect_scan_multiplier must be positive")
+    scan_limit_per_file = max_rows * scan_multiplier
+    scanned_paths: list[Path] = []
+    for path in paths:
+        scanned_paths.append(path)
+        for record in iter_raw_records(
+            source,
+            [path],
+            limit=scan_limit_per_file,
+            on_error=errors.append,
+        ):
+            raw_rows_scanned += 1
+            raw_fields.update(record.row.keys())
+            try:
+                for value in adapt_records(source, record, lambda reason: rejected.update([reason])):
+                    adapted += 1
+                    try:
+                        canonical = clean_and_tag(source, value)
+                    except SourceRecordError as error:
+                        rejected[error.reason] += 1
+                        continue
+                    accepted += 1
+                    if len(samples) < 3:
+                        samples.append(
+                            {
+                                "doc_id": canonical.doc_id,
+                                "text_preview": canonical.text[:200],
+                                "metadata": canonical.metadata,
+                            }
+                        )
+                    if accepted >= max_rows:
+                        break
+            except SourceRecordError as error:
+                rejected[error.reason] += 1
+            if accepted >= max_rows:
+                break
         if accepted >= max_rows:
             break
 
     file_details: list[dict[str, Any]] = []
-    for path in paths:
+    for path in scanned_paths:
         detail: dict[str, Any] = {"path": str(path), "size_bytes": path.stat().st_size}
         if source.reader == "parquet":
             import pyarrow.parquet as pq
@@ -697,8 +725,11 @@ def inspect_source(
         "reader": source.reader,
         "adapter": source.adapter,
         "source_contract_sha256": source_contract_hash(source),
+        "available_files": len(available_paths),
+        "selected_files": len(paths),
         "inspected_files": file_details,
         "rows_requested": max_rows,
+        "scan_limit_per_file": scan_limit_per_file,
         "raw_rows_scanned": raw_rows_scanned,
         "adapted_rows": adapted,
         "accepted_rows": accepted,

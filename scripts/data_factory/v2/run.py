@@ -197,6 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mem-per-cpu-gb", type=int, default=4)
     parser.add_argument("--venv-path")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--round", type=int, default=0, dest="round_index")
     return parser.parse_args()
 
 
@@ -283,11 +284,11 @@ def main() -> None:
                 result = build_plan(
                     config,
                     calibration,
-                    round_index=0,
+                    round_index=args.round_index,
                     overwrite=args.overwrite,
                 )
             else:
-                candidate_plan = plan_path(config, 0)
+                candidate_plan = plan_path(config, args.round_index)
                 if not candidate_plan.is_file():
                     raise FileNotFoundError(
                         f"candidate plan is missing: {candidate_plan}; run plan first"
@@ -340,6 +341,8 @@ def main() -> None:
                         overwrite=args.overwrite,
                     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    if result.get("passed") is False:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

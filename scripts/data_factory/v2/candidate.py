@@ -14,7 +14,7 @@ from scripts.data_factory.v2.config import DataFactoryConfig
 from scripts.data_factory.v2.runtime import TaskOutputGuard, build_executor
 from scripts.data_factory.v2.sampling import (
     CACHE_COLUMNS,
-    assign_bucket,
+    eligible_buckets,
     load_new_characters,
     stable_fraction,
     stable_key,
@@ -109,6 +109,12 @@ class CandidateSelector(PipelineStep):
             str(source): float(stats["tokens_per_character"])
             for source, stats in calibration["sources"].items()
         }
+        self.bucket_densities = {
+            (source, bucket): stats["tokens_per_character"]
+            for source, source_stats in calibration["sources"].items()
+            for bucket, stats in source_stats.get("buckets", {}).items()
+            if stats.get("tokens_per_character", 0) > 0
+        }
         self.new_characters = load_new_characters(config.enhancement.token_ids_path)
         self.seed = config.seed
 
@@ -121,20 +127,24 @@ class CandidateSelector(PipelineStep):
         del rank, world_size
         for document in data:
             self.stat_update("documents")
-            bucket = assign_bucket(
+            eligible = eligible_buckets(
                 self.config,
                 document.text,
                 document.metadata,
                 self.new_characters,
             )
-            if bucket is None:
+            if not eligible:
                 self.stat_update("dropped_no_bucket")
                 continue
             source = str(document.metadata["source"])
-            rate = self.sampling_rates.get(bucket, {}).get(source, 0.0)
-            if stable_fraction(self.seed, f"candidate:{bucket}:{source}", document.id) >= rate:
+            if not any(
+                stable_fraction(self.seed, f"candidate:{name}:{source}", document.id)
+                < self.sampling_rates.get(name, {}).get(source, 0.0)
+                for name in eligible
+            ):
                 self.stat_update("dropped_sampling")
                 continue
+            bucket = eligible[0]
             document.metadata.update(
                 {
                     "candidate_bucket": bucket,
@@ -143,7 +153,7 @@ class CandidateSelector(PipelineStep):
                         int(
                             round(
                                 int(document.metadata["char_count"])
-                                * self.tokens_per_character[source]
+                                * self.bucket_densities.get((source, bucket), self.tokens_per_character[source])
                             )
                         ),
                     ),
@@ -153,6 +163,7 @@ class CandidateSelector(PipelineStep):
             )
             self.stat_update("forwarded")
             self.stat_update(f"forwarded_{bucket}")
+            self.stat_update(f"tokens_{bucket}_{source}", value=document.metadata["estimated_tokens"])
             yield document
 
 

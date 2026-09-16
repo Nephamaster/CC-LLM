@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Any, Iterator
 
 from datatrove.data import Document, DocumentsPipeline
 from datatrove.pipeline.base import PipelineStep
+
+
+class DistributionStats(PipelineStep):
+    """Record output quantities by source and bucket for replenishment audits."""
+
+    name = "Bucket and source output"
+    type = "Stats"
+
+    def run(self, data, rank=0, world_size=1):
+        for document in data:
+            key = f"{document.metadata.get('candidate_bucket', 'unknown')}/{document.metadata.get('source', 'unknown')}"
+            self.stat_update(f"documents/{key}")
+            self.stat_update(f"tokens/{key}", value=int(document.metadata.get("estimated_tokens", 0)))
+            yield document
 
 
 class TaskOutputGuard(PipelineStep):
@@ -53,6 +68,12 @@ def build_executor(
 ):
     if tasks <= 0 or workers <= 0:
         raise ValueError("tasks and workers must be positive")
+    logging_dir.mkdir(parents=True, exist_ok=True)
+    layout_path = logging_dir / "task_layout.json"
+    layout = {"tasks": tasks}
+    if layout_path.is_file() and json.loads(layout_path.read_text()) != layout:
+        raise ValueError(f"task sharding changed for existing completion markers: {logging_dir}")
+    layout_path.write_text(json.dumps(layout) + "\n")
     workers = min(workers, tasks)
     if executor == "local":
         from datatrove.executor import LocalPipelineExecutor

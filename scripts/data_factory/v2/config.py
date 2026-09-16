@@ -515,7 +515,11 @@ def load_data_factory_config(
     )
     sequence = _load_sequence(_mapping(raw.get("sequence"), "sequence"))
 
-    phase_hash = _canonical_hash({"config": raw, "profile": profile})
+    enhancement_weights = next(b.source_weights for b in buckets if b.name == enhancement.bucket)
+    source_cap = enhancement.constraints.get("single_source_max_fraction", 1.0)
+    if max(enhancement_weights.values()) > source_cap + 1e-9:
+        raise ValueError("enhancement source_weights exceed single_source_max_fraction")
+    phase_hash = _canonical_hash({"config": raw, "profile": profile, "pipeline_revision": 3})
     new_char_tokens_hash = _file_hash(enhancement.token_ids_path)
     if require_tokenizer and new_char_tokens_hash is None:
         raise FileNotFoundError(

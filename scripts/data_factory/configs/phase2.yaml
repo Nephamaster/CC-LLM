@@ -80,9 +80,9 @@ dedup:
   minhash:
     enabled: true
     profiles:
-      zh: {unit: char, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
-      en: {unit: word, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
-      code: {unit: lexical_token, ngram: 5, threshold: 0.85, num_buckets: 14, hashes_per_bucket: 8}
+      zh: {unit: char, ngram: 5, threshold: 0.80, num_buckets: 14}
+      en: {unit: word, ngram: 5, threshold: 0.80, num_buckets: 14}
+      code: {unit: lexical_token, ngram: 5, threshold: 0.85, num_buckets: 14}
   decontamination:
     registry: scripts/data_factory/configs/benchmarks.yaml
 

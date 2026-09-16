@@ -37,7 +37,7 @@ class DataFactoryV2ConfigTest(unittest.TestCase):
         self.assertTrue(config.enhancement.natural_only)
         self.assertFalse(config.enhancement.synthetic_enabled)
         self.assertEqual(config.enhancement.coverage_targets[1], 0.99)
-        self.assertEqual(config.enhancement.constraints["single_source_max_fraction"], 0.30)
+        self.assertEqual(config.enhancement.constraints["single_source_max_fraction"], 0.40)
         self.assertFalse(any("bridge" in bucket.name for bucket in config.buckets))
         buckets = {bucket.name: bucket for bucket in config.buckets}
         self.assertEqual(buckets["zh_general"].source_weights, {"cci3_hq": 0.70, "wanjuan": 0.30})
@@ -63,7 +63,7 @@ class DataFactoryV2ConfigTest(unittest.TestCase):
         buckets = {bucket.name: bucket for bucket in config.buckets}
         self.assertEqual(buckets["math_code_science"].source_weights["peS2o"], 0.25)
         self.assertEqual(config.source_registry.sources["ect_krp"].reader, "text")
-        self.assertEqual(config.source_registry.sources["peS2o"].reader, "zstd_jsonl")
+        self.assertEqual(config.source_registry.sources["peS2o"].reader, "jsonl")
 
     def test_exact_only_profile_disables_only_minhash(self) -> None:
         default = load_data_factory_config(CONFIG_ROOT / "phase1.yaml")

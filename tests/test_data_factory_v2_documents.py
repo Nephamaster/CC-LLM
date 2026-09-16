@@ -110,19 +110,19 @@ class DataFactoryV2DocumentsTest(unittest.TestCase):
         self.assertEqual(rejected, ["stack_vendor_file", "stack_non_permissive"])
     def test_pes2o_keeps_only_s2orc_full_text(self) -> None:
         source = SourceSpec(
-            name="peS2o", reader="zstd_jsonl", adapter="pes2o",
-            paths=("unused.zst",), phases=frozenset({"phase2"}),
+            name="peS2o", reader="jsonl", adapter="pes2o",
+            paths=("unused.json.gz",), phases=frozenset({"phase2"}),
             license="ODC-By-1.0", license_mode="fixed",
             quality_profile="scientific", default_domain="scientific",
             metadata={"required_source": "s2orc"},
         )
         accepted = RawRecord(
             row={"id": "1", "source": "s2orc", "text": "full paper text"},
-            path=Path("sample.zst"), row_index=0,
+            path=Path("sample.json.gz"), row_index=0,
         )
         rejected = RawRecord(
             row={"id": "2", "source": "s2ag", "text": "abstract"},
-            path=Path("sample.zst"), row_index=1,
+            path=Path("sample.json.gz"), row_index=1,
         )
         self.assertEqual(adapt_record(source, accepted).text, "full paper text")
         with self.assertRaisesRegex(SourceRecordError, "s2ag"):
@@ -158,6 +158,37 @@ class DataFactoryV2DocumentsTest(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["accepted_rows"], 1)
         self.assertIn("text", report["raw_fields"])
+
+    def test_inspection_spreads_scan_budget_across_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths: list[str] = []
+            for index in range(5):
+                path = root / f"part-{index:02d}.jsonl"
+                row = {"id": str(index), "unused": "rejected"}
+                if index == 4:
+                    row["text"] = "这是一条长度足够并且来自末尾分片的有效中文检查文本。"
+                path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+                paths.append(str(path))
+            source = SourceSpec(
+                name="spread",
+                reader="jsonl",
+                adapter="generic_text",
+                paths=tuple(paths),
+                phases=frozenset({"phase2"}),
+                license="Apache-2.0",
+                license_mode="fixed",
+                quality_profile="curated_zh",
+                default_domain="general",
+                metadata={"inspect_scan_multiplier": 1},
+            )
+
+            report = inspect_source(source, max_files=3, max_rows=1)
+
+        inspected = [Path(item["path"]).name for item in report["inspected_files"]]
+        self.assertEqual(inspected, ["part-00.jsonl", "part-02.jsonl", "part-04.jsonl"])
+        self.assertEqual(report["raw_rows_scanned"], 3)
+        self.assertTrue(report["passed"])
 
 
 if __name__ == "__main__":

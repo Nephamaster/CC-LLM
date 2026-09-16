@@ -40,7 +40,7 @@ Phase1 和 Phase2 共用完全相同的数据处理代码与 Corpus Cache，仅�
 | ① Source Cache | 原始 JSONL/Parquet/tar 等统一字段、基础解析并转换为 Parquet Shards | **全量，仅首次执行** | DataTrove + PyArrow |
 | ② Cheap Clean & Tag | Unicode/乱码清理、Web 噪声过滤；语言、领域、中英混排、繁体、古文、长文档等标签生成 | **全量** | DataTrove + 自定义 Filter / LanguageFilter |
 | ③ Token Calibration | 每个 `source × category` 抽约 50K 文档，用最终 Char Tokenizer 估算 token 密度与长度分布 | **小样本** | HF `tokenizers` |
-| ④ Candidate Sampling | 根据当前 Phase 的 source/category 配额和 estimated tokens 确定性过采样 | **全量扫描，但仅廉价操作** | DataTrove `SamplerFilter` |
+| ④ Candidate Sampling | 根据当前 Phase 的 source/category 配额和 estimated tokens 确定性过采样 | **仅文件级 Plan 选中的 Cache** | DataTrove + 自定义选择器 |
 | ⑤ Quality Filtering | 对 WanJuan、普通 Web、中英混排等宽泛来源候选做进一步语义质量评分；高质量 curated 数据跳过重模型评分 | **仅 Candidate Pool** | FastText / 小型 Quality Classifier + 来源先验 |
 | ⑥ Exact Dedup | 对 `normalized_text` 计算哈希，删除完全重复文档；跨源重复保留高质量版本 | **仅 Candidate Pool** | `xxhash` |
 | ⑦ MinHash Dedup | 删除转载、镜像、轻微格式修改等近似重复文本 | **仅 Candidate Pool** | DataTrove MinHash |
@@ -166,7 +166,7 @@ S_{\text{new}}(d)=
 
 文档频率较低的新 Token 权重更高。拼音候选、多音字、部首、笔画、结构等 feature coverage 作为次级排序信号。
 
-筛选分两轮：先进行 coverage-first selection，优先覆盖没有或只有少量自然上下文的新 Token；达到最低覆盖后，再按 `S_new + feature_score` 加权采样至目标配额。Phase1 选 20M，Phase2 选 500M。
+筛选分两轮：先进行 coverage-first selection，再按 `S_new + feature_score` 在来源约束下补齐配额。Phase1 选 150M，Phase2 选 1B。1/20/100 文档对应99%/95%/90%仅作诊断，不作硬门槛。候选保留普通类别与增强资格，最终增强入选后才排除普通用途。
 
 增强数据必须以自然文本为主体；无法获得自然上下文的极少数字符才允许生成少量 coverage sample。某文档一旦被选入增强池，就从原 `zh_general` 或 `zh_knowledge` 中移除，避免同一文本重复训练。
 
@@ -220,7 +220,7 @@ Phase1/Phase2 的区别全部集中在配置：
 | `exact_dedup` | 开启 | 开启 |
 | `minhash_dedup` | 开启 | 开启 |
 | `decontamination` | 开启 | 开启 |
-| `new_char_enhancement` | 20M / 2% | 500M / 5% |
+| `new_char_enhancement` | 150M / 15% | 1B / 10% |
 | `long_doc_sampling` | 弱化 | 开启 |
 | `traditional/classical constraint` | 仅统计 | 参与 Mixing |
 | `sequence_length` | 1K/2K | 2K/4K/8K |
@@ -290,7 +290,7 @@ feature_coverage_report.json
 - 最终 token 规模误差 ≤1%；
 - Exact duplicate = 0；
 - 已知 benchmark contamination = 0；
-- 新增单汉字 Token 至少拥有一个自然上下文的覆盖率 ≥99%；
+- 新增单汉字 Token 的1/20/100篇覆盖率与候选上限均报告，99%/95%/90%仅作诊断；
 - PGCA feature index 对训练中显式单汉字 Token 的缺失率为 0；
 - Phase2 单一来源不应异常支配总体 mixture。
 

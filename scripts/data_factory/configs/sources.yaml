@@ -79,7 +79,7 @@ sources:
     reader: parquet
     adapter: generic_text
     paths:
-      - /share/project/wuhaiming/data/dataset/wikipedia/20231201.zh/*.parquet
+      - /share/project/wuhaiming/data/dataset/wikipedia/20231101.zh/*.parquet
     phases: [phase2]
     license: CC-BY-SA-4.0
     quality_profile: curated_zh
@@ -148,14 +148,14 @@ sources:
 
   peS2o:
     homepage: https://www.modelscope.cn/datasets/allenai/peS2o
-    reader: zstd_jsonl
+    reader: jsonl
     adapter: pes2o
     paths:
-      - /share/project/wuhaiming/data/dataset/peS2o/data/v2/*.zst
+      - /share/project/wuhaiming/data/dataset/peS2o/data/v2/train*.json.gz
     phases: [phase2]
     license: ODC-By-1.0
     quality_profile: scientific
     default_domain: scientific
     metadata:
-      required_source: s2orc
+      required_source: s2orc/train
       inspect_scan_multiplier: 1000

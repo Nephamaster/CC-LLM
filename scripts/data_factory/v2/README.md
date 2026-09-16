@@ -97,7 +97,7 @@ python -m scripts.data_factory.v2.run candidate \
   --workers 16
 ```
 
-Calibration 对每个来源最多读取配置的 32 个 Cache Shard，并最多扫描 `50000 * 4` 条记录；使用最终 Char Tokenizer 精确编码样本，统计互斥 Bucket 产率。
+Calibration 对每个来源最多读取配置的 32 个 Cache Shard，并最多扫描 `50000 * 4` 条记录；普通类别与增强资格分别统计，二者可重叠。
 
 Plan 按 Bucket Token、Source Weight、产率和安全余量选择 Cache 文件。`passed=false` 时 Candidate 拒绝启动。Plan 是不可变产物；修改配置、Tokenizer、新增汉字清单或 Source Manifest 会生成新的 Run ID。
 
@@ -145,7 +145,11 @@ python -m scripts.data_factory.v2.run mixture \
 
 该阶段扫描去污染后的 Candidate，输出新增汉字 TF/DF、Feature DF、选中前后覆盖和来源约束报告；采用 Coverage-first Greedy 后按 `S_new + 0.25 * S_feature` 补齐增强配额。入选增强池的文档不会再进入原 Bucket。
 
-其他 Bucket 按 Source Weight 和稳定 Hash 选择，输出到 `selected/<plan_hash>/`。当前使用估算 Token，仅要求为下一阶段保留足够数据；真实 Token 配额和增量补采由 Exact Tokenization 后确定。
+其他 Bucket 按来源配额从剩余候选确定性填充，输出到 `selected/<plan_hash>/`。99%/95%/90%覆盖只作诊断；来源、数量及横向约束仍参与 passed。失败阶段非零退出，tokenize 只接受当前 Plan 的成功 Mixture。
+
+若 Mixture 或 Finalize 有Token缺额，执行 `plan --round 1`，再依次执行 `candidate/exact_dedup/minhash/decontaminate/mixture/tokenize/finalize --round 1`（配置参数照旧）。Candidate 只读未用过的Cache分片，去重对全部轮次候选重新执行。再次补采使用递增round，报告必须来自上一轮；没有Token缺额时拒绝补采。只有横向/来源配比失败时应调整选择或数据配置，不能靠无限补采。
+
+本次更新生成新的Run ID。先用 `cache --source the_stack_v3` 重建修复后的Stack V3缓存，再用不带source的manifest冻结完整来源清单，其他Cache可复用。两阶段从calibrate开始执行。首次运行无需overwrite；在同一轮重建Mixture、Tokenize或Finalize才使用overwrite。不要删除Cache来清理失败Run。增量Tokenize按ID、文本Hash和Tokenizer Hash复用旧轮Token IDs，未变化文本不重复编码。
 
 ## 9. Exact Tokenization、Finalization 与 ms-swift
 

@@ -1,0 +1,15 @@
+# Phase配额与增强资格修复
+
+2026-09-16：用户确认以来源配比为准兼容单来源上限，Phase1从30%改40%；汉字1/20/100篇对应99%/95%/90%保留为诊断，退出硬门禁。
+
+候选对普通类别与增强资格分别校准、抽样取并集，保存一份正文；最终增强选择后才锁定父文档。Phase2允许FineWeb中文knowledge用于配置指定通用桶。配置加载拒绝权重超过来源上限。Mixture来源填充保持配额，候选覆盖与最终训练覆盖均报告。
+
+修复共享Writer schema调用点，Tokenize显式追加input_ids/token_count/tokenizer_sha256，Finalize按真实Token复查来源、专项子类和横向约束。失败CLI非零退出，Tokenize验证Mixture成功且Plan一致。
+
+增加--round补采：由上一轮source_shortfalls选择未用Cache文件，新旧轮次候选合并去重。Pipeline revision进入Run ID，Cache契约不变时复用；新Run从Calibration重跑全部下游。MinHash threshold通过LSH近似拐点反推hashes_per_bucket，不宣称严格逐对Jaccard阈值。
+
+ect-krp约5M容量低于既定175M配额属于真实不足，本次不擅自改变用户来源比例，Plan应继续报告。来源统计不能将有限候选未覆盖解释为全语料不存在。
+
+进一步确认Stack V3清洗异常原在仓库展开循环外捕获，首个短文件会丢弃仓库后续文件。现在逐文件捕获，Stack V3 cache identity单独加adapter_revision=2，仅该来源需要重建Cache。其他来源复用；两阶段重跑Calibration及下游。运行器保存task_layout，拒绝更改任务分片数后复用完成标记；去污染日志按Plan隔离。各去重/去污染输出新增Bucket×Source文档及估算Token统计。
+
+验证：隔离/tmp依赖环境执行V2回归，33项通过，1项依赖服务器Char Tokenizer的测试跳过。新增真实PyArrow和临时Tokenizer的小规模Mixture→Tokenize→Finalize测试，覆盖uint64、软覆盖门禁、父文档互斥、精确Token配额和跨轮编码复用；另验证Candidate资格并集、Plan跨轮文件互斥、来源上限冲突、恢复分片保护及Stack子文档异常。未宣称服务器1B/10B全量验收通过。

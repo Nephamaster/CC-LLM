@@ -13,6 +13,7 @@ from typing import Any
 
 from scripts.data_factory.v2.config import BucketSpec, DataFactoryConfig
 from scripts.data_factory.v2.documents import source_cache_id
+from scripts.data_factory.v2.quality import sub_bucket
 
 
 CACHE_COLUMNS = [
@@ -132,12 +133,29 @@ def assign_bucket(
 ) -> str | None:
     buckets = {bucket.name: bucket for bucket in config.buckets}
     for name in config.candidate_priority:
+        if name == config.enhancement.bucket:
+            continue
         bucket = buckets[name]
         if metadata.get("source") not in bucket.source_weights:
             continue
-        if selector_matches(bucket.selector, text, metadata, new_characters):
+        if selector_matches(bucket.selector, text, metadata, new_characters) or (
+            config.phase == "phase2" and bucket.selector == "zh_general"
+            and metadata.get("source") == "fineweb_edu_chinese"
+            and metadata.get("language") == "zh" and metadata.get("domain") == "knowledge"
+        ):
             return name
     return None
+
+
+def eligible_buckets(config, text, metadata, new_characters) -> list[str]:
+    ordinary = assign_bucket(config, text, metadata, new_characters)
+    result = [ordinary] if ordinary else []
+    enhancement = next(b for b in config.buckets if b.name == config.enhancement.bucket)
+    if metadata.get("source") in enhancement.source_weights and selector_matches(
+        "new_char_coverage", text, metadata, new_characters
+    ):
+        result.append(enhancement.name)
+    return result
 
 
 def calibration_path(config: DataFactoryConfig) -> Path:
@@ -264,6 +282,8 @@ def calibrate(
         )
         bucket_documents: Counter[str] = Counter()
         bucket_tokens: Counter[str] = Counter()
+        sub_tokens: dict[str, Counter[str]] = defaultdict(Counter)
+        bucket_characters: Counter[str] = Counter()
         domain_documents: Counter[str] = Counter()
         source_tokens = 0
         source_characters = 0
@@ -278,10 +298,11 @@ def calibrate(
                 source_tokens += token_count
                 source_characters += int(row["char_count"])
                 domain_documents[str(row.get("domain") or "unknown")] += 1
-                bucket = assign_bucket(config, str(row["text"]), row, new_characters)
-                if bucket is not None:
+                for bucket in eligible_buckets(config, str(row["text"]), row, new_characters):
                     bucket_documents[bucket] += 1
                     bucket_tokens[bucket] += token_count
+                    bucket_characters[bucket] += int(row["char_count"])
+                    sub_tokens[bucket][str(sub_bucket(row))] += token_count
 
         sampled_documents = len(sample)
         available_documents = sum(rows for _path, rows in file_rows)
@@ -302,6 +323,8 @@ def calibrate(
                     "tokens": bucket_tokens[bucket.name],
                     "document_rate": bucket_documents[bucket.name] / max(1, sampled_documents),
                     "token_rate": bucket_tokens[bucket.name] / max(1, source_tokens),
+                    "tokens_per_character": bucket_tokens[bucket.name] / max(1, bucket_characters[bucket.name]),
+                    "sub_token_rates": {name: value / max(1, source_tokens) for name, value in sub_tokens[bucket.name].items()},
                 }
                 for bucket in config.buckets
             },
@@ -359,12 +382,29 @@ def build_plan(
     round_index: int = 0,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    if round_index != 0:
-        raise ValueError(
-            "incremental plan rounds require post-selection shortfalls and are not available yet"
-        )
+    if round_index < 0:
+        raise ValueError("round_index must be non-negative")
+    previous_plans = [json.loads(plan_path(config, i).read_text()) for i in range(round_index)]
+    used_files = {item["path"] for p in previous_plans for item in p["selected_files"]}
+    deficits = None
+    if previous_plans:
+        report_path = config.run_root / "reports" / "mixture_report.json"
+        report = json.loads(report_path.read_text())
+        if report.get("plan_sha256") != previous_plans[-1]["plan_sha256"]:
+            raise ValueError("incremental plan requires mixture report for the previous round")
+        deficits = report.get("source_shortfalls", {})
+        final_path = config.run_root / "reports" / "finalization_report.json"
+        if final_path.is_file():
+            final = json.loads(final_path.read_text())
+            if final.get("plan_sha256") == previous_plans[-1]["plan_sha256"]:
+                deficits = final.get("source_shortfalls", deficits)
+        if not any(v > 0 for values in deficits.values() for v in values.values()):
+            raise ValueError("no token shortfalls to replenish; coverage diagnostics do not trigger resampling")
     output_path = plan_path(config, round_index)
-    bucket_targets = config.bucket_tokens
+    bucket_targets = {
+        b.name: config.bucket_tokens[b.name] + int(round(config.validation_tokens * b.fraction))
+        for b in config.buckets
+    }
     requirements: dict[str, float] = defaultdict(float)
     requested: dict[str, dict[str, int]] = defaultdict(dict)
     shortfalls: list[dict[str, Any]] = []
@@ -377,7 +417,11 @@ def build_plan(
         )
         for source_name, weight in bucket.source_weights.items():
             target = int(round(bucket_targets[bucket.name] * weight))
+            if deficits is not None:
+                target = int(deficits.get(bucket.name, {}).get(source_name, 0))
             requested[bucket.name][source_name] = target
+            if target <= 0:
+                continue
             source_stats = calibration["sources"].get(source_name)
             rate = 0.0 if source_stats is None else float(source_stats["buckets"][bucket.name]["token_rate"])
             if rate <= 0:
@@ -385,10 +429,9 @@ def build_plan(
                     {"bucket": bucket.name, "source": source_name, "reason": "zero_calibrated_yield", "target_tokens": target}
                 )
                 continue
-            requirements[source_name] = max(
-                requirements[source_name],
-                target * oversample / rate,
-            )
+            # Ordinary and enhancement eligibility overlap. Reserve enough source
+            # capacity for both uses; only the final mixture assigns ownership.
+            requirements[source_name] += target * oversample / rate
 
     selected_files: list[dict[str, Any]] = []
     selected_capacity: dict[str, int] = {}
@@ -396,7 +439,7 @@ def build_plan(
     for source_name, required in sorted(requirements.items()):
         source_stats = calibration["sources"][source_name]
         selected, capacity = _select_source_files(
-            source_stats["cache_files"],
+            [item for item in source_stats["cache_files"] if item["path"] not in used_files],
             source_name=source_name,
             seed=seed,
             tokens_per_document=float(source_stats["tokens_per_document"]),
@@ -428,7 +471,10 @@ def build_plan(
                 continue
             rate = float(source_stats["buckets"][bucket.name]["token_rate"])
             eligible = selected_capacity[source_name] * rate
-            sample_rate = target * oversample / max(1.0, eligible)
+            reserve = 0
+            if bucket.name != config.enhancement.bucket and target > 0:
+                reserve = requested.get(config.enhancement.bucket, {}).get(source_name, 0)
+            sample_rate = (target + reserve) * oversample / max(1.0, eligible)
             if sample_rate > 1.0 + 1e-9:
                 shortfalls.append(
                     {
@@ -440,6 +486,23 @@ def build_plan(
                 )
             sampling_rates[bucket.name][source_name] = min(1.0, sample_rate)
 
+    if round_index == 0:
+        for bucket in config.buckets:
+            for domain, fraction in bucket.sub_buckets.items():
+                capacity = 0.0
+                for source in bucket.source_weights:
+                    stats = calibration["sources"].get(source, {})
+                    rates = stats.get("buckets", {}).get(bucket.name, {}).get("sub_token_rates")
+                    if rates is None:
+                        break
+                    capacity += selected_capacity.get(source, 0) * rates.get(domain, 0)
+                else:
+                    required = bucket_targets[bucket.name] * fraction * config.candidate_oversample_ratio
+                    if capacity < required:
+                        shortfalls.append({"bucket": bucket.name, "domain": domain,
+                                           "reason": "insufficient_sub_bucket_capacity",
+                                           "required_tokens": int(required), "available_tokens": int(capacity)})
+
     fingerprint_payload = {
         "run_id": config.run_id,
         "round_index": round_index,
@@ -447,6 +510,7 @@ def build_plan(
         "bucket_targets": bucket_targets,
         "selected_files": selected_files,
         "sampling_rates": sampling_rates,
+        "previous_plan_hashes": [p["plan_sha256"] for p in previous_plans],
     }
     report: dict[str, Any] = {
         "stage": "plan",
@@ -458,6 +522,7 @@ def build_plan(
         "plan_sha256": _hash_json(fingerprint_payload),
         "bucket_targets": bucket_targets,
         "source_targets": {name: dict(values) for name, values in requested.items()},
+        "previous_plan_hashes": [p["plan_sha256"] for p in previous_plans],
         "sampling_rates": {name: dict(values) for name, values in sampling_rates.items()},
         "selected_files": selected_files,
         "selected_file_count": len(selected_files),

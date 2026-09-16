@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import heapq
 import json
 import math
@@ -11,7 +10,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from scripts.data_factory.v2.config import DataFactoryConfig
-from scripts.data_factory.v2.sampling import load_new_characters, stable_fraction, stable_key
+from scripts.data_factory.v2.quality import MixtureMetrics, sub_bucket
+from scripts.data_factory.v2.sampling import eligible_buckets, load_new_characters, stable_key
 
 
 def _input_files(config: DataFactoryConfig, plan: dict[str, Any]) -> list[Path]:
@@ -29,6 +29,18 @@ def _iter_rows(files: list[Path]) -> Iterator[dict[str, Any]]:
         parquet = pq.ParquetFile(path)
         for batch in parquet.iter_batches(batch_size=4096):
             yield from batch.to_pylist()
+
+
+def _input_schema(files: list[Path]):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    schema = pq.ParquetFile(files[0]).schema_arrow
+    if "sample_key" not in schema.names:
+        raise ValueError("mixture input schema is missing sample_key")
+    if not pa.types.is_uint64(schema.field("sample_key").type):
+        raise TypeError("mixture input sample_key must be uint64")
+    return schema
 
 
 def _feature_map(config: DataFactoryConfig, new_characters: frozenset[str]) -> dict[str, frozenset[str]]:
@@ -98,8 +110,9 @@ def _write_frequency_reports(
 
 
 class ShardedParquetWriter:
-    def __init__(self, root: Path, max_rows: int = 100_000) -> None:
+    def __init__(self, root: Path, schema: Any, max_rows: int = 100_000) -> None:
         self.root = root
+        self.schema = schema
         self.max_rows = max_rows
         self.buffers: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.indices: Counter[str] = Counter()
@@ -120,7 +133,11 @@ class ShardedParquetWriter:
         output = self.root / bucket
         output.mkdir(parents=True, exist_ok=True)
         path = output / f"part-{self.indices[bucket]:05d}.parquet"
-        pq.write_table(pa.Table.from_pylist(rows), path, compression="zstd")
+        pq.write_table(
+            pa.Table.from_pylist(rows, schema=self.schema),
+            path,
+            compression="zstd",
+        )
         self.indices[bucket] += 1
         rows.clear()
 
@@ -143,6 +160,7 @@ def build_mixture(
     overwrite: bool = False,
 ) -> dict[str, Any]:
     files = _input_files(config, plan)
+    schema = _input_schema(files)
     output_root = config.run_root / "selected" / str(plan["plan_sha256"])[:16]
     if output_root.exists() and any(output_root.rglob("*.parquet")) and not overwrite:
         raise FileExistsError(f"selected mixture already exists: {output_root}")
@@ -154,6 +172,10 @@ def build_mixture(
     new_characters = load_new_characters(config.enhancement.token_ids_path)
     feature_map = _feature_map(config, new_characters)
     enhancement_bucket = config.enhancement.bucket
+    enhancement_weights = next(b.source_weights for b in config.buckets if b.name == enhancement_bucket)
+
+    def is_enhancement(row):
+        return enhancement_bucket in eligible_buckets(config, str(row["text"]), row, new_characters)
     selection_targets = {
         bucket.name: config.bucket_tokens[bucket.name]
         + int(round(config.validation_tokens * bucket.fraction))
@@ -168,11 +190,9 @@ def build_mixture(
     enhancement_tokens = 0
 
     for row in _iter_rows(files):
-        bucket = str(row["candidate_bucket"])
         source = str(row["source"])
         tokens = int(row["estimated_tokens"])
-        available_tokens[bucket][source] += tokens
-        if bucket != enhancement_bucket:
+        if not is_enhancement(row):
             continue
         chars = _new_chars(str(row["text"]), new_characters)
         if not chars:
@@ -194,11 +214,11 @@ def build_mixture(
     average_tokens = enhancement_tokens / enhancement_documents
     fill_limit = min(4_000_000, max(10_000, math.ceil(target_tokens / max(1.0, average_tokens) * 1.5)))
     per_char_limit = max(config.enhancement.coverage_targets, default=100)
-    fill_heap: list[tuple] = []
+    fill_heaps: dict[str, list[tuple]] = defaultdict(list)
     character_heaps: dict[str, list[tuple]] = defaultdict(list)
 
     for row in _iter_rows(files):
-        if row["candidate_bucket"] != enhancement_bucket:
+        if not is_enhancement(row):
             continue
         chars = _new_chars(str(row["text"]), new_characters)
         if not chars:
@@ -216,12 +236,14 @@ def build_mixture(
             str(row["source"]),
             tuple(row.get("tags") or []),
             chars,
+            str(row.get("parent_doc_id") or row["id"]),
         )
-        _push_bounded(fill_heap, item, fill_limit)
+        _push_bounded(fill_heaps[str(row["source"])], item, fill_limit)
         for char in chars:
             _push_bounded(character_heaps[char], item, per_char_limit)
 
     selected: dict[str, tuple] = {}
+    selected_parents: set[str] = set()
     selected_tokens = 0
     source_tokens: Counter[str] = Counter()
     tag_tokens: Counter[str] = Counter()
@@ -233,10 +255,12 @@ def build_mixture(
 
     def can_select(item: tuple) -> bool:
         nonlocal selected_tokens
-        _score, _tie, doc_id, tokens, source, tags, _chars = item
-        if doc_id in selected or selected_tokens + tokens > target_tokens * 1.01:
+        _score, _tie, doc_id, tokens, source, tags, _chars, parent = item
+        if parent in selected_parents or selected_tokens + tokens > target_tokens * 1.01:
             return False
-        source_limit = target_tokens * constraints.get("single_source_max_fraction", 1.0)
+        source_limit = target_tokens * min(
+            constraints.get("single_source_max_fraction", 1.0), enhancement_weights[source]
+        )
         if source_tokens[source] + tokens > source_limit:
             return False
         if "classical" in tags or "classical_candidate" in tags:
@@ -249,8 +273,9 @@ def build_mixture(
         nonlocal selected_tokens
         if not can_select(item):
             return False
-        _score, _tie, doc_id, tokens, source, tags, chars = item
+        _score, _tie, doc_id, tokens, source, tags, chars, parent = item
         selected[doc_id] = item
+        selected_parents.add(parent)
         selected_tokens += tokens
         source_tokens[source] += tokens
         if "traditional" in tags:
@@ -282,7 +307,7 @@ def build_mixture(
                     break
                 add(item)
 
-    ranked_fill = sorted(fill_heap, reverse=True)
+    ranked_fill = sorted((item for heap in fill_heaps.values() for item in heap), reverse=True)
 
     def fill_constraint(tag: str, fraction: float, predicate: Callable[[tuple], bool]) -> None:
         target = int(target_tokens * fraction)
@@ -298,6 +323,12 @@ def build_mixture(
         if selected_tokens >= target_tokens:
             break
         add(item)
+
+    # Recount residual ordinary capacity after ownership is assigned to enhancement.
+    available_tokens.clear()
+    for row in _iter_rows(files):
+        if str(row.get("parent_doc_id") or row["id"]) not in selected_parents and row["candidate_bucket"] != enhancement_bucket:
+            available_tokens[str(row["candidate_bucket"])][str(row["source"])] += int(row["estimated_tokens"])
 
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -324,26 +355,56 @@ def build_mixture(
 
     bucket_actual: Counter[str] = Counter()
     source_actual: dict[str, Counter[str]] = defaultdict(Counter)
-    writer = ShardedParquetWriter(output_root)
-    for row in _iter_rows(files):
+    metrics = MixtureMetrics(config)
+    written_parents: set[str] = set()
+    writer = ShardedParquetWriter(output_root, schema=schema)
+
+    def ordered_rows():
+        for row in _iter_rows(files):
+            if str(row["id"]) in selected:
+                yield row
+        # Reserve scarce horizontal attributes before ordinary quota filling.
+        for name, limits in config.attributes.items():
+            minimum = sum(selection_targets.values()) * limits.get("min_fraction", 0)
+            for row in _iter_rows(files):
+                if metrics.attributes[name] >= minimum:
+                    break
+                tags = set(row.get("tags") or [])
+                matches = "long_doc" in tags if name == "long_document" else bool(tags & {"classical", "classical_candidate"})
+                if matches:
+                    yield row
+        yield from _iter_rows(files)
+
+    for row in ordered_rows():
         bucket = str(row["candidate_bucket"])
         source = str(row["source"])
         tokens = int(row["estimated_tokens"])
-        if bucket == enhancement_bucket:
-            keep = str(row["id"]) in selected
+        parent = str(row.get("parent_doc_id") or row["id"])
+        if parent in written_parents:
+            continue
+        if str(row["id"]) in selected:
+            bucket = enhancement_bucket
+            row = {**row, "candidate_bucket": bucket}
+            keep = True
+        elif bucket == enhancement_bucket or parent in selected_parents:
+            keep = False
         else:
             bucket_spec = next(value for value in config.buckets if value.name == bucket)
             target = int(round(selection_targets[bucket] * bucket_spec.source_weights[source]))
-            available = available_tokens[bucket][source]
-            probability = min(1.0, target * 1.02 / max(1, available))
-            keep = (
-                source_actual[bucket][source] < target
-                and stable_fraction(config.seed, f"mixture:{bucket}:{source}", str(row["id"])) < probability
-            )
+            keep = source_actual[bucket][source] < target
+            if bucket_spec.sub_buckets:
+                name = sub_bucket(row)
+                keep = keep and metrics.subs[bucket][name] < selection_targets[bucket] * bucket_spec.sub_buckets.get(name, 0)
         if keep:
+            tags = set(row.get("tags") or [])
+            classical_max = config.attributes.get("classical_chinese", {}).get("max_fraction", 1)
+            if tags & {"classical", "classical_candidate"} and metrics.attributes["classical_chinese"] + tokens > sum(selection_targets.values()) * classical_max:
+                continue
             writer.write(bucket, row)
             bucket_actual[bucket] += tokens
             source_actual[bucket][source] += tokens
+            written_parents.add(parent)
+            metrics.add(row, tokens)
     writer.close()
 
     coverage = {
@@ -360,7 +421,7 @@ def build_mixture(
     )
     source_cap = constraints.get("single_source_max_fraction", 1.0)
     constraint_checks = {
-        "single_source": max(source_tokens.values(), default=0) <= target_tokens * source_cap * 1.01,
+        "single_source": max(source_tokens.values(), default=0) <= max(1, selected_tokens) * source_cap * 1.01,
         "modern": tag_tokens["modern"] >= target_tokens * constraints.get("modern_min_fraction", 0.0) * 0.95,
         "traditional": tag_tokens["traditional"] >= target_tokens * constraints.get("traditional_min_fraction", 0.0) * 0.95,
         "classical": tag_tokens["classical"] <= target_tokens * constraints.get("classical_max_fraction", 1.0) * 1.01,
@@ -369,7 +430,7 @@ def build_mixture(
         bucket.name: {
             "target_tokens": selection_targets[bucket.name],
             "estimated_tokens": bucket_actual[bucket.name],
-            "passed": bucket_actual[bucket.name] >= selection_targets[bucket.name] * 0.95,
+            "passed": bucket_actual[bucket.name] >= selection_targets[bucket.name] * 0.99,
         }
         for bucket in config.buckets
     }
@@ -385,11 +446,20 @@ def build_mixture(
         "plan_sha256": plan["plan_sha256"],
         "passed": (
             all(value["passed"] for value in checks.values())
-            and coverage_passed
             and all(constraint_checks.values())
+            and metrics.report()["passed"]
         ),
         "bucket_checks": checks,
+        "distribution": metrics.report(),
         "estimated_shortfalls": shortfalls,
+        "ordinary_available_after_enhancement": {b: dict(values) for b, values in available_tokens.items()},
+        "source_shortfalls": {
+            b.name: {
+                source: max(0, int(round(selection_targets[b.name] * weight)) - source_actual[b.name][source])
+                for source, weight in b.source_weights.items()
+            }
+            for b in config.buckets
+        },
         "source_tokens": {bucket: dict(values) for bucket, values in source_actual.items()},
         "enhancement": {
             "selected_documents": len(selected),
@@ -398,6 +468,11 @@ def build_mixture(
             "tag_tokens": dict(tag_tokens),
             "coverage": coverage,
             "coverage_passed": coverage_passed,
+            "coverage_is_diagnostic": True,
+            "candidate_coverage": {
+                str(goal): sum(df[char] >= goal for char in new_characters)
+                for goal in config.enhancement.coverage_targets
+            },
             "constraint_checks": constraint_checks,
         },
         "output": str(output_root),

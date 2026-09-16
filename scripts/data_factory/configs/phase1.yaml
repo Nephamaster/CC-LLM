@@ -76,9 +76,9 @@ dedup:
   minhash:
     enabled: true
     profiles:
-      zh: {unit: char, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
-      en: {unit: word, ngram: 5, threshold: 0.80, num_buckets: 14, hashes_per_bucket: 8}
-      code: {unit: lexical_token, ngram: 5, threshold: 0.85, num_buckets: 14, hashes_per_bucket: 8}
+      zh: {unit: char, ngram: 5, threshold: 0.80, num_buckets: 14}
+      en: {unit: word, ngram: 5, threshold: 0.80, num_buckets: 14}
+      code: {unit: lexical_token, ngram: 5, threshold: 0.85, num_buckets: 14}
   decontamination:
     registry: scripts/data_factory/configs/benchmarks.yaml
 
@@ -89,7 +89,7 @@ new_char_enhancement:
   feature_score_weight: 0.25
   coverage_targets: {1: 0.99, 20: 0.95, 100: 0.90}
   constraints:
-    single_source_max_fraction: 0.30
+    single_source_max_fraction: 0.40
     modern_min_fraction: 0.40
   synthetic:
     enabled: false

@@ -13,6 +13,7 @@ from scripts.data_factory.v2.documents import source_cache_id
 from scripts.data_factory.v2.sampling import (
     _bounded_sample,
     assign_bucket,
+    eligible_buckets,
     build_plan,
     calibrate,
 )
@@ -45,7 +46,7 @@ class DataFactoryV2SamplingTest(unittest.TestCase):
                 metadata(source="cci3_hq", language="zh", domain="general"),
                 new_chars,
             ),
-            "new_char_enhancement",
+            "zh_general",
         )
         self.assertEqual(
             assign_bucket(
@@ -157,6 +158,8 @@ class DataFactoryV2SamplingTest(unittest.TestCase):
 
 
     def test_calibration_uses_real_tokenizer_on_bounded_cache(self) -> None:
+        if not Path("models/Qwen3-1.7B-Base-Char/tokenizer.json").is_file():
+            self.skipTest("server Char tokenizer is not present locally")
         config = load_data_factory_config(CONFIG, require_tokenizer=True)
         source = config.source_registry.sources["cci3_hq"]
         manifest_sha = "b" * 64

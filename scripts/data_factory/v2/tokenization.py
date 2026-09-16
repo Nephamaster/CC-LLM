@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 from collections import Counter, defaultdict
@@ -10,8 +11,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from scripts.data_factory.v2.config import DataFactoryConfig
-from scripts.data_factory.v2.mixture import ShardedParquetWriter
+from scripts.data_factory.v2.mixture import ShardedParquetWriter, _input_schema
 from scripts.data_factory.v2.sampling import stable_fraction, stable_key
+from scripts.data_factory.v2.sampling import load_new_characters
+from scripts.data_factory.v2.quality import MixtureMetrics
 
 
 def _files(root: Path) -> list[Path]:
@@ -43,6 +46,9 @@ def tokenize_selected(
 ) -> dict[str, Any]:
     input_root = config.run_root / "selected" / str(plan["plan_sha256"])[:16]
     input_files = _files(input_root)
+    mixture_report = json.loads((config.run_root / "reports" / "mixture_report.json").read_text())
+    if not mixture_report.get("passed") or mixture_report.get("plan_sha256") != plan["plan_sha256"]:
+        raise RuntimeError("tokenize requires a passed mixture for the current plan")
     output_root = config.run_root / "tokenized" / str(plan["plan_sha256"])[:16]
     if output_root.exists() and any(output_root.rglob("*.parquet")):
         if not overwrite:
@@ -53,10 +59,34 @@ def tokenize_selected(
     from tokenizers import Tokenizer
 
     tokenizer = Tokenizer.from_file(str(config.tokenizer_path / "tokenizer.json"))
-    writer = ShardedParquetWriter(output_root, max_rows=25_000)
+    import pyarrow as pa
+
+    schema = _input_schema(input_files).append(pa.field("input_ids", pa.list_(pa.int64())))
+    schema = schema.append(pa.field("token_count", pa.int64())).append(pa.field("tokenizer_sha256", pa.string()))
+    writer = ShardedParquetWriter(output_root, schema=schema, max_rows=25_000)
     records: Counter[str] = Counter()
     tokens: Counter[str] = Counter()
     batch: list[dict[str, Any]] = []
+    selected_ids = {
+        str(row["id"]): (str(row["candidate_bucket"]), hashlib.sha256(str(row["text"]).encode()).hexdigest())
+        for row in _iter_rows(input_files)
+    }
+    reused_ids: set[str] = set()
+    for digest in reversed(plan.get("previous_plan_hashes", [])):
+        previous = config.run_root / "tokenized" / digest[:16]
+        if not previous.is_dir():
+            continue
+        for row in _iter_rows(sorted(previous.rglob("*.parquet"))):
+            key = str(row["id"])
+            if key not in selected_ids or key in reused_ids or row.get("tokenizer_sha256") != config.hashes.tokenizer:
+                continue
+            bucket, text_hash = selected_ids[key]
+            if hashlib.sha256(str(row["text"]).encode()).hexdigest() != text_hash:
+                continue
+            writer.write(bucket, {**row, "candidate_bucket": bucket})
+            reused_ids.add(key)
+            records[bucket] += 1
+            tokens[bucket] += int(row["token_count"])
 
     def consume() -> None:
         nonlocal batch
@@ -78,6 +108,8 @@ def tokenize_selected(
         batch = []
 
     for row in _iter_rows(input_files):
+        if str(row["id"]) in reused_ids:
+            continue
         batch.append(row)
         if len(batch) >= config.calibration.batch_size:
             consume()
@@ -91,6 +123,7 @@ def tokenize_selected(
         "records": dict(records),
         "tokens": dict(tokens),
         "total_tokens": sum(tokens.values()),
+        "reused_documents": len(reused_ids),
         "output": str(output_root),
     }
     _write_json(config.run_root / "reports" / "tokenization_report.json", report)
@@ -232,7 +265,7 @@ def finalize_dataset(
     for row in _iter_rows(tokenized_files):
         bucket = str(row["candidate_bucket"])
         probability = min(1.0, validation_targets[bucket] * 1.5 / max(1, available[bucket]))
-        doc_id = str(row["id"])
+        doc_id = str(row.get("parent_doc_id") or row["id"])
         if stable_fraction(config.seed, f"validation:{bucket}", doc_id) < probability:
             validation_candidates[bucket].append(
                 (stable_key(config.seed, f"validation-order:{bucket}", doc_id), doc_id, int(row["token_count"]))
@@ -247,8 +280,9 @@ def finalize_dataset(
             validation_ids.add(doc_id)
             total += tokens
 
-    train_writer = ShardedParquetWriter(final_root / "train")
-    val_writer = ShardedParquetWriter(final_root / "validation")
+    schema = _input_schema(tokenized_files)
+    train_writer = ShardedParquetWriter(final_root / "train", schema=schema)
+    val_writer = ShardedParquetWriter(final_root / "validation", schema=schema)
     swift_train = SwiftJsonlWriter(final_root / "ms_swift" / "train", "train")
     swift_val = SwiftJsonlWriter(final_root / "ms_swift" / "validation", "validation")
     eos_id = _eos_id(config)
@@ -260,6 +294,9 @@ def finalize_dataset(
     validation_tokens: Counter[str] = Counter()
     train_documents: set[str] = set()
     validation_documents: set[str] = set()
+    metrics = MixtureMetrics(config)
+    new_characters = load_new_characters(config.enhancement.token_ids_path)
+    character_df: Counter[str] = Counter()
 
     def clip(row: dict[str, Any], remaining: int) -> dict[str, Any]:
         if int(row["token_count"]) <= remaining:
@@ -272,7 +309,9 @@ def finalize_dataset(
 
     for row in _iter_rows(tokenized_files):
         bucket = str(row["candidate_bucket"])
-        doc_id = str(row["id"])
+        doc_id = str(row.get("parent_doc_id") or row["id"])
+        if doc_id in train_documents or doc_id in validation_documents:
+            continue
         tokens = int(row["token_count"])
         if doc_id in validation_ids:
             if validation_tokens[bucket] >= validation_targets[bucket]:
@@ -286,12 +325,19 @@ def finalize_dataset(
             continue
         if train_tokens[bucket] >= config.bucket_tokens[bucket]:
             continue
-        row = clip(row, config.bucket_tokens[bucket] - train_tokens[bucket])
+        bucket_spec = next(b for b in config.buckets if b.name == bucket)
+        source = str(row["source"])
+        source_remaining = int(round(config.bucket_tokens[bucket] * bucket_spec.source_weights[source])) - metrics.sources[bucket][source]
+        if source_remaining <= 0:
+            continue
+        row = clip(row, min(config.bucket_tokens[bucket] - train_tokens[bucket], source_remaining))
         tokens = int(row["token_count"])
         train_writer.write(bucket, row)
         swift_train.write(str(row["text"]))
         train_tokens[bucket] += tokens
         train_documents.add(doc_id)
+        metrics.add(row, tokens)
+        character_df.update(set(str(row["text"])) & new_characters)
         length = _length_for_document(config, doc_id)
         packers[length].add(doc_id, [int(value) for value in row["input_ids"]], eos_id)
 
@@ -327,12 +373,30 @@ def finalize_dataset(
         all(value["relative_error"] <= 0.01 for value in train_checks.values())
         and not (train_documents & validation_documents)
         and all(validation_tokens[name] >= target * 0.95 for name, target in validation_targets.items())
+        and metrics.report()["passed"]
     )
     report = {
         "stage": "finalize",
         "phase": config.phase,
         "run_id": config.run_id,
         "passed": passed,
+        "plan_sha256": plan["plan_sha256"],
+        "distribution": metrics.report(),
+        "coverage_is_diagnostic": True,
+        "training_character_coverage": {
+            str(goal): {
+                "actual_characters": sum(character_df[c] >= goal for c in new_characters),
+                "total_characters": len(new_characters),
+                "target_fraction": fraction,
+            }
+            for goal, fraction in config.enhancement.coverage_targets.items()
+        },
+        "source_shortfalls": {
+            b.name: {
+                source: max(0, int(round(config.bucket_tokens[b.name] * weight)) - metrics.sources[b.name][source])
+                for source, weight in b.source_weights.items()
+            } for b in config.buckets
+        },
         "tokenizer_sha256": config.hashes.tokenizer,
         "train": train_checks,
         "validation": validation_checks,
