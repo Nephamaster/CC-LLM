@@ -62,6 +62,7 @@ Phase1 原则：短文本为主，主要控制在 512–2048 tokens；不需要�
 
 ### 数据集网址
 
+Phase1/2 训练数据集：
 - CCI3-HQ:https://www.modelscope.cn/datasets/BAAI/CCI3-HQ
 - Finweb-Edu-Chinese: https://www.modelscope.cn/datasets/opencsg/Fineweb-Edu-Chinese-V2.2
 - Wanjuan: https://www.modelscope.cn/datasets/Shanghai_AI_Laboratory/WanJuan1_dot_0
@@ -75,3 +76,28 @@ Phase1 原则：短文本为主，主要控制在 512–2048 tokens；不需要�
 - Fineweb2_Multilingual: https://www.modelscope.cn/datasets/HuggingFaceFW/fineweb-2
 - OpenWebMath: https://www.modelscope.cn/datasets/jordangong/open-web-math
 - peS2o: https://www.modelscope.cn/datasets/allenai/peS2o (只保留source == "s2orc")
+
+评测数据集：
+- MMLU: https://www.modelscope.cn/datasets/cais/mmlu
+  - local_paths: /share/project/wuhaiming/data/dataset/mmlu/*/test-00000-of-00001.parquet
+- ARC: https://www.modelscope.cn/datasets/allenai/ai2_arc
+  - local_paths: /share/project/wuhaiming/data/dataset/arc/ARC-Challenge/test-00000-of-00001.parquet
+- GSM8K: https://www.modelscope.cn/datasets/AI-ModelScope/gsm8k
+  - local_paths: /share/project/wuhaiming/data/dataset/gsm8k/main/test-00000-of-00001.parquet
+- CEVAL: https://www.modelscope.cn/datasets/evalscope/ceval
+  - local_paths: /share/project/wuhaiming/data/dataset/ceval/*/test-00000-of-00001.parquet
+- CMMLU: https://github.com/haonan-li/CMMLU
+  - local_paths: /share/project/wuhaiming/data/dataset/cmmlu/test/*.csv
+- CLUE: https://hf-mirror.com/datasets/clue/clue
+  - local_paths: /share/project/wuhaiming/data/dataset/clue/*/test-00000-of-00001.parquet
+- LEMON: https://github.com/gingasan/lemon
+  - local_paths: /share/project/wuhaiming/data/dataset/lemon/lemon_v2/*.txt
+- CSCD-NS: https://github.com/nghuyong/cscd-ns
+  - local_paths: /share/project/wuhaiming/data/dataset/cscd-ns/test.tsv
+- FCGEC: https://github.com/xlxwalex/FCGEC
+  - local_paths: /share/project/wuhaiming/data/dataset/FCGEC/FCGEC_test.json
+- NaCGEC: https://github.com/masr2000/NaCGEC
+  - local_paths: /share/project/wuhaiming/data/dataset/NaCGEC/data/nacgec.test.ref.para
+- C3_Bench: https://github.com/SCUT-DLVCLab/C3bench
+- Fuxi: https://github.com/cubenlp/FuxiBench
+  - local_paths: /share/project/wuhaiming/data/dataset/FuxiBench/test_data/*.json

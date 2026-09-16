@@ -15,8 +15,10 @@ from datatrove.pipeline.base import PipelineStep
 from datatrove.pipeline.writers import ParquetWriter
 from datatrove.utils.word_tokenizers import WordTokenizer
 
+from scripts.data_factory.v2.benchmarks import read_benchmark_rows
 from scripts.data_factory.v2.config import DataFactoryConfig
 from scripts.data_factory.v2.runtime import TaskOutputGuard, build_executor
+
 PROFILE_NAMES = ("zh", "en", "code")
 
 
@@ -504,20 +506,21 @@ def _benchmark_index(registry_path: Path) -> tuple[set[str], set[str], set[tuple
     word_ngrams: set[tuple[str, ...]] = set()
     missing: list[str] = []
     for benchmark in raw.get("benchmarks", []):
+        benchmark_name = str(benchmark.get("name", "unnamed"))
         fields = tuple(benchmark.get("text_fields", []))
         matched = 0
         for pattern in benchmark.get("paths", []):
             expanded = os.path.expandvars(pattern)
             for path_value in glob_module.glob(expanded, recursive=True):
-                matched += 1
                 path = Path(path_value)
-                if path.suffix == ".parquet":
-                    import pyarrow.parquet as pq
-
-                    rows = pq.read_table(path).to_pylist()
-                else:
-                    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-                for row in rows:
+                if not path.is_file():
+                    continue
+                matched += 1
+                for row in read_benchmark_rows(
+                    path,
+                    benchmark_name=benchmark_name,
+                    text_fields=fields,
+                ):
                     texts = [text for field in fields for text in _flatten_text(row.get(field))]
                     text = _normalized_hash_text("\n".join(texts))
                     if not text:
@@ -528,7 +531,7 @@ def _benchmark_index(registry_path: Path) -> tuple[set[str], set[str], set[tuple
                     words = tuple(re.findall(r"\w+", text.lower()))
                     word_ngrams.update(words[index : index + 13] for index in range(max(0, len(words) - 12)))
         if benchmark.get("required", True) and matched == 0:
-            missing.append(str(benchmark.get("name", "unnamed")))
+            missing.append(benchmark_name)
     if missing:
         raise FileNotFoundError(
             f"required benchmark paths are unresolved or empty: {sorted(missing)}"

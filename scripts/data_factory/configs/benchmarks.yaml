@@ -2,46 +2,54 @@ version: 1
 
 benchmarks:
   - name: mmlu
-    paths: ["${MMLU_EVAL_PATH}"]
+    paths: ["/share/project/wuhaiming/data/dataset/mmlu/*/test-00000-of-00001.parquet"]
     text_fields: [question, choices, answer]
     required: true
   - name: ceval
-    paths: ["${CEVAL_EVAL_PATH}"]
+    paths: ["/share/project/wuhaiming/data/dataset/ceval/*/test-00000-of-00001.parquet"]
     text_fields: [question, A, B, C, D, answer]
     required: true
   - name: cmmlu
-    paths: ["${CMMLU_EVAL_PATH}"]
-    text_fields: [question, A, B, C, D, answer]
+    paths: ["/share/project/wuhaiming/data/dataset/cmmlu/test/*.csv"]
+    text_fields: [Question, A, B, C, D, Answer]
+    required: true
+  - name: clue
+    paths: ["/share/project/wuhaiming/data/dataset/clue/*/test-00000-of-00001.parquet"]
+    text_fields: [sentence, sentence1, sentence2, text, context, question, choice, candidates, content, abst, keyword, answers, answer, target]
     required: true
   - name: arc
-    paths: ["${ARC_EVAL_PATH}"]
+    paths: ["/share/project/wuhaiming/data/dataset/arc/ARC-Challenge/test-00000-of-00001.parquet"]
     text_fields: [question, choices, answerKey]
     required: true
   - name: gsm8k
-    paths: ["${GSM8K_EVAL_PATH}"]
+    paths: ["/share/project/wuhaiming/data/dataset/gsm8k/main/test-00000-of-00001.parquet"]
     text_fields: [question, answer]
     required: true
   - name: humaneval
     paths: ["${HUMANEVAL_EVAL_PATH}"]
     text_fields: [prompt, canonical_solution, test]
-    required: true
+    required: false
   - name: mbpp
     paths: ["${MBPP_EVAL_PATH}"]
     text_fields: [text, code, test_list]
-    required: true
+    required: false
   - name: csc
-    paths: ["${CSC_EVAL_PATH}"]
-    text_fields: [text, source, target, sentence]
+    paths:
+      - "/share/project/wuhaiming/data/dataset/lemon/lemon_v2/*.txt"
+      - "/share/project/wuhaiming/data/dataset/cscd-ns/test.tsv"
+    text_fields: [text, source, target]
     required: true
   - name: cgec
-    paths: ["${CGEC_EVAL_PATH}"]
-    text_fields: [text, source, target, sentence]
+    paths:
+      - "/share/project/wuhaiming/data/dataset/FCGEC/FCGEC_test.json"
+      - "/share/project/wuhaiming/data/dataset/NaCGEC/data/nacgec.test.ref.para"
+    text_fields: [sentence, source, target]
     required: true
   - name: c3bench
     paths: ["${C3BENCH_EVAL_PATH}"]
     text_fields: [question, context, choices, answer]
-    required: true
+    required: false
   - name: fuxi
-    paths: ["${FUXI_EVAL_PATH}"]
-    text_fields: [question, context, choices, answer]
+    paths: ["/share/project/wuhaiming/data/dataset/FuxiBench/test_data/*.json"]
+    text_fields: [instruction, input, output]
     required: true
