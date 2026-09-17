@@ -28,10 +28,12 @@ Phase1 原则：短文本为主，主要控制在 512–2048 tokens；不需要�
 | 类别 | 比例 | 数据源 |
 |---|---:|---|
 | 中文高质量通用 | 30% | CCI3.0-HQ 50% + FineWeb-Edu-Chinese V2.2 35% + WanJuan1.0 15% |
-| 中文知识密集 | 25% | Chinese Cosmopedia 40% + 中文 Wikipedia 25% + FineWeb-zhtw 20% + Wikisource 10% + ect-krp ≤5% |
+| 中文知识密集 | 25% | Chinese Cosmopedia 49.97% + 中文 Wikipedia 15% + FineWeb-zhtw 20% + Wikisource 15% + ect-krp 0.03% |
 | 英文/多语/中英混排 | 20% | FineWeb-Edu-English 55% + FineWeb2 Multi 15% + 中英技术混排 30% |
 | 数学/代码/科学 | 15% | The Stack v3 45% + OpenWebMath 30% + peS2o 25% |
 | 新增汉字 Token 与音形覆盖增强 | 10% | 从全部中文候选池二次筛选，重点覆盖新增单汉字 Token、多音字、繁体、古文、异体字等 |
+
+Phase2增强池内部来源配比：CCI3-HQ 20%、FineWeb-Edu-Chinese 20%、WanJuan 15%、Chinese Cosmopedia 9.95%、Wikipedia 5%、FineWeb-zhtw 15%、Wikisource 15%、ect-krp 0.05%。ect-krp合计1.25M Token，Wikipedia合计425M；小容量古文来源的差额分给Wikisource，繁体预算分给FineWeb-zhtw。一级类别比例及10B总量不变。
 
 另外加两个横向约束，不单独占 bucket：
 

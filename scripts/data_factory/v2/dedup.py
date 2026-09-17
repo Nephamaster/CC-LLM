@@ -125,7 +125,7 @@ class ParquetDocumentReader(PipelineStep):
         for path_value in self.files[rank::world_size]:
             self.stat_update("input_files")
             parquet = pq.ParquetFile(path_value)
-            for batch in parquet.iter_batches(batch_size=4096):
+            for batch in parquet.iter_batches(batch_size=1024):
                 for row in batch.to_pylist():
                     metadata = {key: value for key, value in row.items() if key not in {"id", "text"}}
                     self.stat_update("documents")

@@ -210,7 +210,7 @@ def _iter_parquet(
 
         parquet = pq.ParquetFile(path)
         row_index = 0
-        for batch in parquet.iter_batches(batch_size=4096):
+        for batch in parquet.iter_batches(batch_size=1024):
             for row in batch.to_pylist():
                 if isinstance(row, dict):
                     yield RawRecord(row=row, path=path, row_index=row_index)

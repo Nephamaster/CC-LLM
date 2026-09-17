@@ -408,6 +408,15 @@ def build_plan(
     requirements: dict[str, float] = defaultdict(float)
     requested: dict[str, dict[str, int]] = defaultdict(dict)
     shortfalls: list[dict[str, Any]] = []
+    enhancement_bucket = next(bucket for bucket in config.buckets if bucket.name == config.enhancement.bucket)
+    enhancement_targets = {
+        source: (
+            int(deficits.get(enhancement_bucket.name, {}).get(source, 0))
+            if deficits is not None
+            else int(round(bucket_targets[enhancement_bucket.name] * weight))
+        )
+        for source, weight in enhancement_bucket.source_weights.items()
+    }
 
     for bucket in config.buckets:
         oversample = (
@@ -429,9 +438,13 @@ def build_plan(
                     {"bucket": bucket.name, "source": source_name, "reason": "zero_calibrated_yield", "target_tokens": target}
                 )
                 continue
-            # Ordinary and enhancement eligibility overlap. Reserve enough source
-            # capacity for both uses; only the final mixture assigns ownership.
-            requirements[source_name] += target * oversample / rate
+            # Use the sampling-rate numerator, including enhancement ownership
+            # reserved from the ordinary pool. One source scan supplies multiple
+            # eligible buckets, so take the largest required scan capacity.
+            reserve = enhancement_targets.get(source_name, 0) if bucket.name != enhancement_bucket.name else 0
+            requirements[source_name] = max(
+                requirements[source_name], (target + reserve) * oversample / rate
+            )
 
     selected_files: list[dict[str, Any]] = []
     selected_capacity: dict[str, int] = {}

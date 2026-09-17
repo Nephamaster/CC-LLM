@@ -495,7 +495,7 @@ def tokenize_candidates(
 
         for path in candidate_files:
             parquet = pq.ParquetFile(path)
-            for arrow_batch in parquet.iter_batches(batch_size=4096):
+            for arrow_batch in parquet.iter_batches(batch_size=1024):
                 for row in arrow_batch.to_pylist():
                     text_len = len(str(row["text"]))
                     if batch and (

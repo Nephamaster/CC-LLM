@@ -110,10 +110,12 @@ class CandidateSelector(PipelineStep):
             for source, stats in calibration["sources"].items()
         }
         self.bucket_densities = {
-            (source, bucket): stats["tokens_per_character"]
+            str(source): {
+                str(bucket): float(stats["tokens_per_character"])
+                for bucket, stats in source_stats.get("buckets", {}).items()
+                if stats.get("tokens_per_character", 0) > 0
+            }
             for source, source_stats in calibration["sources"].items()
-            for bucket, stats in source_stats.get("buckets", {}).items()
-            if stats.get("tokens_per_character", 0) > 0
         }
         self.new_characters = load_new_characters(config.enhancement.token_ids_path)
         self.seed = config.seed
@@ -153,7 +155,9 @@ class CandidateSelector(PipelineStep):
                         int(
                             round(
                                 int(document.metadata["char_count"])
-                                * self.bucket_densities.get((source, bucket), self.tokens_per_character[source])
+                                * self.bucket_densities.get(source, {}).get(
+                                    bucket, self.tokens_per_character[source]
+                                )
                             )
                         ),
                     ),

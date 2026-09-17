@@ -159,10 +159,12 @@ Phase 1 以高质量短文本和稳定分布为主。自然文本窗口控制在
 | 一级类别 | 比例 | Token | 默认来源策略 |
 | --- | ---: | ---: | --- |
 | 中文高质量通用 | 30% | 3.0B | CCI3-HQ 50%、FineWeb-Edu-Chinese 35%、WanJuan 15% |
-| 中文知识密集 | 25% | 2.5B | Chinese Cosmopedia 40%、中文 Wikipedia 25%、FineWeb-zhtw 20%、Wikisource 10%、ect-krp 不超过 5% |
+| 中文知识密集 | 25% | 2.5B | Chinese Cosmopedia 49.97%、中文 Wikipedia 15%、FineWeb-zhtw 20%、Wikisource 15%、ect-krp 0.03% |
 | 英文/多语/中英混排 | 20% | 2.0B | FineWeb-Edu-English 55%、FineWeb2 多语 15%、中英技术混排 30% |
 | 数学/代码/科学 | 15% | 1.5B | The Stack V3 45%、OpenWebMath 30%、peS2o 25% |
 | 新增汉字 Token 与音形覆盖 | 10% | 1.0B | 从全部中文自然候选中覆盖优先选择 |
+
+Phase2增强池内部来源配比为：CCI3-HQ 20%、FineWeb中文20%、WanJuan15%、Cosmopedia9.95%、Wikipedia5%、FineWeb-zhtw15%、Wikisource15%、ect-krp0.05%。来源容量估算和候选预留均独立校验，不因覆盖转为诊断而取消容量门禁。ect-krp当前约4.94M容量对应知识0.75M和增强0.50M正式配额；Wikipedia知识375M、增强50M，避免原725M配额耗尽候选余量。
 
 长文本与古汉语是横向属性，不单独占一级 Bucket：
 
@@ -221,6 +223,8 @@ Phase 1 普通 Bucket 默认过采样 1.20 倍，新增汉字 Bucket 默认 1.35
 Candidate Materialization 在单遍数据流中完成基础分类、横向标签和稳定采样。普通类别与新增汉字增强资格分别判定，Calibration 分别统计产率，Candidate 对两种抽样结果取并集且每篇文档只保存一次。仅最终入选增强池的父文档从普通桶排除；Phase 2 中 FineWeb 中文的 knowledge 标签允许用于配置指定的中文通用桶，不修改共享 Cache。
 
 Plan 同时预留验证集容量和普通桶被增强选择占用的余量。Mixture/Finalize 输出按 Bucket × Source 的缺额后，可执行 `plan --round 1` 生成 `plan-round-001.json`；仅抽取前轮未使用的 Cache 文件。其后的 candidate、exact_dedup、minhash、decontaminate、mixture、tokenize、finalize 均传相同的 `--round`。去重合并各轮候选重新执行，避免增量重复；候选生成不重扫旧 Cache。无可用新分片时报告容量不足，不改变来源配比。
+
+文件扫描预算与抽样率使用相同分子：普通类别为`(来源配额 + 该来源增强预留) * oversample`，增强类别为`增强配额 * enhancement_oversample`。二者均除以各自校准产率。同一来源的扫描量取各类别所需量的最大值，以一次扫描同时供给多个类别；禁止遗漏预留后仍计算超过100%的抽样率，也不将每个类别的完整扫描需求相加。
 
 ### Stage 5：Candidate Quality Filtering
 
@@ -422,7 +426,7 @@ scripts/data_factory/
 
 Mixture 和 Finalize 分别按估算/真实 Token 检查来源配比（允许一个百分点误差）、专项子类及全局横向属性。Finalize 在验证集隔离和裁剪后重新统计训练汉字覆盖。失败报告保留在磁盘，CLI 非零退出，tokenize 拒绝消费失败或其他 Plan 的 Mixture。Schema 从输入继承，tokenize 显式追加 Token 字段。
 
-本次修复升级 Pipeline identity，旧 Run 留作审计。Stack V3 Cache 的子文件清洗错误曾提前终止整个仓库展开，现改为只拒绝单文件，需单独重建 Stack V3 Cache（adapter_revision=2）；其余来源契约不变时复用。两阶段从 calibrate 开始重跑。ect-krp 的既定配额仍需足量真实数据，约 5M 的现有容量不足以满足 175M 配额，不能以软化覆盖门槛绕过容量约束。
+本次修复升级 Pipeline identity，旧 Run 留作审计。Stack V3 Cache 的子文件清洗错误曾提前终止整个仓库展开，现改为只拒绝单文件，需单独重建 Stack V3 Cache（adapter_revision=2）；其余来源契约不变时复用。两阶段从 calibrate 开始重跑。2026-09-17按现有容量重分配Phase2来源：ect-krp正式配额从175M降至1.25M，Wikipedia从725M降至425M，差额分给同类来源。容量门禁继续生效。本次仅配比与Plan预算调整不需要重建Cache，Phase1配置不变。
 
 ## 12. 实施顺序
 

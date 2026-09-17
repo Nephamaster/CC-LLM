@@ -26,6 +26,100 @@ from datatrove.data import Document
 
 
 class PipelineRepairTest(unittest.TestCase):
+    def test_scan_budget_includes_ordinary_enhancement_reservation(self):
+        config = load_data_factory_config(Path("scripts/data_factory/configs/phase1.yaml"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(
+                config, corpus_root=root, target_tokens=1000, validation_tokens=0,
+                buckets=(BucketSpec("zh_general", .8, {"cci3_hq": 1}, "zh_general", {}),
+                         BucketSpec("new_char_enhancement", .2, {"cci3_hq": 1}, "new_char_coverage", {})),
+            )
+            calibration = {"calibration_sha256": "a" * 64, "sources": {"cci3_hq": {
+                "tokens_per_document": 10,
+                "cache_files": [{"path": str(root / f"cache-{i}.parquet"), "rows": 100} for i in range(24)],
+                "buckets": {"zh_general": {"token_rate": .1}, "new_char_enhancement": {"token_rate": 1}},
+            }}}
+            plan = build_plan(config, calibration)
+        self.assertTrue(plan["passed"], plan["shortfalls"])
+        self.assertEqual(plan["selected_estimated_tokens"], 12000)
+        self.assertEqual(plan["sampling_rates"]["zh_general"]["cci3_hq"], 1)
+
+    def test_phase2_redistribution_fits_constrained_capacity(self):
+        config = load_data_factory_config(Path("scripts/data_factory/configs/phase2.yaml"))
+        capacities = {
+            "cci3_hq": 34960166584, "fineweb_edu_chinese": 42064872424,
+            "wanjuan": 198828805843, "chinese_cosmopedia": 44780462147,
+            "wikipedia_zh": 1262137126, "fineweb_zhtw": 49369247389,
+            "wikisource": 1291301020, "ect_krp": 4944880,
+            "fineweb_edu_english": 9730970812, "fineweb2_multilingual": 25024730294,
+            "the_stack_v3": 4145386947, "openwebmath": 13388716984, "peS2o": 51749118464,
+        }
+        # Capacity stress scenario, not a substitute for server Calibration:
+        # Wikipedia yield follows the reported sampling rate; other knowledge
+        # yields use conservative scenario values with observed corpus sizes.
+        rates = {
+            ("wikipedia_zh", "zh_knowledge"): .5796155918214336,
+            ("wikipedia_zh", "new_char_enhancement"): .835,
+            ("fineweb_zhtw", "zh_knowledge"): .8,
+            ("fineweb_zhtw", "new_char_enhancement"): .99,
+            ("wikisource", "zh_knowledge"): .8,
+            ("wikisource", "new_char_enhancement"): .89,
+            ("chinese_cosmopedia", "zh_knowledge"): .8,
+            ("chinese_cosmopedia", "new_char_enhancement"): .01648,
+            ("cci3_hq", "zh_general"): .744,
+            ("cci3_hq", "new_char_enhancement"): .12896,
+            ("fineweb_edu_chinese", "zh_general"): .55,
+            ("fineweb_edu_chinese", "english_multilingual_mixed"): .385,
+            ("fineweb_edu_chinese", "new_char_enhancement"): .05827,
+            ("wanjuan", "zh_general"): .779,
+            ("wanjuan", "new_char_enhancement"): .0581,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(config, corpus_root=root)
+            calibration = {"calibration_sha256": "a" * 64, "sources": {
+                source: {"tokens_per_document": 1,
+                         "cache_files": [{"path": str(root / f"{source}-{i}.parquet"), "rows": capacity // 20}
+                                         for i in range(20)],
+                         "buckets": {b.name: {"token_rate": rates.get((source, b.name), 1)}
+                                     for b in config.buckets}}
+                for source, capacity in capacities.items()
+            }}
+            plan = build_plan(config, calibration)
+        self.assertTrue(plan["passed"], plan["shortfalls"])
+        self.assertTrue(all(rate <= 1 for values in plan["sampling_rates"].values() for rate in values.values()))
+        self.assertEqual(config.bucket_tokens["zh_knowledge"], 2500000000)
+        self.assertEqual(plan["source_targets"]["zh_knowledge"]["ect_krp"], 750750)
+        self.assertEqual(plan["source_targets"]["new_char_enhancement"]["ect_krp"], 500500)
+
+    def test_candidate_executor_serializes_bucket_densities(self):
+        config = load_data_factory_config(Path("scripts/data_factory/configs/phase1.yaml"))
+        plan = {"plan_sha256": "a" * 64, "sampling_rates": {
+            "zh_general": {"cci3_hq": 1}, "mixed_zh_en": {"cci3_hq": 1},
+        }}
+        calibration = {"sources": {"cci3_hq": {
+            "tokens_per_character": 1,
+            "buckets": {"zh_general": {"tokens_per_character": 2},
+                        "mixed_zh_en": {"tokens_per_character": 0}},
+        }}}
+        with patch("scripts.data_factory.v2.candidate.load_new_characters", return_value=frozenset("罕")):
+            selector = CandidateSelector(config, plan, calibration)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executor = build_executor(pipeline=[selector], logging_dir=root,
+                                      job_name="candidate", executor="local", tasks=1, workers=1)
+            executor.save_executor_as_json()
+            saved = json.loads((root / "executor.json").read_text())
+        self.assertEqual(saved["pipeline"][0]["bucket_densities"],
+                         {"cci3_hq": {"zh_general": 2.0}})
+        docs = [Document(id="ordinary", text="中文文本", metadata={
+                    "source": "cci3_hq", "language": "zh", "domain": "general", "char_count": 4}),
+                Document(id="mixed", text="中文ABC", metadata={
+                    "source": "cci3_hq", "language": "zh_en_mixed", "domain": "general", "char_count": 5})]
+        rows = list(selector.run(iter(docs)))
+        self.assertEqual([row.metadata["estimated_tokens"] for row in rows], [8, 5])
+
     def test_resume_rejects_changed_task_sharding(self):
         with tempfile.TemporaryDirectory() as directory:
             arguments = dict(pipeline=[], logging_dir=Path(directory), job_name="test", executor="local", workers=1)

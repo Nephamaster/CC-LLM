@@ -32,11 +32,11 @@ buckets:
     fraction: 0.25
     selector: zh_knowledge
     source_weights:
-      chinese_cosmopedia: 0.40
-      wikipedia_zh: 0.25
+      chinese_cosmopedia: 0.4997
+      wikipedia_zh: 0.15
       fineweb_zhtw: 0.20
-      wikisource: 0.10
-      ect_krp: 0.05
+      wikisource: 0.15
+      ect_krp: 0.0003
 
   - name: english_multilingual_mixed
     fraction: 0.20
@@ -61,11 +61,11 @@ buckets:
       cci3_hq: 0.20
       fineweb_edu_chinese: 0.20
       wanjuan: 0.15
-      chinese_cosmopedia: 0.10
-      wikipedia_zh: 0.10
-      fineweb_zhtw: 0.10
-      wikisource: 0.10
-      ect_krp: 0.05
+      chinese_cosmopedia: 0.0995
+      wikipedia_zh: 0.05
+      fineweb_zhtw: 0.15
+      wikisource: 0.15
+      ect_krp: 0.0005
 
 attributes:
   long_document:

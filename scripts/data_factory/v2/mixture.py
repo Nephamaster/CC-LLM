@@ -27,7 +27,7 @@ def _iter_rows(files: list[Path]) -> Iterator[dict[str, Any]]:
 
     for path in files:
         parquet = pq.ParquetFile(path)
-        for batch in parquet.iter_batches(batch_size=4096):
+        for batch in parquet.iter_batches(batch_size=1024):
             yield from batch.to_pylist()
 
 
