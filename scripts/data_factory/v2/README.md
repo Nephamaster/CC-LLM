@@ -178,6 +178,28 @@ bash scripts/data_factory/v2/export_ms_swift.sh
 
 ## 10. 当前边界
 
+### 接受已有Mixture继续处理
+
+如果明确决定停止补采，接受已有数据的Token数量、来源及专项子类比例偏差，可执行：
+
+```bash
+python -m scripts.data_factory.v2.run tokenize \
+  --config scripts/data_factory/configs/phase1.yaml \
+  --round 1 --accept-existing-mixture
+
+python -m scripts.data_factory.v2.run finalize \
+  --config scripts/data_factory/configs/phase1.yaml \
+  --round 1 --accept-existing-mixture
+```
+
+该运行参数不改变配置Hash或Run ID，不需重跑上游。只有Tokenize/Finalize接受此参数；默认严格流程不变。必须匹配当前Run和Plan，增强约束及全局横向约束失败不能通过此开关绕过。
+
+Finalize按稳定父文档划分预留验证集，保留完整文档，因此验证Token数可能略超过目标；其余文档全部进入训练集，不再按原Bucket/Source配额裁剪。真实Token数以finalization_report.json的actual_train_tokens、actual_validation_tokens为准。报告passed仍表示原实验配额是否达标；accepted_for_use表示显式接受且训练/验证非空、无父文档交集；execution_passed决定CLI退出状态。不可把accepted_for_use解释为原1B配比已通过。原mixture_report.json不修改。
+
+首次执行无需overwrite；已有该轮部分Tokenize/Finalize输出时才加overwrite重建对应阶段。成功输出仍位于当前Run的final/，可继续按上一节导出ms-swift缓存。
+
+### Cache职责
+
 - Cache 只执行字段提取、NFC、明确控制字符清理、许可证检查、极端质量过滤和廉价标签。
 - 不执行 Tokenize、MinHash、语义质量模型、新增汉字全局统计或 Packing。
 - PGCA Feature IDs 不写入数据。

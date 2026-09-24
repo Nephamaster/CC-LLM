@@ -198,6 +198,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--venv-path")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--round", type=int, default=0, dest="round_index")
+    parser.add_argument("--accept-existing-mixture", action="store_true",
+                        help="tokenize/finalize existing selected data despite token/source/domain quota deviations")
     return parser.parse_args()
 
 
@@ -216,6 +218,8 @@ def _executor_options(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     args = parse_args()
+    if args.accept_existing_mixture and args.stage not in {"tokenize", "finalize"}:
+        raise SystemExit("--accept-existing-mixture is only supported by tokenize/finalize")
     if args.max_files <= 0 or args.max_rows <= 0:
         raise SystemExit("--max-files and --max-rows must be positive")
     if args.workers <= 0 or (args.tasks is not None and args.tasks <= 0):
@@ -339,9 +343,10 @@ def main() -> None:
                         config,
                         plan,
                         overwrite=args.overwrite,
+                        accept_existing_mixture=args.accept_existing_mixture,
                     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    if result.get("passed") is False:
+    if result.get("execution_passed", result.get("passed")) is False:
         raise SystemExit(1)
 
 

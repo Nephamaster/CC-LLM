@@ -43,12 +43,11 @@ def tokenize_selected(
     plan: dict[str, Any],
     *,
     overwrite: bool = False,
+    accept_existing_mixture: bool = False,
 ) -> dict[str, Any]:
     input_root = config.run_root / "selected" / str(plan["plan_sha256"])[:16]
     input_files = _files(input_root)
-    mixture_report = json.loads((config.run_root / "reports" / "mixture_report.json").read_text())
-    if not mixture_report.get("passed") or mixture_report.get("plan_sha256") != plan["plan_sha256"]:
-        raise RuntimeError("tokenize requires a passed mixture for the current plan")
+    _require_mixture(config, plan, accept_existing_mixture)
     output_root = config.run_root / "tokenized" / str(plan["plan_sha256"])[:16]
     if output_root.exists() and any(output_root.rglob("*.parquet")):
         if not overwrite:
@@ -124,10 +123,28 @@ def tokenize_selected(
         "tokens": dict(tokens),
         "total_tokens": sum(tokens.values()),
         "reused_documents": len(reused_ids),
+        "accept_existing_mixture": accept_existing_mixture,
         "output": str(output_root),
     }
     _write_json(config.run_root / "reports" / "tokenization_report.json", report)
     return report
+
+
+def _require_mixture(config, plan, accept_existing_mixture):
+    report = json.loads((config.run_root / "reports" / "mixture_report.json").read_text())
+    if report.get("run_id") != config.run_id or report.get("plan_sha256") != plan["plan_sha256"]:
+        raise RuntimeError("mixture report does not match the current run and plan")
+    if report.get("passed"):
+        return
+    if not accept_existing_mixture:
+        raise RuntimeError("tokenize requires a passed mixture for the current plan")
+    # Accept quantity/source/domain deviations only, not other failed gates.
+    constraints = report.get("enhancement", {}).get("constraint_checks")
+    if not constraints or not all(constraints.values()):
+        raise RuntimeError("cannot accept mixture with failed or missing enhancement constraints")
+    for name, check in report.get("distribution", {}).get("checks", {}).items():
+        if not check.get("passed") and "/source/" not in name and "/domain/" not in name:
+            raise RuntimeError(f"cannot accept failed mixture constraint: {name}")
 
 
 class SwiftJsonlWriter:
@@ -241,7 +258,15 @@ def finalize_dataset(
     plan: dict[str, Any],
     *,
     overwrite: bool = False,
+    accept_existing_mixture: bool = False,
 ) -> dict[str, Any]:
+    if accept_existing_mixture:
+        _require_mixture(config, plan, True)
+        token_report = json.loads((config.run_root / "reports" / "tokenization_report.json").read_text())
+        if (token_report.get("run_id") != config.run_id
+                or token_report.get("plan_sha256") != plan["plan_sha256"]
+                or token_report.get("tokenizer_sha256") != config.hashes.tokenizer):
+            raise RuntimeError("tokenization report does not match the current plan and tokenizer")
     tokenized_root = config.run_root / "tokenized" / str(plan["plan_sha256"])[:16]
     tokenized_files = _files(tokenized_root)
     from tokenizers import Tokenizer
@@ -256,6 +281,8 @@ def finalize_dataset(
     available: Counter[str] = Counter()
     for row in _iter_rows(tokenized_files):
         available[str(row["candidate_bucket"])] += int(row["token_count"])
+    if accept_existing_mixture and sum(available.values()) != token_report.get("total_tokens"):
+        raise RuntimeError("tokenized input is incomplete or does not match its report")
 
     validation_targets = {
         bucket.name: int(round(config.validation_tokens * bucket.fraction))
@@ -266,7 +293,7 @@ def finalize_dataset(
         bucket = str(row["candidate_bucket"])
         probability = min(1.0, validation_targets[bucket] * 1.5 / max(1, available[bucket]))
         doc_id = str(row.get("parent_doc_id") or row["id"])
-        if stable_fraction(config.seed, f"validation:{bucket}", doc_id) < probability:
+        if accept_existing_mixture or stable_fraction(config.seed, f"validation:{bucket}", doc_id) < probability:
             validation_candidates[bucket].append(
                 (stable_key(config.seed, f"validation-order:{bucket}", doc_id), doc_id, int(row["token_count"]))
             )
@@ -314,23 +341,25 @@ def finalize_dataset(
             continue
         tokens = int(row["token_count"])
         if doc_id in validation_ids:
-            if validation_tokens[bucket] >= validation_targets[bucket]:
+            if not accept_existing_mixture and validation_tokens[bucket] >= validation_targets[bucket]:
                 continue
-            row = clip(row, validation_targets[bucket] - validation_tokens[bucket])
+            if not accept_existing_mixture:
+                row = clip(row, validation_targets[bucket] - validation_tokens[bucket])
             tokens = int(row["token_count"])
             val_writer.write(bucket, row)
             swift_val.write(str(row["text"]))
             validation_tokens[bucket] += tokens
             validation_documents.add(doc_id)
             continue
-        if train_tokens[bucket] >= config.bucket_tokens[bucket]:
-            continue
-        bucket_spec = next(b for b in config.buckets if b.name == bucket)
-        source = str(row["source"])
-        source_remaining = int(round(config.bucket_tokens[bucket] * bucket_spec.source_weights[source])) - metrics.sources[bucket][source]
-        if source_remaining <= 0:
-            continue
-        row = clip(row, min(config.bucket_tokens[bucket] - train_tokens[bucket], source_remaining))
+        if not accept_existing_mixture:
+            if train_tokens[bucket] >= config.bucket_tokens[bucket]:
+                continue
+            bucket_spec = next(b for b in config.buckets if b.name == bucket)
+            source = str(row["source"])
+            source_remaining = int(round(config.bucket_tokens[bucket] * bucket_spec.source_weights[source])) - metrics.sources[bucket][source]
+            if source_remaining <= 0:
+                continue
+            row = clip(row, min(config.bucket_tokens[bucket] - train_tokens[bucket], source_remaining))
         tokens = int(row["token_count"])
         train_writer.write(bucket, row)
         swift_train.write(str(row["text"]))
@@ -380,6 +409,9 @@ def finalize_dataset(
         "phase": config.phase,
         "run_id": config.run_id,
         "passed": passed,
+        "accept_existing_mixture": accept_existing_mixture,
+        "accepted_for_use": accept_existing_mixture and bool(train_documents) and bool(validation_documents)
+        and not (train_documents & validation_documents),
         "plan_sha256": plan["plan_sha256"],
         "distribution": metrics.report(),
         "coverage_is_diagnostic": True,
@@ -416,6 +448,9 @@ def finalize_dataset(
         },
         "output": str(final_root),
     }
+    report["execution_passed"] = passed or report["accepted_for_use"]
+    report["actual_train_tokens"] = sum(train_tokens.values())
+    report["actual_validation_tokens"] = sum(validation_tokens.values())
     _write_json(config.run_root / "reports" / "finalization_report.json", report)
     _write_json(config.run_root / "plans" / "exact_shortfalls.json", {"shortfalls": shortfalls})
     return report
