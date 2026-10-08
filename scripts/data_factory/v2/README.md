@@ -192,11 +192,29 @@ python -m scripts.data_factory.v2.run finalize \
   --round 1 --accept-existing-mixture
 ```
 
-该运行参数不改变配置Hash或Run ID，不需重跑上游。只有Tokenize/Finalize接受此参数；默认严格流程不变。必须匹配当前Run和Plan，增强约束及全局横向约束失败不能通过此开关绕过。
+该运行参数不改变配置Hash或Run ID，不需重跑上游。只有Tokenize/Finalize接受此参数；默认严格流程不变。必须匹配当前Run和Plan，增强约束及全局横向约束失败不能仅通过此开关绕过。
 
 Finalize按稳定父文档划分预留验证集，保留完整文档，因此验证Token数可能略超过目标；其余文档全部进入训练集，不再按原Bucket/Source配额裁剪。真实Token数以finalization_report.json的actual_train_tokens、actual_validation_tokens为准。报告passed仍表示原实验配额是否达标；accepted_for_use表示显式接受且训练/验证非空、无父文档交集；execution_passed决定CLI退出状态。不可把accepted_for_use解释为原1B配比已通过。原mixture_report.json不修改。
 
 首次执行无需overwrite；已有该轮部分Tokenize/Finalize输出时才加overwrite重建对应阶段。成功输出仍位于当前Run的final/，可继续按上一节导出ms-swift缓存。
+
+### Phase2接受当前古文比例继续处理
+
+若明确接受Phase2现有Mixture的数量、来源偏差，以及整体古文低于8%的现状，两个步骤同时追加`--accept-classical-shortfall`：
+
+```bash
+python -m scripts.data_factory.v2.run tokenize \
+  --config scripts/data_factory/configs/phase2.yaml \
+  --round 1 --accept-existing-mixture --accept-classical-shortfall
+
+python -m scripts.data_factory.v2.run finalize \
+  --config scripts/data_factory/configs/phase2.yaml \
+  --round 1 --accept-existing-mixture --accept-classical-shortfall
+```
+
+round必须与本次Mixture对应的Plan一致。该开关只接受整体古文低于最低比例，不放宽长文约束、增强池约束或古文最高比例。两份报告记录accept_classical_shortfall与accepted_mixture_deviations；原passed与distribution仍如实显示未达标。无需修改Phase YAML、Run ID、原Mixture报告或重跑上游，第一次执行不加overwrite。
+
+完成后核对finalization_report.json的accepted_for_use、execution_passed、actual_train_tokens、actual_validation_tokens和document_overlap。再用export_ms_swift.sh导出final/ms_swift目录：模型Tokenizer必须与数据一致，导出max_length必须与实际训练长度一致；预生成的packed/不是该ms-swift导出脚本的输入。Phase2训练从计划使用的模型checkpoint启动；若已完成Phase1对齐，应使用对齐后的权重继续训练。
 
 ### Cache职责
 

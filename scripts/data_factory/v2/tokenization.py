@@ -44,10 +44,11 @@ def tokenize_selected(
     *,
     overwrite: bool = False,
     accept_existing_mixture: bool = False,
+    accept_classical_shortfall: bool = False,
 ) -> dict[str, Any]:
     input_root = config.run_root / "selected" / str(plan["plan_sha256"])[:16]
     input_files = _files(input_root)
-    _require_mixture(config, plan, accept_existing_mixture)
+    accepted_deviations = _require_mixture(config, plan, accept_existing_mixture, accept_classical_shortfall)
     output_root = config.run_root / "tokenized" / str(plan["plan_sha256"])[:16]
     if output_root.exists() and any(output_root.rglob("*.parquet")):
         if not overwrite:
@@ -124,27 +125,41 @@ def tokenize_selected(
         "total_tokens": sum(tokens.values()),
         "reused_documents": len(reused_ids),
         "accept_existing_mixture": accept_existing_mixture,
+        "accept_classical_shortfall": accept_classical_shortfall,
+        "accepted_mixture_deviations": accepted_deviations,
         "output": str(output_root),
     }
     _write_json(config.run_root / "reports" / "tokenization_report.json", report)
     return report
 
 
-def _require_mixture(config, plan, accept_existing_mixture):
+def _require_mixture(config, plan, accept_existing_mixture, accept_classical_shortfall=False):
+    if accept_classical_shortfall and not accept_existing_mixture:
+        raise ValueError("accept_classical_shortfall requires accept_existing_mixture")
     report = json.loads((config.run_root / "reports" / "mixture_report.json").read_text())
     if report.get("run_id") != config.run_id or report.get("plan_sha256") != plan["plan_sha256"]:
         raise RuntimeError("mixture report does not match the current run and plan")
     if report.get("passed"):
-        return
+        return {}
     if not accept_existing_mixture:
         raise RuntimeError("tokenize requires a passed mixture for the current plan")
-    # Accept quantity/source/domain deviations only, not other failed gates.
+    # Classical undercoverage requires a separate explicit acceptance.
     constraints = report.get("enhancement", {}).get("constraint_checks")
     if not constraints or not all(constraints.values()):
         raise RuntimeError("cannot accept mixture with failed or missing enhancement constraints")
+    accepted_deviations = {}
     for name, check in report.get("distribution", {}).get("checks", {}).items():
         if not check.get("passed") and "/source/" not in name and "/domain/" not in name:
+            if accept_classical_shortfall and name == "attribute/classical_chinese":
+                actual = check.get("actual_fraction")
+                minimum = check.get("min_fraction")
+                maximum = check.get("max_fraction", 1.0)
+                if (isinstance(actual, (int, float)) and isinstance(minimum, (int, float))
+                        and isinstance(maximum, (int, float)) and 0 <= actual < minimum <= maximum <= 1):
+                    accepted_deviations[name] = dict(check)
+                    continue
             raise RuntimeError(f"cannot accept failed mixture constraint: {name}")
+    return accepted_deviations
 
 
 class SwiftJsonlWriter:
@@ -259,9 +274,13 @@ def finalize_dataset(
     *,
     overwrite: bool = False,
     accept_existing_mixture: bool = False,
+    accept_classical_shortfall: bool = False,
 ) -> dict[str, Any]:
+    if accept_classical_shortfall and not accept_existing_mixture:
+        raise ValueError("accept_classical_shortfall requires accept_existing_mixture")
+    accepted_deviations = {}
     if accept_existing_mixture:
-        _require_mixture(config, plan, True)
+        accepted_deviations = _require_mixture(config, plan, True, accept_classical_shortfall)
         token_report = json.loads((config.run_root / "reports" / "tokenization_report.json").read_text())
         if (token_report.get("run_id") != config.run_id
                 or token_report.get("plan_sha256") != plan["plan_sha256"]
@@ -410,6 +429,8 @@ def finalize_dataset(
         "run_id": config.run_id,
         "passed": passed,
         "accept_existing_mixture": accept_existing_mixture,
+        "accept_classical_shortfall": accept_classical_shortfall,
+        "accepted_mixture_deviations": accepted_deviations,
         "accepted_for_use": accept_existing_mixture and bool(train_documents) and bool(validation_documents)
         and not (train_documents & validation_documents),
         "plan_sha256": plan["plan_sha256"],

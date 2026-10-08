@@ -200,6 +200,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--round", type=int, default=0, dest="round_index")
     parser.add_argument("--accept-existing-mixture", action="store_true",
                         help="tokenize/finalize existing selected data despite token/source/domain quota deviations")
+    parser.add_argument("--accept-classical-shortfall", action="store_true",
+                        help="with --accept-existing-mixture, also accept global classical Chinese below its minimum")
     return parser.parse_args()
 
 
@@ -218,8 +220,10 @@ def _executor_options(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     args = parse_args()
-    if args.accept_existing_mixture and args.stage not in {"tokenize", "finalize"}:
+    if (args.accept_existing_mixture or args.accept_classical_shortfall) and args.stage not in {"tokenize", "finalize"}:
         raise SystemExit("--accept-existing-mixture is only supported by tokenize/finalize")
+    if args.accept_classical_shortfall and not args.accept_existing_mixture:
+        raise SystemExit("--accept-classical-shortfall requires --accept-existing-mixture")
     if args.max_files <= 0 or args.max_rows <= 0:
         raise SystemExit("--max-files and --max-rows must be positive")
     if args.workers <= 0 or (args.tasks is not None and args.tasks <= 0):
@@ -344,6 +348,7 @@ def main() -> None:
                         plan,
                         overwrite=args.overwrite,
                         accept_existing_mixture=args.accept_existing_mixture,
+                        accept_classical_shortfall=args.accept_classical_shortfall,
                     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     if result.get("execution_passed", result.get("passed")) is False:

@@ -89,6 +89,46 @@ class AcceptExistingMixtureTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "incomplete"):
                 finalize_dataset(config, plan, accept_existing_mixture=True)
 
+    def test_explicit_classical_shortfall_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, plan = self.prepare(Path(directory))
+            config = replace(config, attributes={"classical_chinese": {"min_fraction": .08, "max_fraction": .12}})
+            path = config.run_root / "reports/mixture_report.json"
+            report = json.loads(path.read_text())
+            check = {"passed": False, "actual_fraction": .0663, "min_fraction": .08, "max_fraction": .12}
+            report["distribution"]["checks"]["attribute/classical_chinese"] = check
+            path.write_text(json.dumps(report))
+            with self.assertRaisesRegex(RuntimeError, "classical_chinese"):
+                tokenize_selected(config, plan, accept_existing_mixture=True)
+            tokenized = tokenize_selected(config, plan, accept_existing_mixture=True, accept_classical_shortfall=True)
+            self.assertEqual(tokenized["accepted_mixture_deviations"]["attribute/classical_chinese"], check)
+            with self.assertRaisesRegex(RuntimeError, "classical_chinese"):
+                finalize_dataset(config, plan, accept_existing_mixture=True)
+            final = finalize_dataset(config, plan, accept_existing_mixture=True, accept_classical_shortfall=True)
+            self.assertTrue(final["accepted_for_use"])
+            self.assertFalse(final["passed"])
+            self.assertFalse(final["distribution"]["checks"]["attribute/classical_chinese"]["passed"])
+            self.assertEqual(final["actual_train_tokens"] + final["actual_validation_tokens"], 28)
+            self.assertEqual(json.loads(path.read_text()), report)
+
+    def test_classical_flag_does_not_bypass_other_constraints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, plan = self.prepare(Path(directory))
+            with self.assertRaisesRegex(ValueError, "requires"):
+                _require_mixture(config, plan, False, True)
+            with self.assertRaisesRegex(RuntimeError, "does not match"):
+                _require_mixture(config, {"plan_sha256": "b" * 64}, True, True)
+            path = config.run_root / "reports/mixture_report.json"
+            report = json.loads(path.read_text())
+            for name, check in (
+                ("attribute/long_document", {"passed": False, "actual_fraction": .01, "min_fraction": .1}),
+                ("attribute/classical_chinese", {"passed": False, "actual_fraction": .3, "min_fraction": .08, "max_fraction": .12}),
+            ):
+                report["distribution"]["checks"] = {name: check}
+                path.write_text(json.dumps(report))
+                with self.assertRaisesRegex(RuntimeError, "failed mixture constraint"):
+                    _require_mixture(config, plan, True, True)
+
 
 if __name__ == "__main__":
     unittest.main()
