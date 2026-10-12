@@ -105,6 +105,7 @@ def update_config(
         raise ValueError("embedding_config d_model does not match config hidden_size")
 
     data.pop("pgca_build_features_in_model", None)
+    data.pop("pgca_gate_init", None)
     data.update(
         {
             "model_type": Qwen3PGCAConfig.model_type,
@@ -115,7 +116,6 @@ def update_config(
             "pgca_num_attention_heads": num_attention_heads,
             "pgca_num_key_value_heads": num_key_value_heads,
             "pgca_head_dim": head_dim,
-            "pgca_gate_init": 0.0,
             "pgca_dropout": float(data.get("attention_dropout", 0.0)),
             "pgca_feature_slots": int(embedding["num_feature_slots"]),
             "pgca_feature_hidden_size": hidden_size,
@@ -134,7 +134,6 @@ def update_config(
 
 def initialize_pgca_parameters(model: Qwen3PGCAForCausalLM) -> None:
     std = float(model.config.initializer_range)
-    gate_init = float(model.config.pgca_gate_init)
 
     with torch.no_grad():
         for layer_idx in model.config.pgca_layers:
@@ -145,7 +144,6 @@ def initialize_pgca_parameters(model: Qwen3PGCAForCausalLM) -> None:
                     torch.nn.init.zeros_(projection.bias)
             attention.q_norm.weight.fill_(1.0)
             attention.k_norm.weight.fill_(1.0)
-            attention.gate.fill_(gate_init)
 
 
 def check_pgca_parameters(model: Qwen3PGCAForCausalLM) -> dict:
@@ -179,15 +177,11 @@ def check_pgca_parameters(model: Qwen3PGCAForCausalLM) -> dict:
         and not parameter.is_meta
         and bool(torch.count_nonzero(parameter).item())
     ]
-    gate_values = {
-        name: float(parameter.detach().cpu())
-        for name, parameter in pgca_parameters.items()
+    gate_parameters = [
+        name
+        for name in pgca_parameters
         if name.endswith("pgca_attn.gate")
-    }
-    expected_gate = float(model.config.pgca_gate_init)
-    gates_match = len(gate_values) == len(model.config.pgca_layers) and all(
-        abs(value - expected_gate) < 1e-8 for value in gate_values.values()
-    )
+    ]
 
     return {
         "parameter_count": sum(parameter.numel() for parameter in pgca_parameters.values()),
@@ -197,15 +191,15 @@ def check_pgca_parameters(model: Qwen3PGCAForCausalLM) -> dict:
         "all_zero_weights": all_zero_weights,
         "invalid_norm_parameters": invalid_norm_parameters,
         "nonzero_biases": nonzero_biases,
-        "gate_values": gate_values,
-        "gates_match": gates_match,
+        "gate_parameters": gate_parameters,
+        "gate_free": not gate_parameters,
         "passed": (
             not meta_parameters
             and not non_finite_parameters
             and not all_zero_weights
             and not invalid_norm_parameters
             and not nonzero_biases
-            and gates_match
+            and not gate_parameters
         ),
     }
 

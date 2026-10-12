@@ -9,7 +9,7 @@
 - 保持 Qwen3 原始 causal self-attention、MLP、RoPE、KV cache 和 generation 流程不变。
 - 在指定中间层加入 position-wise cross-attention：每个文本 token 只查询自身对应的 feature memory。
 - PGCA 与原 self-attention 并行计算：二者使用同一个 `RMSNorm(H)` 输入，输出在 residual 路径汇合后再进入 MLP。
-- PGCA 输出通过可学习 gate 融入 residual，gate 初始化为 0，使初始行为接近 Char baseline。
+- PGCA 输出与主干 self-attention 输出直接相加，再加回 residual；不再使用 gate。Phase 1/2 使用同一份模型源码。
 - 默认不使用图形图像编码，仅使用当前 embedding 阶段产出的拼音、声母、韵母、声调、笔画数、部首笔画、结构特征。
 
 非目标：
@@ -88,7 +88,6 @@ class PGCAConfig:
     pgca_num_attention_heads: int = 16
     pgca_num_key_value_heads: int = 8
     pgca_head_dim: int = 128
-    pgca_gate_init: float = 0.0
     pgca_dropout: float = 0.0
     pgca_feature_slots: int = 9
     pgca_feature_hidden_size: int = 2048
@@ -131,7 +130,7 @@ repeat K/V from kv_heads to q_heads
 score[b, s, h, m] = dot(Q[b, s, h], K[b, s, h, m]) / sqrt(head_dim)
 score masked by feature_mask
 Z[b, s, h] = softmax(score) @ V[b, s, h]
-output = gate * o_proj(Z.reshape(batch, seq, hidden))
+output = o_proj(Z.reshape(batch, seq, hidden))
 ```
 
 并行融合：
@@ -151,7 +150,7 @@ H_next = H_mid + MLP(RMSNorm(H_mid))
 - PGCA 不使用 RoPE，因为 feature slots 不是时间序列位置。
 - 对非汉字 token，`feature_mask` 全 0；PGCA 输出应为 0，避免影响原始非汉字建模。
 - 对全 mask 行，masked score 使用当前 dtype 的有限最小值，softmax 后再将 mask 位置清零，避免 NaN。
-- `pgca_gate` 使用标量参数，初始为 0，使初始行为接近 Char baseline。
+- PGCA 不含门控参数；初始化后分支即参与前向计算，不保证初始行为等价于 Char baseline。
 
 ### 3.3 Qwen3 接入
 
@@ -217,7 +216,7 @@ python -m src.pgca.build_pgca \
    - `auto_map`
    - PGCA 层、头维度、feature vocab sizes 和 feature index SHA256。
 3. 从 Char checkpoint 加载原主干参数；本次迁移显式允许 PGCA 新参数和 feature buffers 缺失。
-4. 写入并验证 feature index，初始化全部 PGCA 新参数，并将所有 gate 重置为 `pgca_gate_init=0.0`。
+4. 写入并验证 feature index，初始化全部 PGCA 投影和 norm 参数；不创建 gate。
 5. `save_pretrained()` 后复制扁平化 remote code，确保不存在 `src.*` 导入。
 6. 删除最终仓库中的 `embedding_config.json`、`features/` 及旧 runtime 目录；feature index 已作为 persistent buffer 进入模型权重。
 7. 生成 `pgca_migration_report.json`，记录配置映射、feature index SHA256、加载信息和 PGCA 初始化检查。
@@ -244,7 +243,7 @@ python -m src.pgca.validate_pgca \
 2. 配置与模块
    - PGCA 层均在合法范围内，实际插入层与配置一致
    - hidden/head/feature slot 维度一致
-   - gate 与 `pgca_gate_init` 一致
+   - 不存在 `pgca_attn.gate` 参数
    - PGCA 参数不存在 meta、NaN 或 Inf
 
 3. feature memory
@@ -258,24 +257,20 @@ python -m src.pgca.validate_pgca \
    - logits shape 为 `(batch, seq, 154019)`
    - loss 为有限值
 
-当前自动验证不比较 Char/PGCA logits，也不单独测试 KV cache。gate 为 0 的初始等价性可作为额外实验检查，但不应写成当前 validation report 已覆盖的指标。
+当前自动验证不比较 Char/PGCA logits，也不单独测试 KV cache。直接相加模式不再要求与 Char baseline 初始等价。
 
 ## 6. 训练控制建议
 
 阶段性参数冻结建议：
 
-- Phase 1：保持 PGCA disabled 或 gate=0 且不训练 PGCA，只训练 `E_sem/lm_head`。
-- Phase 2：启用 PGCA，先只训练：
-  - `feature_embedding`
-  - `pgca_attn`
-  - `pgca_gate`
-  - 可选 top/mid 层 norm
-- 稳定后再全参 CPT。
+- Phase 1：若继续采用语义对齐策略，只训练 `E_sem/lm_head`，冻结其余参数。但冻结 PGCA 并不关闭其前向输出，PGCA 从该阶段开始就参与融合。
+- Phase 2：加载新一轮 Phase 1 checkpoint 后执行全参 CPT，包含 `feature_embedding` 和 `pgca_attn`；无需 gate 设值、冻结或阶段切换插件。
+- 两阶段使用同一份无门控源码和 `use_pgca=True` 配置。旧的 gated checkpoint/remote code 不会因修改 `src` 自动更新；从 Char 输入重新构建到独立的新目录后再开始训练，不覆盖原实验。
 
 学习率建议：
 
 - PGCA 新参数学习率可高于 backbone，例如 backbone lr 的 2 到 5 倍。
-- `pgca_gate` 可单独较大学习率，但要监控 gate 是否快速放大导致 loss spike。
+- 监控 PGCA 输出相对于 self-attention 输出的尺度以及初始 loss；冻结的随机 PGCA 分支仍会影响 Phase 1。
 
 ## 7. 风险与处理
 
@@ -336,7 +331,7 @@ models/Qwen3-1.7B-Base-Char-PGCA/
 最小成功标准：
 
 - PGCA 模型能通过 Transformers `AutoModelForCausalLM` 和 remote code 从完整 checkpoint 加载。
-- 指定层包含 PGCA 参数，gate 初始为 0。
+- 指定层包含 PGCA 投影参数，但不包含 gate，输出直接相加。
 - feature index 已进入模型权重，缺失时加载直接失败。
 - 中文/英文混合输入 forward 通过，loss 有限。
 - `bos/eos/pad` 均在合法范围内。

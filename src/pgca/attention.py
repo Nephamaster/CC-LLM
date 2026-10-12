@@ -32,7 +32,6 @@ class PGCACrossAttention(nn.Module):
         self.q_norm = rms_norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = rms_norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.dropout = nn.Dropout(float(getattr(config, "pgca_dropout", 0.0)))
-        self.gate = nn.Parameter(torch.tensor(float(getattr(config, "pgca_gate_init", 0.0))))
 
     def forward(
         self,
@@ -67,7 +66,7 @@ class PGCACrossAttention(nn.Module):
 
         context = torch.einsum("bshm,bsmhd->bshd", attn, value)
         context = context.reshape(batch_size, seq_len, self.num_heads * self.head_dim)
-        return self.gate * self.o_proj(context)
+        return self.o_proj(context)
 
     def _repeat_kv(self, states: torch.Tensor) -> torch.Tensor:
         if self.num_key_value_groups == 1:

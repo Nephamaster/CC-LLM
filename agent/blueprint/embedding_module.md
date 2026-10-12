@@ -270,15 +270,9 @@ std = model.config.initializer_range
 normal_(mean=0, std=0.02)
 ```
 
-### 7.3 projector/gate
+### 7.3 projector 与分支融合
 
-feature projector 正常初始化；PGCA gate 虽不在本阶段实现，但方案预留：
-
-```text
-pgca_gate_init = 0.0
-```
-
-这样后续模型初始行为接近 Char-only 模型。
+feature projector 正常初始化。2026-10-12 的直接相加实验已移除 PGCA gate，PGCA 输出与主干 self-attention 输出相加；不再保证初始行为接近 Char-only 模型。Phase 1/2 使用相同模型源码，冻结 PGCA 参数不代表关闭该分支前向输出。详见 `pgca_backbone.md`。
 
 ## 8. 配置设计
 

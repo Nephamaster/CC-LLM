@@ -21,7 +21,6 @@ class PGCAConfig:
     pgca_num_attention_heads: int = 16
     pgca_num_key_value_heads: int = 8
     pgca_head_dim: int = 128
-    pgca_gate_init: float = 0.0
     pgca_dropout: float = 0.0
     pgca_feature_slots: int = 9
     pgca_feature_hidden_size: int = 2048
@@ -41,7 +40,6 @@ class PGCAConfig:
             pgca_num_attention_heads=int(config.pgca_num_attention_heads),
             pgca_num_key_value_heads=int(config.pgca_num_key_value_heads),
             pgca_head_dim=int(config.pgca_head_dim),
-            pgca_gate_init=float(config.pgca_gate_init),
             pgca_dropout=float(config.pgca_dropout),
             pgca_feature_slots=int(config.pgca_feature_slots),
             pgca_feature_hidden_size=int(config.pgca_feature_hidden_size),

@@ -89,7 +89,6 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         pgca_num_attention_heads: int | None = None,
         pgca_num_key_value_heads: int | None = None,
         pgca_head_dim: int | None = None,
-        pgca_gate_init: float = 0.0,
         pgca_dropout: float = 0.0,
         pgca_feature_slots: int | None = None,
         pgca_feature_hidden_size: int | None = None,
@@ -138,7 +137,6 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         self.pgca_num_attention_heads = pgca_num_attention_heads or num_attention_heads
         self.pgca_num_key_value_heads = pgca_num_key_value_heads or num_key_value_heads
         self.pgca_head_dim = pgca_head_dim or head_dim
-        self.pgca_gate_init = float(pgca_gate_init)
         self.pgca_dropout = float(pgca_dropout)
         self.pgca_max_pinyin_per_char = int(pgca_max_pinyin_per_char)
         self.pgca_feature_slots = int(pgca_feature_slots or (self.pgca_max_pinyin_per_char + 1))
@@ -153,6 +151,8 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         self.pgca_feature_index_sha256 = pgca_feature_index_sha256
         self._validate_pgca()
 
+        # Do not carry obsolete gate initialization into newly saved configs.
+        kwargs.pop("pgca_gate_init", None)
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,

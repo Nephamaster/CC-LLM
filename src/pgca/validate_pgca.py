@@ -76,21 +76,17 @@ def _check_modules(model: Any) -> dict:
         for name, parameter in pgca_parameters.items()
         if not parameter.is_meta and not bool(torch.isfinite(parameter).all().item())
     ]
-    gate_values = {
-        name: float(parameter.detach().cpu())
-        for name, parameter in pgca_parameters.items()
+    gate_parameters = [
+        name
+        for name in pgca_parameters
         if name.endswith("pgca_attn.gate")
-    }
-    expected_gate = float(model.config.pgca_gate_init)
-    gates_match = len(gate_values) == len(expected_layers) and all(
-        abs(value - expected_gate) < 1e-8 for value in gate_values.values()
-    )
+    ]
     return {
         "expected_layers": sorted(expected_layers),
         "actual_layers": sorted(actual_layers),
         "layers_match": actual_layers == expected_layers,
-        "gate_values": gate_values,
-        "gates_match": gates_match,
+        "gate_parameters": gate_parameters,
+        "gate_free": not gate_parameters,
         "meta_parameters": meta_parameters,
         "non_finite_parameters": non_finite_parameters,
         "parameters_finite": not meta_parameters and not non_finite_parameters,
@@ -201,7 +197,7 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
         and config_checks["feature_slots_match"]
         and config_checks["feature_vocab_sizes_present"]
         and module_checks["layers_match"]
-        and module_checks["gates_match"]
+        and module_checks["gate_free"]
         and module_checks["parameters_finite"]
         and feature_passed
         and forward_checks["logits_shape_matches"]
