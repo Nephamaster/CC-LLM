@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import unicodedata
 import zipfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,46 +21,33 @@ NONE_TOKEN = "<none>"
 UNK_TOKEN = "<unk>"
 PAD_TOKEN = "<pad>"
 
-PINYIN_INITIALS = (
-    "zh",
-    "ch",
-    "sh",
-    "b",
-    "p",
-    "m",
-    "f",
-    "d",
-    "t",
-    "n",
-    "l",
-    "g",
-    "k",
-    "h",
-    "j",
-    "q",
-    "x",
-    "r",
-    "z",
-    "c",
-    "s",
-    "y",
-    "w",
-)
-
-PINYIN_TONE_MARKS = {
-    "ā": ("a", 1), "á": ("a", 2), "ǎ": ("a", 3), "à": ("a", 4),
-    "ē": ("e", 1), "é": ("e", 2), "ě": ("e", 3), "è": ("e", 4),
-    "ī": ("i", 1), "í": ("i", 2), "ǐ": ("i", 3), "ì": ("i", 4),
-    "ō": ("o", 1), "ó": ("o", 2), "ǒ": ("o", 3), "ò": ("o", 4),
-    "ū": ("u", 1), "ú": ("u", 2), "ǔ": ("u", 3), "ù": ("u", 4),
-    "ǖ": ("v", 1), "ǘ": ("v", 2), "ǚ": ("v", 3), "ǜ": ("v", 4), "ü": ("v", 0),
-    "Ā": ("a", 1), "Á": ("a", 2), "Ǎ": ("a", 3), "À": ("a", 4),
-    "Ē": ("e", 1), "É": ("e", 2), "Ě": ("e", 3), "È": ("e", 4),
-    "Ī": ("i", 1), "Í": ("i", 2), "Ǐ": ("i", 3), "Ì": ("i", 4),
-    "Ō": ("o", 1), "Ó": ("o", 2), "Ǒ": ("o", 3), "Ò": ("o", 4),
-    "Ū": ("u", 1), "Ú": ("u", 2), "Ǔ": ("u", 3), "Ù": ("u", 4),
-    "Ǖ": ("v", 1), "Ǘ": ("v", 2), "Ǚ": ("v", 3), "Ǜ": ("v", 4), "Ü": ("v", 0),
+FEATURE_SCHEMA_VERSION = 2
+PYPINYIN_VERSION = "0.55.0"
+SPECIAL_TOKENS = {PAD_TOKEN, NONE_TOKEN, UNK_TOKEN}
+POLYPHONE_EXPECTATIONS = {
+    "行": {"xing2", "hang2"}, "重": {"zhong4", "chong2"},
+    "长": {"chang2", "zhang3"}, "乐": {"le4", "yue4"},
+    "还": {"hai2", "huan2"}, "和": {"he2", "he4"},
+    "得": {"de2", "dei3", "de0"}, "了": {"le0", "liao3"},
 }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def require_pypinyin():
+    try:
+        import pypinyin
+    except ImportError as exc:
+        raise RuntimeError(f"feature vocab requires pypinyin=={PYPINYIN_VERSION}; no silent fallback") from exc
+    if pypinyin.__version__ != PYPINYIN_VERSION:
+        raise RuntimeError(f"expected pypinyin=={PYPINYIN_VERSION}, got {pypinyin.__version__}")
+    return pypinyin
 
 
 @dataclass(frozen=True)
@@ -67,7 +57,7 @@ class FeatureVocabBuildConfig:
     unihan_path: Path = Path("resources/unihan/Unihan.zip")
     fallback_unihan_dir: Path = Path("resources/raw/Unihan")
     output_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
-    max_pinyin_per_char: int = 8
+    max_pinyin_per_char: int = 16
     allow_missing_features: bool = True
 
 
@@ -113,7 +103,7 @@ def iter_unihan_lines(path: Path, fallback_dir: Path) -> Iterable[str]:
 
 def parse_unihan(unihan_path: Path, fallback_dir: Path) -> dict[str, dict[str, str]]:
     props: dict[str, dict[str, str]] = {}
-    wanted = {"kMandarin", "kTotalStrokes", "kRSUnicode"}
+    wanted = {"kMandarin", "kHanyuPinyin", "kTotalStrokes", "kRSUnicode"}
     for line in iter_unihan_lines(unihan_path, fallback_dir):
         if not line or line.startswith("#"):
             continue
@@ -140,77 +130,81 @@ def read_structure_table(path: Path) -> dict[str, str]:
                 continue
             char, structure = fields[0], fields[1]
             if len(char) == 1 and is_cjk_hanzi(char):
-                structures[char] = structure
+                structures[char] = UNK_TOKEN if structure.lower() in {"unknown", "unk", "none", "<unk>"} else structure
     return structures
 
 
 def normalize_pinyin_tone(pinyin: str) -> str:
-    raw = pinyin.strip().replace("u:", "v")
-    tone = 0
-    chars: list[str] = []
-    for char in raw:
-        mapped = PINYIN_TONE_MARKS.get(char)
-        if mapped is None:
-            chars.append(char.lower())
-            continue
-        base, marked_tone = mapped
-        chars.append(base)
-        if marked_tone:
-            tone = marked_tone
-    normalized = "".join(chars).replace("ü", "v").lower()
-    match = re.match(r"^([a-zv]+)([0-5])?$", normalized)
+    raw = pinyin.strip().lower().replace("u:", "v")
+    if raw in SPECIAL_TOKENS:
+        return raw
+    tone_marks = {"\u0304": 1, "\u0301": 2, "\u030c": 3, "\u0300": 4}
+    tones, chars = set(), []
+    for char in unicodedata.normalize("NFD", raw):
+        if char in tone_marks:
+            tones.add(tone_marks[char])
+        elif char == "\u0308" and chars and chars[-1] == "u":
+            chars[-1] = "v"
+        elif char == "\u0302" and chars and chars[-1] == "e":
+            chars[-1] = "ê"
+        else:
+            chars.append(char)
+    match = re.fullmatch(r"([a-zê]+)([0-5])?", "".join(chars))
     if not match:
-        return normalized
+        raise ValueError(f"not a pinyin syllable: {pinyin!r}")
     base, tone_suffix = match.groups()
     if tone_suffix is not None:
-        tone = int(tone_suffix)
-    if tone == 5:
-        tone = 0
+        tones.add(int(tone_suffix) % 5)
+    if len(tones) > 1:
+        raise ValueError(f"conflicting tones: {pinyin!r}")
+    tone = next(iter(tones), 0)
     return f"{base}{tone}"
 
 
-def split_pinyin(pinyin: str) -> tuple[str, str, int]:
+def split_pinyin(pinyin: str) -> tuple[str, str, int | None]:
     normalized = normalize_pinyin_tone(pinyin)
-    match = re.match(r"^([a-zv]+)([0-4])$", normalized)
-    if not match:
-        return "", normalized, 0
-    body, tone_raw = match.groups()
-    initial = ""
-    for candidate in PINYIN_INITIALS:
-        if body.startswith(candidate):
-            initial = candidate
-            break
-    final = body[len(initial) :]
-    return initial, final, int(tone_raw)
+    if normalized in SPECIAL_TOKENS:
+        return UNK_TOKEN, UNK_TOKEN, None
+    from pypinyin.contrib.tone_convert import to_finals, to_initials
+
+    body, tone = normalized[:-1], int(normalized[-1])
+    # Syllabic nasals/interjections have no vowel final in pypinyin's strict helper.
+    if body in {"m", "n", "ng", "hm", "hng"}:
+        return "", body, tone
+    initial, final = to_initials(normalized, strict=True), to_finals(normalized, strict=True)
+    if not final:
+        raise ValueError(f"no strict final for {pinyin!r}")
+    return initial, final.replace("ü", "v"), tone
 
 
 def pinyin_candidates(char: str, unihan_props: dict[str, str]) -> list[str]:
-    try:
-        from pypinyin import Style, pinyin
+    return list(collect_pinyin_candidates(char, unihan_props))
 
-        values = pinyin(char, heteronym=True, style=Style.TONE3, neutral_tone_with_five=True, strict=True)
-        candidates = values[0] if values else []
-    except Exception:
-        candidates = []
 
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for value in candidates:
-        item = normalize_pinyin_tone(str(value))
-        if item and item not in seen:
-            seen.add(item)
-            normalized.append(item)
-
-    if normalized:
-        return normalized
-
-    mandarin = unihan_props.get("kMandarin", "")
-    for value in mandarin.split():
-        item = normalize_pinyin_tone(value)
-        if item and item not in seen:
-            seen.add(item)
-            normalized.append(item)
-    return normalized
+def collect_pinyin_candidates(char: str, unihan_props: dict[str, str]) -> dict[str, list[str]]:
+    module = require_pypinyin()
+    values = module.pinyin(char, heteronym=True, style=module.Style.TONE3,
+                          neutral_tone_with_five=True, strict=True, errors="ignore")
+    sources = {"pypinyin": values[0] if values else []}
+    hanyu = []
+    hanyu_value = re.sub(r"([:,])\s+", r"\1", unihan_props.get("kHanyuPinyin", ""))
+    for entry in hanyu_value.split():
+        if ":" not in entry:
+            raise ValueError(f"malformed kHanyuPinyin for {char}: {entry}")
+        hanyu.extend(entry.split(":", 1)[1].split(","))
+    sources["Unihan.kHanyuPinyin"] = hanyu
+    sources["Unihan.kMandarin"] = unihan_props.get("kMandarin", "").split()
+    result: dict[str, list[str]] = {}
+    for source, candidates in sources.items():
+        for value in candidates:
+            normalized = normalize_pinyin_tone(value)
+            if normalized in SPECIAL_TOKENS:
+                raise ValueError(f"special token from {source} for {char}")
+            split_pinyin(normalized)
+            provenance = result.setdefault(normalized, [])
+            if source not in provenance:
+                provenance.append(source)
+    return result
 
 
 def build_vocab(values: Iterable[str], *, include_empty: bool = False) -> dict[str, int]:
@@ -239,7 +233,12 @@ class FeatureVocabBuilder:
         self.config = config
 
     def build(self) -> FeatureVocabResult:
+        require_pypinyin()
+        if self.config.max_pinyin_per_char < 1:
+            raise ValueError("max_pinyin_per_char must be positive")
         chars = read_hanzi_set(self.config.hanzi_set_path)
+        if not chars:
+            raise ValueError("Hanzi set must not be empty")
         unihan = parse_unihan(self.config.unihan_path, self.config.fallback_unihan_dir)
         structures = read_structure_table(self.config.structure_path)
 
@@ -253,16 +252,26 @@ class FeatureVocabBuilder:
         structure_values: set[str] = set()
 
         missing = {"pinyin": 0, "stroke_count": 0, "radical_stroke": 0, "structure": 0}
+        candidate_counts, source_counts = Counter(), Counter()
         for char in chars:
             props = unihan.get(char, {})
-            py_values = pinyin_candidates(char, props)[: self.config.max_pinyin_per_char]
+            provenance = collect_pinyin_candidates(char, props)
+            py_values = list(provenance)
+            if len(py_values) > self.config.max_pinyin_per_char:
+                raise ValueError(f"{char} has {len(py_values)} readings; increase --max-pinyin-per-char "
+                                 f"(currently {self.config.max_pinyin_per_char}); refusing silent truncation")
+            expected = POLYPHONE_EXPECTATIONS.get(char, set())
+            if not expected.issubset(py_values):
+                raise ValueError(f"missing common readings for {char}: {sorted(expected - set(py_values))}")
+            candidate_counts[str(len(py_values))] += 1
+            source_counts.update({source for sources in provenance.values() for source in sources})
             if not py_values:
                 missing["pinyin"] += 1
                 py_values = [UNK_TOKEN]
 
             split_values = [split_pinyin(value) for value in py_values]
-            stroke_count = props.get("kTotalStrokes", UNK_TOKEN).split()[0]
-            radical_stroke = props.get("kRSUnicode", UNK_TOKEN).split()[0]
+            stroke_count = (props.get("kTotalStrokes", "").split() or [UNK_TOKEN])[0]
+            radical_stroke = (props.get("kRSUnicode", "").split() or [UNK_TOKEN])[0]
             structure = structures.get(char, UNK_TOKEN)
 
             if stroke_count == UNK_TOKEN:
@@ -275,7 +284,7 @@ class FeatureVocabBuilder:
             pinyins.update(py_values)
             initials.update(initial for initial, _final, _tone in split_values)
             finals.update(final for _initial, final, _tone in split_values)
-            tones.update(str(tone) for _initial, _final, tone in split_values)
+            tones.update(str(tone) for _initial, _final, tone in split_values if tone is not None)
             stroke_counts.add(stroke_count)
             radical_strokes.add(radical_stroke)
             structure_values.add(structure)
@@ -288,6 +297,7 @@ class FeatureVocabBuilder:
                 "stroke_count": stroke_count,
                 "radical_stroke": radical_stroke,
                 "structure": structure,
+                "pinyin_sources": provenance,
             }
 
         vocabs = {
@@ -308,6 +318,7 @@ class FeatureVocabBuilder:
                 ],
                 "yunmu_ids": [vocabs["yunmu"].get(value, vocabs["yunmu"][UNK_TOKEN]) for value in feat["yunmus"]],
                 "tone_ids": [vocabs["tone"].get(str(value), vocabs["tone"][UNK_TOKEN]) for value in feat["tones"]],
+                "pinyin_mask": [value not in SPECIAL_TOKENS for value in feat["pinyins"]],
                 "stroke_count_id": vocabs["stroke_count"].get(feat["stroke_count"], vocabs["stroke_count"][UNK_TOKEN]),
                 "radical_stroke_id": vocabs["radical_stroke"].get(
                     feat["radical_stroke"], vocabs["radical_stroke"][UNK_TOKEN]
@@ -318,7 +329,23 @@ class FeatureVocabBuilder:
             for char, feat in raw_features.items()
         }
 
+        if not self.config.allow_missing_features and any(missing.values()):
+            raise ValueError(f"missing features are disabled: {missing}")
+        source_paths = [self.config.hanzi_set_path, self.config.structure_path]
+        if self.config.unihan_path.is_file():
+            source_paths.append(self.config.unihan_path)
+        else:
+            directory = self.config.unihan_path if self.config.unihan_path.is_dir() else self.config.fallback_unihan_dir
+            source_paths.extend(sorted(directory.glob("Unihan*.txt")))
         manifest = {
+            "schema_version": FEATURE_SCHEMA_VERSION,
+            "pypinyin_version": PYPINYIN_VERSION,
+            "split_convention": "pypinyin-strict; v=ü; syllabic m/n/ng/hm/hng use zero initial",
+            "candidate_distribution": dict(candidate_counts),
+            "max_observed_candidates": max(map(int, candidate_counts)),
+            "pronunciation_source_char_counts": dict(source_counts),
+            "source_sha256": {str(path): sha256_file(path) for path in source_paths if path.is_file()},
+            "auxiliary_ignore_index": -100,
             "generated_at": _utc_now_iso(),
             "hanzi_set_path": str(self.config.hanzi_set_path),
             "structure_path": str(self.config.structure_path),
@@ -334,6 +361,12 @@ class FeatureVocabBuilder:
 
     def build_and_write(self) -> FeatureVocabResult:
         result = self.build()
+        from .feature_validation import validate_char_features
+
+        report = validate_char_features(result.feature_vocabs, result.char_features)
+        if not report["passed"]:
+            raise ValueError(f"invalid feature semantics: {report}")
+        result.manifest["semantic_validation"] = report
         output_dir = self.config.output_dir
         vocab_dir = output_dir / "feature_vocabs"
         write_json(vocab_dir / "pinyin_vocab.json", result.feature_vocabs["pinyin"])
@@ -344,6 +377,10 @@ class FeatureVocabBuilder:
         write_json(vocab_dir / "radical_stroke_vocab.json", result.feature_vocabs["radical_stroke"])
         write_json(vocab_dir / "structure_vocab.json", result.feature_vocabs["structure"])
         write_json(output_dir / "char_features.json", result.char_features)
+        result.manifest["artifact_sha256"] = {
+            str(path.relative_to(output_dir)): sha256_file(path)
+            for path in [*sorted(vocab_dir.glob("*_vocab.json")), output_dir / "char_features.json"]
+        }
         write_json(output_dir / "feature_vocab_manifest.json", result.manifest)
         return result
 
@@ -355,6 +392,8 @@ def main() -> None:
     parser.add_argument("--unihan-path", type=Path, default=Path("resources/unihan/Unihan.zip"))
     parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("resources/raw/Unihan"))
     parser.add_argument("--output-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char/features"))
+    parser.add_argument("--max-pinyin-per-char", type=int, default=16)
+    parser.add_argument("--require-complete-features", action="store_true")
     args = parser.parse_args()
     result = FeatureVocabBuilder(
         FeatureVocabBuildConfig(
@@ -363,6 +402,8 @@ def main() -> None:
             unihan_path=args.unihan_path,
             fallback_unihan_dir=args.fallback_unihan_dir,
             output_dir=args.output_dir,
+            max_pinyin_per_char=args.max_pinyin_per_char,
+            allow_missing_features=not args.require_complete_features,
         )
     ).build_and_write()
     print(json.dumps(result.manifest, ensure_ascii=False, indent=2))

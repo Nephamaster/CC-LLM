@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .bpe_state import bytes_to_unicode, decode_bpe_piece, write_json
-from .feature_vocab import NONE_TOKEN
+from .feature_vocab import FEATURE_SCHEMA_VERSION, NONE_TOKEN, sha256_file
+from .feature_validation import check_vocab_binding, validate_char_features
 
 
 @dataclass(frozen=True)
@@ -17,7 +18,7 @@ class FeatureIndexBuildConfig:
     features_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
     output_jsonl: Path = Path("models/Qwen3-1.7B-Base-Char/features/char_feature_index.jsonl")
     output_pt: Path = Path("models/Qwen3-1.7B-Base-Char/features/feature_index.pt")
-    max_pinyin_per_char: int = 8
+    max_pinyin_per_char: int | None = None
     write_torch_tensor: bool = True
 
 
@@ -50,6 +51,8 @@ def load_feature_vocabs(features_dir: Path) -> dict[str, dict[str, int]]:
 
 
 def pad_ids(values: list[int], length: int, pad_id: int) -> tuple[list[int], list[bool]]:
+    if len(values) > length:
+        raise ValueError("feature candidates exceed the index width; refusing truncation")
     clipped = values[:length]
     mask = [True] * len(clipped)
     if len(clipped) < length:
@@ -72,11 +75,21 @@ class FeatureIndexBuilder:
         self.config = config
 
     def build(self) -> FeatureIndexResult:
+        feature_manifest = check_vocab_binding(self.config.features_dir)
+        width = (int(feature_manifest["max_pinyin_per_char"]) if self.config.max_pinyin_per_char is None
+                 else self.config.max_pinyin_per_char)
+        if width != int(feature_manifest["max_pinyin_per_char"]):
+            raise ValueError("index width must match feature-vocab max_pinyin_per_char")
         vocab = read_json(self.config.tokenizer_dir / "vocab.json")
+        if sorted(vocab.values()) != list(range(len(vocab))):
+            raise ValueError("semantic vocabulary IDs must be unique and contiguous")
         id_to_token = invert_vocab(vocab)
         byte_decoder = {piece: byte for byte, piece in bytes_to_unicode().items()}
         char_features = read_json(self.config.features_dir / "char_features.json")
         feature_vocabs = load_feature_vocabs(self.config.features_dir)
+        validation = validate_char_features(feature_vocabs, char_features)
+        if not validation["passed"]:
+            raise ValueError(f"invalid phonetic/glyph semantics: {validation}")
 
         none_ids = {name: values[NONE_TOKEN] for name, values in feature_vocabs.items()}
         rows: list[dict] = []
@@ -92,33 +105,34 @@ class FeatureIndexBuilder:
                 hanzi_token_count += 1
                 pinyin_ids, pinyin_mask = pad_ids(
                     [int(value) for value in feat["pinyin_ids"]],
-                    self.config.max_pinyin_per_char,
+                    width,
                     none_ids["pinyin"],
                 )
                 shengmu_ids, _ = pad_ids(
                     [int(value) for value in feat["shengmu_ids"]],
-                    self.config.max_pinyin_per_char,
+                    width,
                     none_ids["shengmu"],
                 )
                 yunmu_ids, _ = pad_ids(
                     [int(value) for value in feat["yunmu_ids"]],
-                    self.config.max_pinyin_per_char,
+                    width,
                     none_ids["yunmu"],
                 )
                 tone_ids, _ = pad_ids(
                     [int(value) for value in feat["tone_ids"]],
-                    self.config.max_pinyin_per_char,
+                    width,
                     none_ids["tone"],
                 )
                 stroke_count_id = int(feat["stroke_count_id"])
                 radical_stroke_id = int(feat["radical_stroke_id"])
                 structure_id = int(feat["structure_id"])
+                pinyin_mask = [value > 2 for value in pinyin_ids]
             else:
-                pinyin_ids = [none_ids["pinyin"]] * self.config.max_pinyin_per_char
-                shengmu_ids = [none_ids["shengmu"]] * self.config.max_pinyin_per_char
-                yunmu_ids = [none_ids["yunmu"]] * self.config.max_pinyin_per_char
-                tone_ids = [none_ids["tone"]] * self.config.max_pinyin_per_char
-                pinyin_mask = [False] * self.config.max_pinyin_per_char
+                pinyin_ids = [none_ids["pinyin"]] * width
+                shengmu_ids = [none_ids["shengmu"]] * width
+                yunmu_ids = [none_ids["yunmu"]] * width
+                tone_ids = [none_ids["tone"]] * width
+                pinyin_mask = [False] * width
                 stroke_count_id = none_ids["stroke_count"]
                 radical_stroke_id = none_ids["radical_stroke"]
                 structure_id = none_ids["structure"]
@@ -137,15 +151,28 @@ class FeatureIndexBuilder:
                     "stroke_count_id": stroke_count_id,
                     "radical_stroke_id": radical_stroke_id,
                     "structure_id": structure_id,
+                    "label_masks": {
+                        "pinyin": pinyin_mask,
+                        "shengmu": [value > 2 and is_hanzi for value in shengmu_ids],
+                        "yunmu": [value > 2 and is_hanzi for value in yunmu_ids],
+                        "tone": [value > 2 and is_hanzi for value in tone_ids],
+                        "stroke_count": is_hanzi and stroke_count_id > 2,
+                        "radical_stroke": is_hanzi and radical_stroke_id > 2,
+                        "structure": is_hanzi and structure_id > 2,
+                    },
                 }
             )
 
         manifest = {
+            "schema_version": FEATURE_SCHEMA_VERSION,
+            "semantic_vocab_sha256": sha256_file(self.config.tokenizer_dir / "vocab.json"),
+            "feature_vocab_manifest_sha256": sha256_file(self.config.features_dir / "feature_vocab_manifest.json"),
             "tokenizer_dir": str(self.config.tokenizer_dir),
             "features_dir": str(self.config.features_dir),
             "vocab_size": len(id_to_token),
             "hanzi_token_count": hanzi_token_count,
-            "max_pinyin_per_char": self.config.max_pinyin_per_char,
+            "hanzi_without_pinyin": sum(row["is_hanzi"] and not any(row["pinyin_mask"]) for row in rows),
+            "max_pinyin_per_char": width,
             "output_jsonl": str(self.config.output_jsonl),
             "output_pt": str(self.config.output_pt) if self.config.write_torch_tensor else None,
         }
@@ -154,9 +181,13 @@ class FeatureIndexBuilder:
     def build_and_write(self) -> FeatureIndexResult:
         result = self.build()
         write_jsonl(self.config.output_jsonl, result.jsonl_rows)
-        write_json(self.config.features_dir / "feature_index_manifest.json", result.manifest)
         if self.config.write_torch_tensor:
             self._write_torch_tensor(result.jsonl_rows)
+        paths = [self.config.output_jsonl]
+        if self.config.write_torch_tensor:
+            paths.append(self.config.output_pt)
+        result.manifest["artifact_sha256"] = {str(path.relative_to(self.config.features_dir)): sha256_file(path) for path in paths}
+        write_json(self.config.features_dir / "feature_index_manifest.json", result.manifest)
         return result
 
     def _write_torch_tensor(self, rows: list[dict]) -> None:
@@ -174,6 +205,8 @@ class FeatureIndexBuilder:
                 "stroke_count_ids": torch.tensor([row["stroke_count_id"] for row in rows], dtype=torch.long),
                 "radical_stroke_ids": torch.tensor([row["radical_stroke_id"] for row in rows], dtype=torch.long),
                 "structure_ids": torch.tensor([row["structure_id"] for row in rows], dtype=torch.long),
+                **{f"{name}_mask": torch.tensor([row["label_masks"][name] for row in rows], dtype=torch.bool)
+                   for name in ("shengmu", "yunmu", "tone", "stroke_count", "radical_stroke", "structure")},
             },
             self.config.output_pt,
         )

@@ -23,7 +23,7 @@ class VocabValidationConfig:
     char_model_path: Path = Path("models/Qwen3-1.7B-Base-Char")
     features_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
     hanzi_set_path: Path = Path("resources/hanzi/hanzi_set.txt")
-    output_path: Path = Path("models/Qwen3-1.7B-Base-Char/reports/validation_report.json")
+    output_path: Path | None = None
     trust_remote_code: bool = True
     use_fast: bool = True
     max_hanzi_checks: int | None = None
@@ -78,7 +78,7 @@ class VocabValidator:
             "passed": passed,
             "checks": checks,
         }
-        write_json(self.config.output_path, report)
+        write_json(self.config.output_path or self.config.char_model_path / "reports/validation_report.json", report)
         return report
 
     @staticmethod
@@ -199,29 +199,9 @@ class VocabValidator:
         }
 
     def _check_feature_index(self, vocab_size: int) -> dict:
-        index_path = self.config.features_dir / "char_feature_index.jsonl"
-        if not index_path.exists():
-            return {"passed": False, "reason": f"missing {index_path}"}
-        count = 0
-        hanzi_count = 0
-        bad_rows: list[dict] = []
-        with index_path.open("rt", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                count += 1
-                if row.get("is_hanzi"):
-                    hanzi_count += 1
-                    if not row.get("pinyin_mask") or not any(row["pinyin_mask"]):
-                        bad_rows.append({"token_id": row.get("token_id"), "reason": "empty pinyin mask"})
-        return {
-            "passed": count == vocab_size and not bad_rows,
-            "rows": count,
-            "vocab_size": vocab_size,
-            "hanzi_rows": hanzi_count,
-            "bad_rows_head": bad_rows[:20],
-        }
+        from .feature_validation import validate_feature_artifacts
+
+        return validate_feature_artifacts(self.config.features_dir, vocab_size, self.config.char_model_path)
 
     def _check_wrapper_alignment(self, tokenizer, hanzi_chars: list[str]) -> dict:
         index_path = self.config.features_dir / "char_feature_index.jsonl"
@@ -379,7 +359,9 @@ def main() -> None:
             max_hanzi_checks=args.max_hanzi_checks,
         )
     ).validate()
-    # print(json.dumps(report, ensure_ascii=False, indent=2))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

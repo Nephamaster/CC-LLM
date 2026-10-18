@@ -10,6 +10,7 @@ reports/
 hanzi/
 manifests/
 phase1/
+resources/
 
 Character-Level Chinese Large Language Model.md
 GITHUB_TOKEN

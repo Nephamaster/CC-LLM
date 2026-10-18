@@ -175,14 +175,14 @@ CJK Extension B-H                 可识别，但默认不一定纳入词表
 推荐依赖：
 
 ```text
-pypinyin
+pypinyin==0.55.0
 ```
 
 推荐调用策略：
 
 - `heteronym=True`：保留多音字候选。
 - `Style.TONE3`：声调用数字表示，如 `xing2`。
-- `neutral_tone_with_five=True`：轻声统一为 `5`。
+- `neutral_tone_with_five=True`：库输出轻声 `5`，存储时统一为 `0`；未知不是轻声。
 - `strict=True`：按标准声韵母拆分。
 
 输出规范：
@@ -199,8 +199,8 @@ pypinyin
 
 降级策略：
 
-- `pypinyin` 查不到的字填 `<unk>`，并写入缺失报告。
-- 如提供 Unihan，可用 `kMandarin` 作补充读音来源。
+- 合并 `pypinyin`、Unihan `kHanyuPinyin` 和 `kMandarin`；均无读音时填 `<unk>` 并屏蔽拼音 attention/辅助监督，记录缺失报告。
+- pypinyin 缺失或异常不得静默降级；候选记录实际来源。声韵按完整候选逐一严格拆分，特殊音节性辅音有显式扩展规则，见 vocab_module.md。
 
 ### 2.2 Unihan 数据
 
@@ -219,6 +219,7 @@ resources/unihan/Unihan.zip
 
 ```text
 kMandarin
+kHanyuPinyin
 kTotalStrokes
 kRSUnicode
 ```

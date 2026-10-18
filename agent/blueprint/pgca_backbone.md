@@ -279,7 +279,8 @@ python -m src.pgca.validate_pgca \
 - vLLM 编译：forward 路径不读取 `feature_index_ready.item()`，避免 `torch.compile` 的数据依赖控制流错误。
 - generation：PGCA 是 position-wise，仅需当前 token 的 feature lookup，不增加历史 feature cache。
 - 全 mask softmax：masked score 使用有限最小值，softmax 后再次清零 mask，确保非汉字位置输出为零且不产生 NaN。
-- 输出目录固定为 `models/Qwen3-1.7B-Base-Char-PGCA`，避免覆盖 Char baseline。
+- 输出目录必须是尚不存在的新目录，避免覆盖旧实验；v2 音形词表重建后使用匹配的新 embedding_config/feature_index 从 Char 权重构建 PGCA，不将新 ID 映射直接塞入旧 PGCA checkpoint。
+- 新 PGCA 配置携带 feature schema、音形 vocab Manifest 与 index 哈希。索引大小、语义 vocab、配置与文件内容不一致时构建失败；仅词表大小相同不足以判断兼容。
 
 ## 8. 实施顺序
 

@@ -43,13 +43,16 @@ def build_config(args) -> dict:
 
 
 def validate(args) -> dict:
-    return EmbeddingValidator(
+    report = EmbeddingValidator(
         EmbeddingValidationConfig(
             char_model_path=args.char_model_path,
             torch_dtype=getattr(args, "torch_dtype", "auto"),
             validate_model_weights=not getattr(args, "skip_model_weights", False),
         )
     ).validate()
+    if not report["passed"]:
+        raise RuntimeError(f"embedding validation failed; see {args.char_model_path}/reports/embedding_validation_report.json")
+    return report
 
 
 def run_all(args) -> dict:

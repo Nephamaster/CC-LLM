@@ -47,7 +47,7 @@ models/Qwen3-1.7B-Base-Char/
 new_vocab_size = 154019
 hanzi_token_count = 28134
 hidden_size = 2048
-max_pinyin_per_char = 8
+max_pinyin_per_char = 16  # feature schema v2 默认值；实际从 index Manifest 读取
 ```
 
 注意：迁移前必须修复 `bos_token_id` 同步逻辑。Qwen3 tokenizer 的 `bos_token` 是 `None`，迁移时应把 `model.config.bos_token_id` 和 `generation_config.bos_token_id` 显式置为 `None`，不能保留底座旧值 `151643`。
@@ -175,7 +175,7 @@ E_structure:     [|V_structure|, d_feat]
 d_model = 2048
 d_feat = 256
 feature_memory_dim = 2048
-max_pinyin_per_char = 8
+max_pinyin_per_char = 16
 ```
 
 原因：
@@ -206,6 +206,8 @@ py_mask:   [batch, seq, max_pinyin_per_char]
 ```
 
 多音字保留多个候选，后续 PGCA 通过 query 动态选择。
+
+未知读音的全部拼音 mask 为 false，不影响字形 slot。未知声母/声调不是零声母/轻声；后续辅助目标可使用 `auxiliary_feature_targets`，按候选维度将无效标签变成 -100，本阶段不添加辅助头或静态选择读音。
 
 ### 6.4 字形侧表示
 
@@ -283,8 +285,8 @@ feature projector 正常初始化。2026-10-12 的直接相加实验已移除 PG
   "semantic_vocab_size": 154019,
   "d_model": 2048,
   "d_feat": 256,
-  "max_pinyin_per_char": 8,
-  "num_feature_slots": 9,
+  "max_pinyin_per_char": 16,
+  "num_feature_slots": 17,
   "feature_vocab_sizes": {
     "pinyin": ...,
     "shengmu": ...,
@@ -317,8 +319,9 @@ models/Qwen3-1.7B-Base-Char/embedding_config.json
 
 feature 侧：
 
-- `feature_memory.shape == [batch, seq, 9, 2048]`
-- `feature_mask.shape == [batch, seq, 9]`
+- `feature_memory.shape == [batch, seq, max_pinyin_per_char + 1, 2048]`
+- `feature_mask.shape == [batch, seq, max_pinyin_per_char + 1]`
+- v2 embedding_config 记录 feature schema、vocab Manifest 和 PT 哈希；词表或索引变化后必须重新生成配置，不可仅比较词表大小。
 - 汉字 token 至少有一个有效 feature slot
 - 非汉字 token mask 全 false
 - 不创建 `lm_head` 对应的 feature 参数

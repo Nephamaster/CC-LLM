@@ -22,7 +22,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-model-path", default=DEFAULT_BASE_MODEL)
     parser.add_argument("--char-model-path", type=Path, default=DEFAULT_CHAR_MODEL)
     parser.add_argument("--hanzi-dir", type=Path, default=Path("resources/hanzi"))
-    parser.add_argument("--features-dir", type=Path, default=DEFAULT_CHAR_MODEL / "features")
+    parser.add_argument("--features-dir", type=Path, default=None)
     parser.add_argument("--unihan-path", type=Path, default=Path("resources/unihan/Unihan.zip"))
     parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("resources/raw/Unihan"))
 
@@ -60,6 +60,7 @@ def build_feature_vocab(args) -> dict:
             unihan_path=args.unihan_path,
             fallback_unihan_dir=args.fallback_unihan_dir,
             output_dir=args.features_dir,
+            max_pinyin_per_char=getattr(args, "max_pinyin_per_char", 16),
         )
     ).build_and_write()
     return result.manifest
@@ -89,7 +90,7 @@ def migrate_embeddings(args) -> dict:
 
 
 def validate_vocab(args) -> dict:
-    return VocabValidator(
+    report = VocabValidator(
         VocabValidationConfig(
             char_model_path=args.char_model_path,
             features_dir=args.features_dir,
@@ -97,6 +98,9 @@ def validate_vocab(args) -> dict:
             max_hanzi_checks=getattr(args, "max_hanzi_checks", None),
         )
     ).validate()
+    if not report["passed"]:
+        raise RuntimeError(f"vocabulary validation failed; see {args.char_model_path}/reports/validation_report.json")
+    return report
 
 
 def run_all(args) -> dict:
@@ -126,6 +130,7 @@ def main() -> None:
     all_parser.add_argument("--skip-migrate", action="store_true")
     all_parser.add_argument("--skip-validate", action="store_true")
     all_parser.add_argument("--max-hanzi-checks", type=int, default=None)
+    all_parser.add_argument("--max-pinyin-per-char", type=int, default=16)
     all_parser.set_defaults(func=run_all)
 
     hanzi_parser = subparsers.add_parser("hanzi-set")
@@ -140,6 +145,7 @@ def main() -> None:
 
     feature_parser = subparsers.add_parser("feature-vocab")
     add_common_args(feature_parser)
+    feature_parser.add_argument("--max-pinyin-per-char", type=int, default=16)
     feature_parser.set_defaults(func=build_feature_vocab)
 
     index_parser = subparsers.add_parser("feature-index")
@@ -158,8 +164,10 @@ def main() -> None:
     validate_parser.set_defaults(func=validate_vocab)
 
     args = parser.parse_args()
+    if args.features_dir is None:
+        args.features_dir = args.char_model_path / "features"
     result = args.func(args)
-    # print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import torch
@@ -29,6 +30,17 @@ SEQUENCE_FEATURE_KEYS = (
     "pinyin_mask",
 )
 BOOLEAN_FEATURE_KEYS = {"is_hanzi", "pinyin_mask"}
+
+
+def feature_index_fingerprint(feature_index) -> str:
+    """Fingerprint persistent lookup tensors independently of the torch.save container."""
+    digest = hashlib.sha256()
+    for key in FEATURE_INDEX_KEYS:
+        value = feature_index[key] if isinstance(feature_index, dict) else getattr(feature_index, key)
+        value = value.detach().cpu().contiguous()
+        digest.update(f"{key}:{value.dtype}:{tuple(value.shape)}:".encode())
+        digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
 
 
 def load_feature_index(path: str | Path, map_location: str | torch.device = "cpu") -> dict[str, torch.Tensor]:
@@ -78,6 +90,24 @@ def empty_feature_index(vocab_size: int, max_pinyin_per_char: int) -> dict[str, 
         dtype = torch.bool if key in BOOLEAN_FEATURE_KEYS else torch.long
         feature_index[key] = torch.zeros(shape, dtype=dtype)
     return feature_index
+
+
+def auxiliary_feature_targets(feature_ids: dict[str, torch.Tensor], ignore_index: int = -100):
+    """Candidate-aligned targets; missing is not zero initial/neutral tone.
+
+    Feature vocab reserves IDs 0/1/2 for pad/none/unknown. This does not choose
+    a contextual pronunciation or add an auxiliary loss to the model.
+    """
+    result = {}
+    hanzi = feature_ids["is_hanzi"].bool()
+    for name in ("pinyin", "shengmu", "yunmu", "tone", "stroke_count", "radical_stroke", "structure"):
+        ids = feature_ids[f"{name}_ids"]
+        if name in {"pinyin", "shengmu", "yunmu", "tone"}:
+            valid = hanzi.unsqueeze(-1) & feature_ids["pinyin_mask"].bool() & (feature_ids["pinyin_ids"] > 2)
+        else:
+            valid = hanzi
+        result[name] = ids.masked_fill(~(valid & (ids > 2)), ignore_index)
+    return result
 
 
 class FeatureMemoryBuilder(nn.Module):
@@ -150,7 +180,7 @@ class FeatureMemoryBuilder(nn.Module):
             raise RuntimeError(
                 f"PGCA feature index has {self.is_hanzi.shape[0]} rows; expected {vocab_size}"
             )
-        if not bool(self.is_hanzi.any().item()) or not bool(self.pinyin_mask.any().item()):
+        if not bool(self.is_hanzi.any().item()):
             raise RuntimeError("PGCA feature index does not contain any usable Hanzi features")
 
     def forward(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

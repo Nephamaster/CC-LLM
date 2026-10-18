@@ -251,24 +251,28 @@ merge 规则：
 - `pinyin_vocab.json`：如 `zhong1`、`hang2`，轻声统一为 `0`。
 - `shengmu_vocab.json`：包含空声母 `""`，如 `b p m f ... zh ch sh r z c s`。
 - `yunmu_vocab.json`：如 `a ai an ang ... üe`。内部建议统一用 `v` 存储 `ü`，避免 Unicode 标准化差异。
-- `tone_vocab.json`：`0/1/2/3/4/5`，其中 `0` 表示无读音或未知。
-- `stroke_count_vocab.json`：整数笔画数，未知为 `0`。
+- `tone_vocab.json`：`0/1/2/3/4`，`0` 仅表示轻声；未知必须使用 `<unk>`，不能作为轻声监督。
+- `stroke_count_vocab.json`：整数笔画数字符串，未知为 `<unk>`。
 - `radical_stroke_vocab.json`：Unihan `kRSUnicode` 原始值或解析后的 `radical.residual`。
 - `structure_vocab.json`：初版来自本地字形结构表；缺失填 `<unk>`。
 
 拼音生成策略：
 
-- 使用 `pypinyin.pinyin(char, heteronym=True, style=Style.TONE3, neutral_tone_with_five=True, strict=True)` 得到候选拼音。
+- 固定 `pypinyin==0.55.0`，以 `heteronym=True/style=TONE3/neutral_tone_with_five=True/strict=True/errors='ignore'` 获取候选。依赖缺失、版本不符、执行异常直接失败，不静默降级。
 - 再用 `pypinyin.contrib.tone_convert.to_initials/to_finals` 拆分声母韵母。
 - 对 `ü` 做统一规范：存储层用 `v`，展示层再转回 `ü`。
 - 多音字保留候选集合，不做静态消歧。
+- 合并 pypinyin、Unihan `kHanyuPinyin` 和 `kMandarin` 的读音，按候选记录来源；最后两者是补充，不把 kMandarin 当作完整异读表。
+- 支持 `ň/ḿ/ǹg` 和组合附加符号；统一为 `n3/m2/ng4`。音节性 `m/n/ng/hm/hng` 按零声母＋完整音节韵母编码，作为严格拆分的显式扩展约定。
+- v2 默认最大候选数 16，索引和模型槽数从 Manifest 继承；超限报错而不是截断。每个完整候选独立拆分声母/韵母/声调，禁止属性分别去重后错位拼接。
+- 未知读音保留 `<unk>` 占位但 `pinyin_mask=false`，声母/韵母亦为 `<unk>`、原始 tone 为 null。JSONL `label_masks` 和 PT 各属性 mask 区分有效监督；辅助目标使用 -100 忽略缺失项。
 
 笔画/部首策略：
 
 - 优先从 Unihan 解析：
   - `kTotalStrokes` -> `stroke_count`
   - `kRSUnicode` -> `radical_stroke`
-  - `kMandarin` 可作为 pypinyin 失败时的补充读音来源
+  - `kHanyuPinyin`、`kMandarin` 补充读音；不能掩盖 pypinyin 执行失败
 - 如果本地没有 Unihan 数据，本阶段代码应允许 `--allow-missing-features`，缺失项填 `<unk>`，但验收报告必须列出缺失率。
 
 结构类型策略：
@@ -387,9 +391,10 @@ char    structure
 - `decode(encode(text))` 对核心样例可逆。
 - 中英混排、URL、代码、数学公式不报错。
 - `feature_ids` 与 `input_ids` 长度完全一致。
-- 汉字位置 `is_hanzi=True` 且至少有一组有效拼音候选或 `<unk>` 记录。
+- 汉字位置 `is_hanzi=True`；无读音时允许所有拼音 mask 为 false，保留有效字形。验收未知标签、常见多音字、特殊音节及 JSON/JSONL/PT 对齐。
 - 非汉字位置 feature 全 `<none>`。
 - 新 embedding shape 等于新 vocab size。
+- v2 绑定语义 vocab、音形 vocab/char_features、JSONL/PT 的 SHA256，embedding_config 和新 PGCA 配置保存对应版本与哈希。ID 大小相同也不代表语义相同，禁止混用旧权重与新映射。
 
 建议样例：
 

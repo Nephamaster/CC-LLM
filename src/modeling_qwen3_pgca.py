@@ -35,7 +35,7 @@ from transformers.utils.output_capturing import capture_outputs
 from .configuration_qwen3_pgca import Qwen3PGCAConfig
 from .embedding.config import EmbeddingFeatureConfig
 from .embedding.feature_embedding import PhoneticGlyphFeatureEmbedding
-from .embedding.feature_memory import FEATURE_INDEX_KEYS, FeatureMemoryBuilder
+from .embedding.feature_memory import FEATURE_INDEX_KEYS, FeatureMemoryBuilder, feature_index_fingerprint
 from .pgca.attention import PGCACrossAttention
 
 
@@ -409,6 +409,9 @@ class Qwen3PGCAPreTrainedModel(PreTrainedModel):
         if builder is None:
             raise RuntimeError("PGCA feature memory builder is missing")
         builder.validate_ready(vocab_size=self.config.vocab_size)
+        expected = getattr(self.config, "pgca_feature_index_tensor_sha256", None)
+        if expected is not None and feature_index_fingerprint(builder) != expected:
+            raise RuntimeError("checkpoint PGCA feature index fingerprint does not match its config")
 
 
 class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
@@ -444,7 +447,7 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
         feature_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         if not self.config.pgca_enabled:
-        return None, None
+            return None, None
         if feature_memory is not None:
             if feature_mask is None:
                 raise ValueError("feature_mask must be provided when feature_memory is provided")

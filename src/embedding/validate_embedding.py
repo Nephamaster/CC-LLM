@@ -74,6 +74,12 @@ class EmbeddingValidator:
         if config_path.exists():
             with config_path.open("rt", encoding="utf-8") as f:
                 feature_config = EmbeddingFeatureConfig(**json.load(f))
+            expected = EmbeddingFeatureConfig.from_artifacts(
+                self.config.char_model_path, d_model=feature_config.d_model,
+                d_feat=feature_config.d_feat, initializer_range=feature_config.initializer_range,
+            )
+            if expected != feature_config:
+                raise ValueError("stale embedding_config.json; rebuild it from current features")
         else:
             feature_config = EmbeddingFeatureConfig.from_artifacts(self.config.char_model_path)
 
@@ -124,7 +130,9 @@ def main() -> None:
             validate_model_weights=not args.skip_model_weights,
         )
     ).validate()
-    # print(json.dumps(report, ensure_ascii=False, indent=2))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

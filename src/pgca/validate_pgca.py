@@ -234,6 +234,8 @@ def main() -> None:
         json.dump(report, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
