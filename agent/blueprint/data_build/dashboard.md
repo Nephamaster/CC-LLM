@@ -52,15 +52,15 @@ Phase2增强池内部来源配比：CCI3-HQ 20%、FineWeb-Edu-Chinese 20%、WanJ
 |---|---|---|
 | 中文拼写纠错 CSC | twnlp_csc_data | LEMON、CSCD-NS |
 | 中文语法纠错 CGEC | twnlp_cgc_data| FCGEC、NaSGEC |
-| 古汉语理解 | Chinese Classical Corpus 为主，可加入 HistoryTrans、EvaHan | C³Bench + Fùxì |
+| 古汉语理解 | 以 ancient_sft.md 的任务配额为准；Gujilab + HistoryTrans，本轮不含 EvaHan | C³Bench + Fùxì |
 | 中文基础表示 | OntoNotes/Weibo NER、MSRA/PKU CWS | 对应官方 test |
 | 中文阅读/语义 | LCQMC、CMRC2018 等 | 对应官方 test |
 
-其中古汉语训练数据：
+其中古汉语训练数据以 [ancient_sft.md](ancient_sft.md) 为准，不再固定按来源 60%/25%/15% 混合：
 
-- Chinese Classical Corpus：60%
-- HistoryTrans：25%
-- EvaHan 断句/标点：15%
+- 核心任务：古译今 38K、今译古 10K、断句标点 24K。
+- 字书知识、可靠出处各最多 4K，必须通过审核，不足时降低总量。
+- 本轮没有 EvaHan，标点全部由 Gujilab 补足；HistoryTrans 去重后的新增译文不足时由 Gujilab 补充。
 
 ## 附录
 

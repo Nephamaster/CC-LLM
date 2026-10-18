@@ -1,0 +1,4 @@
+PyYAML>=6
+opencc-python-reimplemented>=0.1.7
+datasketch>=1.6
+# finalize additionally requires the pinned Nephamaster/ms-swift environment.

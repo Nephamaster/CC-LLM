@@ -443,6 +443,8 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
         feature_memory: torch.Tensor | None,
         feature_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if not self.config.pgca_enabled:
+        return None, None
         if feature_memory is not None:
             if feature_mask is None:
                 raise ValueError("feature_mask must be provided when feature_memory is provided")

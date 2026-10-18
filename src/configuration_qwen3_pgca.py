@@ -13,6 +13,7 @@
 # limitations under the License.
 """Configuration for the Qwen3 model with PGCA feature attention."""
 
+import os
 from transformers.configuration_utils import PreTrainedConfig
 from transformers.modeling_rope_utils import RopeParameters
 
@@ -85,6 +86,7 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         bos_token_id: int | None = None,
         eos_token_id: int | list[int] | None = None,
         use_pgca: bool = False,
+        pgca_enabled: bool = True,
         pgca_layers: list[int] | None = None,
         pgca_num_attention_heads: int | None = None,
         pgca_num_key_value_heads: int | None = None,
@@ -130,6 +132,14 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         self.attention_dropout = attention_dropout
 
         self.use_pgca = use_pgca
+        value = os.environ.get("PGCA_ENABLED")
+        if value is not None:
+            value = value.strip().lower()
+            if value not in {"true", "false", "1", "0"}:
+                raise ValueError("PGCA_ENABLED must be true/false/1/0")
+            pgca_enabled = value in {"true", "1"}
+
+        self.pgca_enabled = pgca_enabled
         self.pgca_layers = (
             default_pgca_layers(num_hidden_layers) if pgca_layers is None and use_pgca else list(pgca_layers or [])
         )

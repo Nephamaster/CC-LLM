@@ -140,3 +140,12 @@ pair_group     古文与现代译文组成的唯一平行对
 训练文件只需标准 `messages`。来源、任务类别、篇章 ID、质量评分、哈希等信息建议放在一份同 ID 的 `metadata.jsonl` 中，供采样和审计使用，不必全部注入 prompt。
 
 对标点任务，输出必须保持原始字符不增删，仅插入规定的标点符号；对分类与出处任务，输出也应该尽量短且格式一致。
+
+## 四、实现约定
+
+- 实现入口为 `python -m scripts.ancient_sft.run inspect|prepare|finalize`，配置与操作说明见 `scripts/ancient_sft/`。
+- 本轮输入根目录明确为 `data/downstream/ancient`；不含 EvaHan，24K 标点配额全部由 Gujilab 提供。
+- 使用现有 Char tokenizer，ms-swift 的 `qwen3 + enable_thinking=false`，长度 2048；直接调用实际框架 labels 统计 assistant loss token，不用裸答案长度代替。
+- Train 上限 80K，Dev 按作品分组另留约 2%；知识/出处样本及疑似污染记录未审核不入选。HistoryTrans 官方 validation/test 必须提供作为跨来源排除集。
+- 稀疏篇章标签先使用保守整书分组，未能恢复来源的 HistoryTrans 记录隔离并报告；不能以随机句子划分替代篇章隔离。
+- 来源不足、严格过滤和作品上限导致的缺额如实报告；诊断模式不能导出正式训练文件。文件版本/许可证未知时明确标记，不推断已验证。
