@@ -10,7 +10,7 @@ from typing import Any
 
 from transformers import AutoTokenizer
 
-from scripts.validation.common import file_sha256, read_json, read_jsonl, utc_now_iso, write_json
+from scripts.validation.common import default_report_path, file_sha256, read_json, read_jsonl, utc_now_iso, write_json
 from src.vocab.bpe_state import BpeState
 from src.vocab.unicode_ranges import count_hanzi, is_cjk_hanzi
 
@@ -318,13 +318,17 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char-PGCA"))
+    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-PGCA"))
     parser.add_argument("--data-path", type=Path, default=Path("data/validation/tokenizer_validation.jsonl"))
     parser.add_argument("--hanzi-set", type=Path, default=Path("resources/hanzi/hanzi_set.txt"))
-    parser.add_argument("--report-path", type=Path, default=Path("reports/validation/phase0_tokenizer_report.json"))
+    parser.add_argument("--model-name", help="Canonical model name, required for checkpoint-* inputs")
+    parser.add_argument("--report-path", type=Path)
     parser.add_argument("--expected-records", type=int, default=200)
     parser.add_argument("--max-failure-details", type=int, default=100)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.report_path is None:
+        args.report_path = default_report_path(args.model_path, "phase0_tokenizer", args.model_name)
+    return args
 
 
 def main() -> None:

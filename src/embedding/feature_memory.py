@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from .feature_embedding import PhoneticGlyphFeatureEmbedding
+from .context_encoder import CausalFeatureEncoder
 
 
 FEATURE_INDEX_KEYS = (
@@ -32,10 +33,10 @@ SEQUENCE_FEATURE_KEYS = (
 BOOLEAN_FEATURE_KEYS = {"is_hanzi", "pinyin_mask"}
 
 
-def feature_index_fingerprint(feature_index) -> str:
+def feature_index_fingerprint(feature_index, keys=FEATURE_INDEX_KEYS) -> str:
     """Fingerprint persistent lookup tensors independently of the torch.save container."""
     digest = hashlib.sha256()
-    for key in FEATURE_INDEX_KEYS:
+    for key in keys:
         value = feature_index[key] if isinstance(feature_index, dict) else getattr(feature_index, key)
         value = value.detach().cpu().contiguous()
         digest.update(f"{key}:{value.dtype}:{tuple(value.shape)}:".encode())
@@ -120,12 +121,17 @@ class FeatureMemoryBuilder(nn.Module):
         *,
         persistent: bool = True,
         ready: bool = True,
+        context_config=None,
     ):
         super().__init__()
         self.feature_embedding = feature_embedding
         for key in FEATURE_INDEX_KEYS:
             self.register_buffer(key, feature_index[key], persistent=persistent)
         self.register_buffer("feature_index_ready", torch.tensor(ready), persistent=persistent)
+        self.context_encoder = CausalFeatureEncoder(context_config) if context_config is not None else None
+        if self.context_encoder is not None:
+            self.register_buffer("token_type_ids", torch.zeros_like(feature_index["is_hanzi"], dtype=torch.long),
+                                 persistent=persistent)
 
     @classmethod
     def empty(
@@ -134,12 +140,14 @@ class FeatureMemoryBuilder(nn.Module):
         vocab_size: int,
         max_pinyin_per_char: int,
         feature_embedding: PhoneticGlyphFeatureEmbedding,
+        context_config=None,
     ) -> "FeatureMemoryBuilder":
         return cls(
             empty_feature_index(vocab_size, max_pinyin_per_char),
             feature_embedding,
             persistent=True,
             ready=False,
+            context_config=context_config,
         )
 
     @classmethod
@@ -183,8 +191,14 @@ class FeatureMemoryBuilder(nn.Module):
         if not bool(self.is_hanzi.any().item()):
             raise RuntimeError("PGCA feature index does not contain any usable Hanzi features")
 
-    def forward(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.feature_embedding(self.lookup(input_ids))
+    def forward(self, input_ids: torch.Tensor, *, position_ids=None, attention_mask=None, cache=None):
+        memory, mask = self.feature_embedding(self.lookup(input_ids))
+        if self.context_encoder is not None:
+            if position_ids is None:
+                raise ValueError("contextual feature memory requires explicit position_ids")
+            types = self.token_type_ids[input_ids]
+            return self.context_encoder(memory, mask, types, position_ids, attention_mask, cache)
+        return memory, mask
 
     def lookup(self, input_ids: torch.Tensor) -> dict[str, torch.Tensor]:
         if input_ids.dtype != torch.long:

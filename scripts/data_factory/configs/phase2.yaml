@@ -2,7 +2,7 @@ version: 2
 phase: phase2
 repo_root: ../../..
 corpus_root: data/corpus
-tokenizer_path: models/Qwen3-1.7B-Base-Char-PGCA
+tokenizer_path: models/Qwen3-1.7B-Base-Char
 source_registry: sources.yaml
 seed: 20260714
 target_tokens: 10000000000

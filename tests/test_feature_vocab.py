@@ -224,7 +224,8 @@ def test_pgca_rebuild_never_deletes_existing_output(tmp_path):
     assert marker.read_text() == "old experiment"
 
 
-def test_v2_pgca_build_and_remote_reload(artifacts, tmp_path):
+@pytest.mark.parametrize("contextual", [False, True])
+def test_v2_pgca_build_and_remote_reload(artifacts, tmp_path, contextual):
     from transformers import AutoModelForCausalLM, Qwen3Config, Qwen3ForCausalLM
     from src.pgca.build_pgca import build_pgca_model, save_pretrained_without_auto_copy
 
@@ -234,12 +235,25 @@ def test_v2_pgca_build_and_remote_reload(artifacts, tmp_path):
                              head_dim=4, max_position_embeddings=32, use_cache=False)
     base = Qwen3ForCausalLM(base_config)
     base.save_pretrained(root)
+    if contextual:
+        from tokenizers import Tokenizer, models
+        from transformers import PreTrainedTokenizerFast
+        vocab = json.loads((root / "vocab.json").read_text())
+        unknown_token = next(iter(vocab))
+        tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(models.WordLevel(vocab, unk_token=unknown_token)),
+                                            unk_token=unknown_token)
+        tokenizer.save_pretrained(root)
     EmbeddingFeatureConfig.from_artifacts(root, d_model=8, d_feat=4).save_pretrained(root / "embedding_config.json")
     destination = tmp_path / "new_pgca"
-    report = build_pgca_model(root, destination, "0,1")
+    report = build_pgca_model(root, destination, "0,1", context_encoder=contextual,
+                             auxiliary_heads=contextual, zero_init_output=contextual)
     assert report["feature_index"]["passed"]
     loaded = AutoModelForCausalLM.from_pretrained(destination, trust_remote_code=True)
     assert loaded.config.pgca_feature_schema_version == 2
+    assert loaded.config.pgca_context_enabled == contextual
+    assert loaded.config.pgca_aux_enabled == contextual
+    if contextual:
+        assert loaded.auxiliary_trained_tokens.item() == 0
     assert loaded.config.pgca_feature_slots == 17
     assert loaded.config.pgca_feature_vocab_manifest_sha256
     assert loaded.config.pgca_feature_index_tensor_sha256 == report["feature_index_tensor_sha256"]

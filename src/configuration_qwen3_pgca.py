@@ -35,7 +35,7 @@ class Qwen3PGCAConfig(PreTrainedConfig):
     """Qwen3 configuration extended with self-contained PGCA feature settings."""
 
     model_type = "qwen3_pgca"
-    keys_to_ignore_at_inference = ["past_key_values"]
+    keys_to_ignore_at_inference = ["past_key_values", "phonetic_logits", "glyph_logits"]
 
     base_model_tp_plan = {
         "layers.*.self_attn.q_proj": "colwise",
@@ -99,6 +99,19 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         pgca_feature_vocab_sizes: dict[str, int] | None = None,
         pgca_use_glyph_image: bool = False,
         pgca_feature_index_sha256: str | None = None,
+        pgca_context_enabled: bool = False,
+        pgca_context_num_layers: int = 4,
+        pgca_context_hidden_size: int = 512,
+        pgca_context_num_heads: int = 8,
+        pgca_context_intermediate_size: int = 1536,
+        pgca_context_rope_theta: float = 1_000_000.0,
+        pgca_context_num_token_types: int = 7,
+        pgca_aux_enabled: bool = False,
+        pgca_aux_hidden_size: int = 256,
+        pgca_aux_phonetic_weight: float = 0.05,
+        pgca_aux_glyph_weight: float = 0.02,
+        pgca_aux_warmup_tokens: int = 10_000_000,
+        pgca_zero_init_output: bool = False,
         **kwargs,
     ):
         if num_key_value_heads is None:
@@ -159,6 +172,19 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         )
         self.pgca_use_glyph_image = bool(pgca_use_glyph_image)
         self.pgca_feature_index_sha256 = pgca_feature_index_sha256
+        self.pgca_context_enabled = bool(pgca_context_enabled)
+        self.pgca_context_num_layers = int(pgca_context_num_layers)
+        self.pgca_context_hidden_size = int(pgca_context_hidden_size)
+        self.pgca_context_num_heads = int(pgca_context_num_heads)
+        self.pgca_context_intermediate_size = int(pgca_context_intermediate_size)
+        self.pgca_context_rope_theta = float(pgca_context_rope_theta)
+        self.pgca_context_num_token_types = int(pgca_context_num_token_types)
+        self.pgca_aux_enabled = bool(pgca_aux_enabled)
+        self.pgca_aux_hidden_size = int(pgca_aux_hidden_size)
+        self.pgca_aux_phonetic_weight = float(pgca_aux_phonetic_weight)
+        self.pgca_aux_glyph_weight = float(pgca_aux_glyph_weight)
+        self.pgca_aux_warmup_tokens = int(pgca_aux_warmup_tokens)
+        self.pgca_zero_init_output = bool(pgca_zero_init_output)
         self._validate_pgca()
 
         # Do not carry obsolete gate initialization into newly saved configs.
@@ -172,6 +198,17 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         )
 
     def _validate_pgca(self) -> None:
+        if self.pgca_context_enabled:
+            if not self.use_pgca or self.pgca_context_num_layers < 1 or self.pgca_context_num_heads < 1:
+                raise ValueError("feature context requires PGCA and positive layer/head counts")
+            if self.pgca_context_hidden_size % (2 * self.pgca_context_num_heads):
+                raise ValueError("feature context head dimension must be an even integer")
+            if self.pgca_context_num_token_types != 7:
+                raise ValueError("feature token-type schema requires exactly seven classes")
+        if self.pgca_aux_enabled:
+            names = ("pinyin", "stroke_count", "radical_stroke", "structure")
+            if not self.use_pgca or any((self.pgca_feature_vocab_sizes or {}).get(name, 0) <= 3 for name in names):
+                raise ValueError("auxiliary heads require a legal non-special class for every attribute")
         if len(set(self.pgca_layers)) != len(self.pgca_layers):
             raise ValueError("pgca_layers must not contain duplicates")
         if any(layer_idx < 0 or layer_idx >= self.num_hidden_layers for layer_idx in self.pgca_layers):

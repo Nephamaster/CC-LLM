@@ -167,8 +167,10 @@ python -m scripts.data_factory.v2.run finalize \
 
 ms-swift 使用 assistant-only `messages` JSONL。按照官方接口生成 cached dataset：
 
+导出入口默认使用 `scripts/train/ms_swift/env/bin/python` 中普通安装的 ms-swift；可显式设置 `PYTHON_CMD`，不依赖 PATH 中的 `swift`。Phase1/2 数据配置共享 Char tokenizer；模型目录规范化会改变配置身份，既有 run/manifest 和语料无需仅为改名而重建。
+
 ```bash
-MODEL_PATH=models/Qwen3-1.7B-Base-Char-PGCA \
+MODEL_PATH=models/Qwen3-1.7B-Base-PGCA \
 FINAL_DIR=data/corpus/runs/phase1/<run_id>/final \
 MAX_LENGTH=2048 \
 bash scripts/data_factory/v2/export_ms_swift.sh

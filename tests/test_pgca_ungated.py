@@ -52,7 +52,7 @@ def tiny_model() -> Qwen3PGCAForCausalLM:
     model = Qwen3PGCAForCausalLM(tiny_config())
     index = empty_feature_index(model.config.vocab_size, model.config.pgca_max_pinyin_per_char)
     for values in index.values():
-        values[2] = 1
+        values[2] = 3 if values.dtype == torch.long else True
     model.model.feature_memory_builder.set_feature_index(index)
     initialize_pgca_parameters(model)
     return model

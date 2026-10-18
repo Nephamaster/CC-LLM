@@ -421,8 +421,11 @@ resources/
     phonetic_confusion.jsonl    # 后续可选
 models/
   Qwen3-1.7B-Base/              # 可选，本地模型目录
+  Qwen3-1.7B-Base-Char/         # tokenizer、语义权重与音形构建产物
+  Qwen3-1.7B-Base-PGCA/         # 完整音形分支初始化模型
 outputs/
-  qwen3-1.7b-char-vocab/
+  train/<模型名>/              # 训练 checkpoint 与日志
+  evaluation/<评估项>/<模型名>/ # 评估结果，含 PPL
 ```
 
 ## 6. 最小可运行资源集

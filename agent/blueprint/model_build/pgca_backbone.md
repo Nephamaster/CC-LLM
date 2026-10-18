@@ -1,5 +1,7 @@
 # PGCA Backbone Implementation Plan
 
+当前完整分支结合 `causal_feature_encoder.md` 与 `../train/phase2_auxiliary_task.md` 实施。模型统一命名为 `<Base原名>-PGCA`，不使用 `Char-PGCA-CONTEXT`；训练入口在 `scripts/train/ms_swift/cpt/`，Phase1/Phase2 产物分别位于 `outputs/train/M-ALIGN/` 与 `outputs/train/M-CPT/`。下文基础接口中的示例维度不是固定资源版本，实际 slots 以 manifest 为准。
+
 ## 1. 目标与边界
 
 本阶段实现 Backbone: PGCA 音形交叉注意力分支，将已完成的 `FeatureMemoryBuilder` 接入 Qwen3 decoder block。
@@ -203,8 +205,9 @@ hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_st
 ```bash
 python -m src.pgca.build_pgca \
   --model-path models/Qwen3-1.7B-Base-Char \
-  --output-path models/Qwen3-1.7B-Base-Char-PGCA \
-  --pgca-layers 11,12,13,14,15,16
+  --output-path models/Qwen3-1.7B-Base-PGCA \
+  --pgca-layers 11,12,13,14,15,16 \
+  --context-encoder --auxiliary-heads --zero-init-output
 ```
 
 流程：
@@ -216,19 +219,19 @@ python -m src.pgca.build_pgca \
    - `auto_map`
    - PGCA 层、头维度、feature vocab sizes 和 feature index SHA256。
 3. 从 Char checkpoint 加载原主干参数；本次迁移显式允许 PGCA 新参数和 feature buffers 缺失。
-4. 写入并验证 feature index，初始化全部 PGCA 投影和 norm 参数；不创建 gate。
+4. 写入并验证 feature index，初始化新分支和 norm；完整方案仅将 PGCA 输出投影清零，不创建 gate。
 5. `save_pretrained()` 后复制扁平化 remote code，确保不存在 `src.*` 导入。
 6. 删除最终仓库中的 `embedding_config.json`、`features/` 及旧 runtime 目录；feature index 已作为 persistent buffer 进入模型权重。
 7. 生成 `pgca_migration_report.json`，记录配置映射、feature index SHA256、加载信息和 PGCA 初始化检查。
 
-构建脚本不自动运行验证。构建完成后单独执行：
+构建 CLI 不自动运行独立验证；`scripts/build_pgca.sh` 已按构建成功后验证的顺序执行。手工构建完成后单独执行：
 
 ```bash
 python -m src.pgca.validate_pgca \
-  --model-path models/Qwen3-1.7B-Base-Char-PGCA
+  --model-path models/Qwen3-1.7B-Base-PGCA
 ```
 
-验证结果写入 `models/Qwen3-1.7B-Base-Char-PGCA/reports/pgca_validation_report.json`。
+验证结果写入 `models/Qwen3-1.7B-Base-PGCA/reports/pgca_validation_report.json`。
 
 ## 5. 验证设计
 
@@ -263,9 +266,9 @@ python -m src.pgca.validate_pgca \
 
 阶段性参数冻结建议：
 
-- Phase 1：若继续采用语义对齐策略，只训练 `E_sem/lm_head`，冻结其余参数。但冻结 PGCA 并不关闭其前向输出，PGCA 从该阶段开始就参与融合。
-- Phase 2：加载新一轮 Phase 1 checkpoint 后执行全参 CPT，包含 `feature_embedding` 和 `pgca_attn`；无需 gate 设值、冻结或阶段切换插件。
-- 两阶段使用同一份无门控源码和 `use_pgca=True` 配置。旧的 gated checkpoint/remote code 不会因修改 `src` 自动更新；从 Char 输入重新构建到独立的新目录后再开始训练，不覆盖原实验。
+- Phase1：完整方案用 `pgca_enabled=false` 旁路并冻结音形分支/辅助头，训练主干及语义输入输出层；冻结本身不等于旁路。
+- Phase2：按辅助任务方案先训练新增分支，再全参联合 CPT；结构不改源码，通过运行配置和参数冻结控制。
+- 两阶段保留同一份无门控源码及分支权重。旧 checkpoint/remote code 不会因修改 `src` 自动更新；从正确的 schema v2 Char 输入构建到新输出，不覆盖原实验。
 
 学习率建议：
 
@@ -309,7 +312,7 @@ src/modeling_qwen3_pgca.py
 最终模型仓库：
 
 ```text
-models/Qwen3-1.7B-Base-Char-PGCA/
+models/Qwen3-1.7B-Base-PGCA/
   __init__.py
   config.json
   generation_config.json
@@ -319,6 +322,8 @@ models/Qwen3-1.7B-Base-Char-PGCA/
   embedding_config.py
   feature_embedding.py
   feature_memory.py
+  context_encoder.py
+  pgca_auxiliary.py
   pgca_attention.py
   pgca_config.py
   model*.safetensors

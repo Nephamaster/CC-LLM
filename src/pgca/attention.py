@@ -66,7 +66,8 @@ class PGCACrossAttention(nn.Module):
 
         context = torch.einsum("bshm,bsmhd->bshd", attn, value)
         context = context.reshape(batch_size, seq_len, self.num_heads * self.head_dim)
-        return self.o_proj(context)
+        output = self.o_proj(context)
+        return output.masked_fill(~mask.any(-1, keepdim=True), 0)
 
     def _repeat_kv(self, states: torch.Tensor) -> torch.Tensor:
         if self.num_key_value_groups == 1:

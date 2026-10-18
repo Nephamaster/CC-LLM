@@ -58,8 +58,10 @@ class PhoneticGlyphFeatureEmbedding(nn.Module):
         shape_memory = self._build_shape_memory(feature_ids)
 
         is_hanzi = feature_ids["is_hanzi"].bool()
-        pinyin_mask = feature_ids["pinyin_mask"].bool() & is_hanzi.unsqueeze(-1)
-        shape_mask = is_hanzi.unsqueeze(-1)
+        pinyin_mask = feature_ids["pinyin_mask"].bool() & is_hanzi.unsqueeze(-1) & feature_ids["pinyin_ids"].gt(2)
+        shape_valid = (feature_ids["stroke_count_ids"].gt(2) | feature_ids["radical_stroke_ids"].gt(2)
+                       | feature_ids["structure_ids"].gt(2))
+        shape_mask = (is_hanzi & shape_valid).unsqueeze(-1)
 
         memory = torch.cat([pinyin_memory, shape_memory], dim=2)
         mask = torch.cat([pinyin_mask, shape_mask], dim=2)

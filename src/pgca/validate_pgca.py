@@ -22,6 +22,8 @@ REQUIRED_RUNTIME_FILES = (
     "embedding_config.py",
     "feature_embedding.py",
     "feature_memory.py",
+    "context_encoder.py",
+    "pgca_auxiliary.py",
     "pgca_attention.py",
     "pgca_config.py",
 )
@@ -68,7 +70,7 @@ def _check_modules(model: Any) -> dict:
     pgca_parameters = {
         name: parameter
         for name, parameter in model.named_parameters()
-        if ".pgca_attn." in name or "feature_memory_builder.feature_embedding." in name
+        if ".pgca_attn." in name or "feature_memory_builder." in name or "auxiliary_heads." in name
     }
     meta_parameters = [name for name, parameter in pgca_parameters.items() if parameter.is_meta]
     non_finite_parameters = [
@@ -81,6 +83,7 @@ def _check_modules(model: Any) -> dict:
         for name in pgca_parameters
         if name.endswith("pgca_attn.gate")
     ]
+    context = getattr(model.model.feature_memory_builder, "context_encoder", None)
     return {
         "expected_layers": sorted(expected_layers),
         "actual_layers": sorted(actual_layers),
@@ -90,6 +93,9 @@ def _check_modules(model: Any) -> dict:
         "meta_parameters": meta_parameters,
         "non_finite_parameters": non_finite_parameters,
         "parameters_finite": not meta_parameters and not non_finite_parameters,
+        "context_matches": (context is not None) == model.config.pgca_context_enabled,
+        "context_layers_match": context is None or len(context.layers) == model.config.pgca_context_num_layers,
+        "auxiliary_heads_match": (model.auxiliary_heads is not None) == model.config.pgca_aux_enabled,
     }
 
 
@@ -99,7 +105,8 @@ def _check_feature_memory(model: Any, input_ids: torch.Tensor) -> dict:
         return {"available": False}
 
     with torch.no_grad():
-        memory, mask = builder(input_ids)
+        positions = torch.arange(input_ids.shape[1], device=input_ids.device)[None]
+        memory, mask = builder(input_ids, position_ids=positions)
     expected_shape = [
         input_ids.shape[0],
         input_ids.shape[1],
@@ -141,7 +148,7 @@ def _check_feature_memory(model: Any, input_ids: torch.Tensor) -> dict:
 
 def _check_forward(model: Any, inputs: dict[str, torch.Tensor]) -> dict:
     with torch.no_grad():
-        outputs = model(**inputs, labels=inputs["input_ids"])
+        outputs = model(**inputs, labels=inputs["input_ids"], return_aux_logits=model.config.pgca_aux_enabled)
     input_ids = inputs["input_ids"]
     expected_shape = [input_ids.shape[0], input_ids.shape[1], model.config.vocab_size]
     return {
@@ -149,6 +156,8 @@ def _check_forward(model: Any, inputs: dict[str, torch.Tensor]) -> dict:
         "expected_logits_shape": expected_shape,
         "logits_shape_matches": list(outputs.logits.shape) == expected_shape,
         "loss_is_finite": bool(torch.isfinite(outputs.loss).item()) if outputs.loss is not None else False,
+        "auxiliary_logits_finite": (outputs.phonetic_logits is None or bool(torch.isfinite(outputs.phonetic_logits).all()))
+        and (outputs.glyph_logits is None or all(bool(torch.isfinite(value).all()) for value in outputs.glyph_logits.values())),
     }
 
 
@@ -199,9 +208,13 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
         and module_checks["layers_match"]
         and module_checks["gate_free"]
         and module_checks["parameters_finite"]
+        and module_checks["context_matches"]
+        and module_checks["context_layers_match"]
+        and module_checks["auxiliary_heads_match"]
         and feature_passed
         and forward_checks["logits_shape_matches"]
         and forward_checks["loss_is_finite"]
+        and forward_checks["auxiliary_logits_finite"]
     )
 
     return {
@@ -222,7 +235,7 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char-PGCA"))
+    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-PGCA"))
     parser.add_argument("--text", type=str, default="中国ABC")
     args = parser.parse_args()
 

@@ -7,9 +7,11 @@ import ast
 import hashlib
 import json
 import shutil
+import unicodedata
 from pathlib import Path
 
 import torch
+from transformers import AutoTokenizer
 
 from src.configuration_qwen3_pgca import Qwen3PGCAConfig
 from src.embedding.config import EmbeddingFeatureConfig
@@ -26,8 +28,10 @@ RUNTIME_FILES = {
     "embedding_config.py": "embedding/config.py",
     "feature_embedding.py": "embedding/feature_embedding.py",
     "feature_memory.py": "embedding/feature_memory.py",
+    "context_encoder.py": "embedding/context_encoder.py",
     "pgca_attention.py": "pgca/attention.py",
     "pgca_config.py": "pgca/config.py",
+    "pgca_auxiliary.py": "pgca/auxiliary.py",
 }
 REMOTE_IMPORT_REWRITES = {
     "configuration_qwen3_pgca.py": {".pgca.config": ".pgca_config"},
@@ -36,6 +40,8 @@ REMOTE_IMPORT_REWRITES = {
         ".embedding.feature_embedding": ".feature_embedding",
         ".embedding.feature_memory": ".feature_memory",
         ".pgca.attention": ".pgca_attention",
+        ".embedding.context_encoder": ".context_encoder",
+        ".pgca.auxiliary": ".pgca_auxiliary",
     },
     "feature_embedding.py": {".config": ".embedding_config"},
 }
@@ -141,6 +147,8 @@ def initialize_pgca_parameters(model: Qwen3PGCAForCausalLM) -> None:
     std = float(model.config.initializer_range)
 
     with torch.no_grad():
+        if model.auxiliary_heads is not None:
+            model.auxiliary_trained_tokens.zero_()
         for layer_idx in model.config.pgca_layers:
             attention = model.model.layers[layer_idx].pgca_attn
             for projection in (attention.q_proj, attention.k_proj, attention.v_proj, attention.o_proj):
@@ -149,13 +157,15 @@ def initialize_pgca_parameters(model: Qwen3PGCAForCausalLM) -> None:
                     torch.nn.init.zeros_(projection.bias)
             attention.q_norm.weight.fill_(1.0)
             attention.k_norm.weight.fill_(1.0)
+            if model.config.pgca_zero_init_output:
+                attention.o_proj.weight.zero_()
 
 
 def check_pgca_parameters(model: Qwen3PGCAForCausalLM) -> dict:
     pgca_parameters = {
         name: parameter
         for name, parameter in model.named_parameters()
-        if ".pgca_attn." in name or "feature_memory_builder.feature_embedding." in name
+        if ".pgca_attn." in name or "feature_memory_builder." in name or "auxiliary_heads." in name
     }
     meta_parameters = [name for name, parameter in pgca_parameters.items() if parameter.is_meta]
     non_finite_parameters = [
@@ -167,6 +177,7 @@ def check_pgca_parameters(model: Qwen3PGCAForCausalLM) -> dict:
         name
         for name, parameter in pgca_parameters.items()
         if parameter.ndim > 1 and not parameter.is_meta and not bool(torch.count_nonzero(parameter).item())
+        and not (model.config.pgca_zero_init_output and name.endswith(".pgca_attn.o_proj.weight"))
     ]
     invalid_norm_parameters = [
         name
@@ -198,6 +209,7 @@ def check_pgca_parameters(model: Qwen3PGCAForCausalLM) -> dict:
         "nonzero_biases": nonzero_biases,
         "gate_parameters": gate_parameters,
         "gate_free": not gate_parameters,
+        "zero_initialized_pgca_output": model.config.pgca_zero_init_output,
         "passed": (
             not meta_parameters
             and not non_finite_parameters
@@ -322,7 +334,29 @@ def save_pretrained_without_auto_copy(model: Qwen3PGCAForCausalLM, output_path: 
         config_class._auto_class = config_auto_class
 
 
-def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str | None) -> dict:
+def build_token_type_index(model_path: Path, builder) -> None:
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    specials = set(tokenizer.all_special_ids)
+    types = torch.zeros(builder.is_hanzi.shape[0], dtype=torch.long)
+    for token_id in range(len(types)):
+        value = tokenizer.decode([token_id], skip_special_tokens=False, clean_up_tokenization_spaces=False)
+        if token_id in specials:
+            types[token_id] = 5
+        elif bool(builder.is_hanzi[token_id]):
+            types[token_id] = 1
+        elif value and value.isspace():
+            types[token_id] = 6
+        elif value.strip().isdecimal():
+            types[token_id] = 3
+        elif value.strip() and all("LATIN" in unicodedata.name(char, "") for char in value.strip()):
+            types[token_id] = 2
+        elif value.strip() and all(unicodedata.category(char).startswith("P") for char in value.strip()):
+            types[token_id] = 4
+    builder.token_type_ids.copy_(types)
+
+
+def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str | None,
+                     *, context_encoder=False, auxiliary_heads=False, zero_init_output=False) -> dict:
     model_path = model_path.resolve()
     output_path = output_path.resolve()
     if model_path == output_path:
@@ -359,6 +393,18 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         pgca_layers,
         feature_index_sha256,
     )
+    updated_config.update(pgca_context_enabled=context_encoder, pgca_aux_enabled=auxiliary_heads,
+                          pgca_zero_init_output=zero_init_output)
+    if (context_encoder or auxiliary_heads) and updated_config["pgca_feature_schema_version"] < 2:
+        raise ValueError("context/auxiliary experiments require repaired feature schema v2")
+    if auxiliary_heads:
+        from src.vocab.feature_index import load_feature_vocabs
+        vocabs = load_feature_vocabs(output_path / "features")
+        updated_config["pgca_auxiliary_class_names"] = {
+            name: [value for value, index in sorted(vocabs[name].items(), key=lambda item: item[1]) if index > 2]
+            for name in ("pinyin", "stroke_count", "radical_stroke", "structure")
+        }
+    write_json(config_path, updated_config)
 
     config = Qwen3PGCAConfig.from_pretrained(output_path)
     model, loading_info = Qwen3PGCAForCausalLM.from_pretrained(
@@ -378,6 +424,9 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
     if builder is None:
         raise RuntimeError("PGCA model did not construct feature_memory_builder")
     builder.set_feature_index(feature_index)
+    if context_encoder:
+        build_token_type_index(model_path, builder)
+        model.config.pgca_token_type_index_sha256 = feature_index_fingerprint(builder, ("token_type_ids",))
     model.config.pgca_feature_index_tensor_sha256 = feature_index_fingerprint(builder)
 
     initialize_pgca_parameters(model)
@@ -415,6 +464,9 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         "unexpected_keys": loading_info.get("unexpected_keys", []),
         "mismatched_keys": loading_info.get("mismatched_keys", []),
         "pgca_initialization": parameter_checks,
+        "context_parameter_count": sum(p.numel() for p in builder.context_encoder.parameters()) if context_encoder else 0,
+        "auxiliary_parameter_count": sum(p.numel() for p in model.auxiliary_heads.parameters()) if auxiliary_heads else 0,
+        "token_type_schema": ["other", "hanzi", "latin", "digit", "punctuation", "special", "whitespace"] if context_encoder else None,
     }
 
     report_path = output_path / "pgca_migration_report.json"
@@ -425,11 +477,16 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--output-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char-PGCA"))
+    parser.add_argument("--output-path", type=Path, default=Path("models/Qwen3-1.7B-Base-PGCA"))
     parser.add_argument("--pgca-layers", type=str, default=None)
+    parser.add_argument("--context-encoder", action="store_true")
+    parser.add_argument("--auxiliary-heads", action="store_true")
+    parser.add_argument("--zero-init-output", action="store_true")
     args = parser.parse_args()
 
-    report = build_pgca_model(args.model_path, args.output_path, args.pgca_layers)
+    report = build_pgca_model(args.model_path, args.output_path, args.pgca_layers,
+                             context_encoder=args.context_encoder, auxiliary_heads=args.auxiliary_heads,
+                             zero_init_output=args.zero_init_output)
     print(json.dumps(to_jsonable(report), ensure_ascii=False, indent=2))
 
 

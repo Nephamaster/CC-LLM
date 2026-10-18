@@ -37,6 +37,8 @@ from .embedding.config import EmbeddingFeatureConfig
 from .embedding.feature_embedding import PhoneticGlyphFeatureEmbedding
 from .embedding.feature_memory import FEATURE_INDEX_KEYS, FeatureMemoryBuilder, feature_index_fingerprint
 from .pgca.attention import PGCACrossAttention
+from .embedding.context_encoder import PGCACompositeCache
+from .pgca.auxiliary import AuxiliaryHeads, PGCAAuxiliaryOutput, summed_next_token_losses
 
 
 @use_kernel_forward_from_hub("RMSNorm")
@@ -303,6 +305,7 @@ def _build_feature_memory_builder(config: Qwen3PGCAConfig) -> FeatureMemoryBuild
         vocab_size=config.vocab_size,
         max_pinyin_per_char=config.pgca_max_pinyin_per_char,
         feature_embedding=feature_embedding,
+        context_config=config if config.pgca_context_enabled else None,
     )
 
 
@@ -389,6 +392,16 @@ class Qwen3PGCAPreTrainedModel(PreTrainedModel):
         )
         if validate_feature_index and getattr(model.config, "use_pgca", False):
             model._validate_loaded_feature_index(loading_info)
+            required_prefixes = [".pgca_attn.", "feature_memory_builder.feature_embedding."]
+            if model.config.pgca_context_enabled:
+                required_prefixes.extend(("feature_memory_builder.context_encoder.",
+                                          "feature_memory_builder.token_type_ids"))
+            if model.config.pgca_aux_enabled:
+                required_prefixes.extend(("auxiliary_heads.", "auxiliary_trained_tokens"))
+            missing = [key for key in loading_info.get("missing_keys", [])
+                       if any(prefix in key for prefix in required_prefixes)]
+            if missing:
+                raise RuntimeError(f"checkpoint is missing contextual/auxiliary weights: {missing}")
 
         return (model, loading_info) if return_loading_info else model
 
@@ -412,6 +425,10 @@ class Qwen3PGCAPreTrainedModel(PreTrainedModel):
         expected = getattr(self.config, "pgca_feature_index_tensor_sha256", None)
         if expected is not None and feature_index_fingerprint(builder) != expected:
             raise RuntimeError("checkpoint PGCA feature index fingerprint does not match its config")
+        type_hash = getattr(self.config, "pgca_token_type_index_sha256", None)
+        if self.config.pgca_context_enabled and type_hash is not None:
+            if feature_index_fingerprint(builder, ("token_type_ids",)) != type_hash:
+                raise RuntimeError("checkpoint token-type index fingerprint does not match its config")
 
 
 class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
@@ -445,9 +462,16 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
         feature_ids: dict[str, torch.Tensor] | None,
         feature_memory: torch.Tensor | None,
         feature_mask: torch.Tensor | None,
+        position_ids=None,
+        attention_mask=None,
+        feature_cache=None,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         if not self.config.pgca_enabled:
             return None, None
+        if self.config.pgca_context_enabled and input_ids is None:
+            raise ValueError("context mode requires input_ids for token-type lookup")
+        if self.config.pgca_context_enabled and (feature_memory is not None or feature_ids is not None):
+            raise ValueError("context mode requires input_ids; external memory bypasses causal feature encoding")
         if feature_memory is not None:
             if feature_mask is None:
                 raise ValueError("feature_mask must be provided when feature_memory is provided")
@@ -456,7 +480,8 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
                 raise ValueError("feature_ids require an initialized feature_memory_builder")
             feature_memory, feature_mask = self.feature_memory_builder.feature_embedding(feature_ids)
         elif input_ids is not None and self.feature_memory_builder is not None:
-            feature_memory, feature_mask = self.feature_memory_builder(input_ids)
+            feature_memory, feature_mask = self.feature_memory_builder(
+                input_ids, position_ids=position_ids, attention_mask=attention_mask, cache=feature_cache)
         else:
             return None, None
 
@@ -492,21 +517,35 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        context_active = self.config.pgca_enabled and self.config.pgca_context_enabled
+        if self.training and context_active and use_cache:
+            raise ValueError("disable use_cache for feature-context training")
+        if use_cache and context_active and not isinstance(past_key_values, PGCACompositeCache):
+            if past_key_values is not None and not isinstance(past_key_values, DynamicCache):
+                raise ValueError("feature context currently supports DynamicCache only")
+            if past_key_values is not None and past_key_values.get_seq_length() != 0:
+                raise ValueError("a nonempty backbone-only cache cannot restore feature context")
+            past_key_values = PGCACompositeCache(self.config)
+        elif use_cache and past_key_values is None:
+            past_key_values = DynamicCache(config=self.config)
+        if use_cache and context_active and past_key_values.feature_cache.get_seq_length() != past_key_values.get_seq_length():
+            raise ValueError("backbone and feature cache lengths are out of sync")
+
+        if position_ids is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
+            position_ids = position_ids.unsqueeze(0)
+
         feature_memory, feature_mask = self._prepare_feature_memory(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
             feature_ids=feature_ids,
             feature_memory=feature_memory,
             feature_mask=feature_mask,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            feature_cache=past_key_values.feature_cache if use_cache and context_active else None,
         )
-
-        if use_cache and past_key_values is None:
-            past_key_values = DynamicCache(config=self.config)
-
-        if position_ids is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
-            position_ids = position_ids.unsqueeze(0)
 
         if not isinstance(causal_mask_mapping := attention_mask, dict):
             mask_kwargs = {
@@ -555,6 +594,9 @@ class Qwen3PGCAForCausalLM(Qwen3PGCAPreTrainedModel, GenerationMixin):
         self.model = Qwen3PGCAModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.auxiliary_heads = AuxiliaryHeads(config) if config.pgca_aux_enabled else None
+        if self.auxiliary_heads is not None:
+            self.register_buffer("auxiliary_trained_tokens", torch.tensor(0, dtype=torch.long))
 
         self.post_init()
 
@@ -576,6 +618,9 @@ class Qwen3PGCAForCausalLM(Qwen3PGCAPreTrainedModel, GenerationMixin):
     def set_decoder(self, decoder: Qwen3PGCAModel) -> None:
         self.model = decoder
 
+    def multitask_loss_sums(self, outputs, labels, *, per_example=False):
+        return summed_next_token_losses(outputs, labels, self.model.feature_memory_builder, per_example=per_example)
+
     @can_return_tuple
     def forward(
         self,
@@ -590,6 +635,7 @@ class Qwen3PGCAForCausalLM(Qwen3PGCAPreTrainedModel, GenerationMixin):
         feature_ids: dict[str, torch.Tensor] | None = None,
         feature_memory: torch.Tensor | None = None,
         feature_mask: torch.Tensor | None = None,
+        return_aux_logits: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         outputs: BaseModelOutputWithPast = self.model(
@@ -611,14 +657,33 @@ class Qwen3PGCAForCausalLM(Qwen3PGCAPreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            if logits.shape[:2] != labels.shape:
+                raise ValueError("labelled forward requires full sequence logits")
+            targets = labels[:, 1:]
+            loss = nn.functional.cross_entropy(
+                logits[:, :-1].float().reshape(-1, logits.shape[-1]), targets.reshape(-1),
+                ignore_index=-100, reduction="sum")
+            denominator = kwargs.get("num_items_in_batch")
+            if denominator is None:
+                denominator = targets.ne(-100).sum()
+            loss = loss / torch.as_tensor(denominator, device=loss.device).clamp_min(1)
 
-        return CausalLMOutputWithPast(
+        phonetic_logits, glyph_logits = None, None
+        if return_aux_logits:
+            if self.auxiliary_heads is None:
+                raise ValueError("return_aux_logits requires a checkpoint built with auxiliary heads")
+            if not isinstance(logits_to_keep, int) or logits_to_keep != 0:
+                raise ValueError("auxiliary heads require full sequence logits (logits_to_keep=0)")
+            phonetic_logits, glyph_logits = self.auxiliary_heads(hidden_states)
+
+        return PGCAAuxiliaryOutput(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            phonetic_logits=phonetic_logits,
+            glyph_logits=glyph_logits,
         )
 
 

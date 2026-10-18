@@ -1,5 +1,7 @@
 # Training - Phase 0: Tokenizer&Embedding Validation
 
+该步骤是构建诊断，不是统一的 PPL benchmark。当前入口仍在 `scripts/validation/`，报告默认写到 `outputs/evaluation/phase0_tokenizer/<模型名>/` 和 `outputs/evaluation/phase0_forward/<模型名>/`。验证 checkpoint 时显式传 `--model-name`；Base/Char/ALIGN 的正式 PPL 归入 `scripts/evaluation/ppl/`，按根 README 的模型命名与目录规则管理。
+
 ## 1. 目标
 
 确保新 tokenizer 可用，新 embedding/lm_head 初始化合理。 

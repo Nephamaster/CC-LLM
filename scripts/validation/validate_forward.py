@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-from scripts.validation.common import file_sha256, numeric_summary, read_json, read_jsonl, utc_now_iso, write_json
+from scripts.validation.common import default_report_path, file_sha256, numeric_summary, read_json, read_jsonl, utc_now_iso, write_json
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 
@@ -249,9 +249,10 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char-PGCA"))
+    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-PGCA"))
     parser.add_argument("--data-path", type=Path, default=Path("data/validation/forward_validation.jsonl"))
-    parser.add_argument("--report-path", type=Path, default=Path("reports/validation/phase0_forward_report.json"))
+    parser.add_argument("--model-name", help="Canonical model name, required for checkpoint-* inputs")
+    parser.add_argument("--report-path", type=Path)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--expected-records", type=int, default=300)
     parser.add_argument("--max-length", type=int, default=256)
@@ -259,7 +260,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-logit-abs", type=float, default=10_000.0)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=10)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.report_path is None:
+        args.report_path = default_report_path(args.model_path, "phase0_forward", args.model_name)
+    return args
 
 
 def main() -> None:

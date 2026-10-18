@@ -11,6 +11,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+
+def default_report_path(model_path: Path, evaluation: str, model_name: str | None = None) -> Path:
+    name = model_name or model_path.name
+    if not name or name in {".", ".."} or "/" in name:
+        raise ValueError("model_name must be one directory name")
+    if model_name is None and (name.startswith("checkpoint-") or name in {"best", "last", "latest"}):
+        raise ValueError("pass --model-name when validating a checkpoint directory")
+    root = Path(__file__).resolve().parents[2]
+    return root / "outputs" / "evaluation" / evaluation / name / "report.json"
+
+
 CJK_RANGES = (
     (0x3400, 0x4DBF),
     (0x4E00, 0x9FFF),
