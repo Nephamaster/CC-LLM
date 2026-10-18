@@ -4,25 +4,20 @@ from __future__ import annotations
 
 import importlib.metadata
 import inspect
-import subprocess
 from pathlib import Path
 
 from .common import file_hash, resolve
+from .provenance import verify_swift
 
 
 class SwiftEncoder:
     def __init__(self, config):
         import swift
-        from swift.model import get_model_processor
-        from swift.template import get_template
 
         root = Path(swift.__file__).resolve().parent.parent
-        commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-        if commit != config["swift_commit"]:
-            raise RuntimeError(f"ms-swift commit mismatch: {commit}; expected {config['swift_commit']}")
-        dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--", "swift"], text=True)
-        if dirty.strip():
-            raise RuntimeError("ms-swift implementation has uncommitted changes; pin and audit it first")
+        provenance = verify_swift(root, config["swift_commit"])
+        from swift.model import get_model_processor
+        from swift.template import get_template
         _, processor = get_model_processor(
             str(resolve(config["tokenizer_path"])), model_type="qwen3", load_model=False,
             download_model=False,
@@ -34,7 +29,8 @@ class SwiftEncoder:
         )
         self.template.set_mode("train")
         self.info = {
-            "backend": "ms-swift", "commit": commit, "template": "qwen3",
+            "backend": "ms-swift", "commit": provenance["git_commit"], "template": "qwen3",
+            "provenance": provenance, "package_version": getattr(swift, "__version__", None),
             "enable_thinking": False, "loss_scale": "default", "template_backend": "swift",
             "add_non_thinking_prefix": True, "use_chat_template": True,
             "system": None,

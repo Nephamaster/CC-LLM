@@ -246,6 +246,37 @@ def test_inputs_and_config_cannot_change_between_stages(config):
         finalize(config, FixtureEncoder())
 
 
+def test_verified_legacy_prepare_can_finalize_without_rewriting_it(config):
+    from scripts.ancient_sft.common import file_hash
+    from scripts.ancient_sft.provenance import profile
+
+    jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(40)])
+    manifest = prepare(config)
+    path = Path(config["output_dir"]) / "prepared/manifest.json"
+    manifest["implementation_sha256"] = profile()["legacy_prepare"]["implementation_sha256"]
+    write_json(path, manifest)
+    before = file_hash(path)
+    result = finalize(config, FixtureEncoder())
+    assert result["ready_for_training"]
+    assert result["prepared_implementation_check"] == "verified_legacy_prepare_encoder_provenance_fix"
+    assert file_hash(path) == before
+
+
+@pytest.mark.parametrize("changed", ["input", "database"])
+def test_legacy_prepare_keeps_data_integrity_guards(config, changed):
+    from scripts.ancient_sft.provenance import profile
+
+    manifest = prepare(config)
+    root = Path(config["output_dir"]) / "prepared"
+    manifest["implementation_sha256"] = profile()["legacy_prepare"]["implementation_sha256"]
+    write_json(root / "manifest.json", manifest)
+    target = Path(config["sources"]["translate"]) if changed == "input" else root / "candidates.sqlite"
+    with target.open("ab") as handle:
+        handle.write(b"\n")
+    with pytest.raises(RuntimeError, match="input files changed|database changed"):
+        finalize(config, FixtureEncoder())
+
+
 def test_overlength_rejected_without_splitting(config):
     jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(5)])
     config["max_length"] = 32
@@ -278,7 +309,8 @@ def test_history_can_contribute_new_pairs_using_corpus_ownership(config):
 
 
 @pytest.mark.skipif(os.getenv("ANCIENT_SWIFT_INTEGRATION") != "1", reason="requires pinned ms-swift environment")
-def test_real_swift_encoding_and_finalize(config):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_real_swift_encoding_and_finalize(config, legacy):
     from scripts.ancient_sft.encoding import SwiftEncoder
 
     config["tokenizer_path"] = "models/Qwen3-1.7B-Base-Char"
@@ -294,8 +326,16 @@ def test_real_swift_encoding_and_finalize(config):
     assert "<think>\n\n</think>\n\n" in encoder.template.tokenizer.decode(raw["input_ids"])
     assert long["assistant_loss_tokens"] == sum(label != -100 for label in raw["labels"][1:])
     jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(40)])
-    prepare(config)
+    manifest = prepare(config)
+    if legacy:
+        from scripts.ancient_sft.provenance import profile
+
+        manifest["implementation_sha256"] = profile()["legacy_prepare"]["implementation_sha256"]
+        write_json(Path(config["output_dir"]) / "prepared/manifest.json", manifest)
     report = finalize(config, encoder)
     assert report["ready_for_training"]
     assert report["encoding"]["backend"] == "ms-swift"
     assert report["tasks"]["train/c2m"]["assistant_loss_fraction"] == 1
+    assert report["prepared_implementation_check"] == (
+        "verified_legacy_prepare_encoder_provenance_fix" if legacy else "exact"
+    )

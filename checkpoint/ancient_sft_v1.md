@@ -33,3 +33,11 @@
 后续执行 inspect → prepare → 审核（如需）→ 新版本 prepare → finalize；旧诊断产物不可因补齐输入而直接转为正式产物。
 
 检查 report 的实际任务数、缺额、Train/Dev 是否非空及模板信息。来源版本/许可证未提供时明确 unknown；SFT 清洁不代表 CPT 未污染，报告保留 `cpt_contamination_audited=false`。
+
+## finalize 对无 Git 源码目录的兼容修复
+
+- 服务器的 ms-swift 目录没有可识别的 `.git`，旧 SwiftEncoder 在 `git rev-parse HEAD` 阶段失败，尚未创建 final。不是数据损坏，不应通过 git init、修改 manifest 或重跑全量 prepare 解决。
+- 新增 `provenance.py` 和 `provenance_profile.json`，从锁定 commit 的 Git 对象归档计算全部 540 个 `swift/**/*.py` 路径/内容聚合指纹。有 Git 时仍检查 commit、工作区和源码；无 Git 时直接校验源码，记录实际 Git commit=null、参考 commit 和验证方式。若目录只是位于另一个 Git 仓库之内，不误用父仓库的 commit。
+- 旧 prepare 实现指纹 `a26014c8a6984f426ff9457f69527e9d5979238043126d460bda405f620b5c91` 支持本次有界兼容：核对原始准备模块及 pipeline 准备代码片段未变；仍检查配置、输入、数据库，不改写旧 manifest。未知版本、额外代码模块或准备逻辑变化继续拒绝。
+- 服务器需同步整个 `scripts/ancient_sft/`（含新增 Python/JSON 文件），保持原配置和产物，然后直接重试 finalize，无需 overwrite。源码指纹不符时明确报错，不默默降级为“版本已验证”。
+- 验证：46 项测试通过；从锁定 commit 导出无 `.git` 的真实 Swift 副本，在隔离 CPU 环境完成新/旧 prepare 两种临时数据的实际编码及 finalize；覆盖源码修改/缺失/增加、Git 不可用、父仓库误识别、旧产物输入/数据库篡改拒绝等。仅有 PyTorch 弃用警告，未在服务器运行全量 finalize 或训练。

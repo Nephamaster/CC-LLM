@@ -1,0 +1,11 @@
+{
+  "swift": {
+    "commit": "1516d78d627381c2072be80037a7a64c3811480d",
+    "source_sha256": "9fbbe9a04d35ebc4add7105e45cbeebed9ea18355715a69455b9c41705b7a13b",
+    "python_files": 540
+  },
+  "legacy_prepare": {
+    "implementation_sha256": "a26014c8a6984f426ff9457f69527e9d5979238043126d460bda405f620b5c91",
+    "preparation_sha256": "2c67b37b1a2d05a2b113d48367b65eed845d7fccc8f302bdcf8697c2b29a3bae"
+  }
+}

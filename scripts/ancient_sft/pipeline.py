@@ -203,13 +203,16 @@ def distribution(values):
 
 
 def finalize(config, encoder=None):
+    from .provenance import verify_prepared_implementation
+
     root = resolve(config["output_dir"])
     prepared = root / "prepared"
     manifest = json.loads((prepared / "manifest.json").read_text(encoding="utf-8"))
     if manifest["diagnostic"] or manifest["inventory"]["missing"]:
         raise RuntimeError("diagnostic/incomplete preparation cannot produce training data")
-    if manifest["config"] != config or manifest["implementation_sha256"] != implementation_hash():
+    if manifest["config"] != config:
         raise RuntimeError("configuration or implementation changed; prepare in a new output directory")
+    implementation_check = verify_prepared_implementation(manifest["implementation_sha256"], implementation_hash())
     if manifest["inventory"] != input_inventory(config):
         raise RuntimeError("input files changed since preparation")
     if file_hash(prepared / "candidates.sqlite") != manifest["database_sha256"]:
@@ -286,6 +289,8 @@ def finalize(config, encoder=None):
             "train_dev_group_overlap": 0, "train_dev_ancient_overlap": 0, "evahan_included": False,
             "encoding": encoder.info, "statistics": dict(stats), "output_sha256": hashes,
             "prepared_manifest_sha256": file_hash(prepared / "manifest.json"),
+            "prepared_implementation_check": implementation_check,
+            "finalization_implementation_sha256": implementation_hash(),
             "cpt_contamination_audited": False,
         }
         for split in ("train", "dev"):

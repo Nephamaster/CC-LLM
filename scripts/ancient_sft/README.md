@@ -18,7 +18,7 @@
 pip install -r scripts/ancient_sft/requirements.txt
 ```
 
-`finalize` 必须在已安装用户 ms-swift fork 的环境执行；当前锁定提交 `1516d78d627381c2072be80037a7a64c3811480d`。要求可定位到该 Git checkout，且 `swift/` 无未提交变动；其他目录的训练脚本变动不影响检查。不下载模型权重，仅加载 tokenizer/processor。
+`finalize` 必须在已安装用户 ms-swift fork 的环境执行；当前锁定提交 `1516d78d627381c2072be80037a7a64c3811480d`。支持完整 Git checkout 或不带 `.git` 的源码副本：两者均校验 `swift/` 下全部 540 个 Python 文件的路径与内容聚合 SHA256，基准记录在 `provenance_profile.json`，不依赖网络。完整 checkout 还需 commit 一致且 `swift/` 无未提交变动；其他目录的训练脚本变动不影响检查。无 Git 时记录实际 commit 为 null、校验依据为源码指纹和参考 commit，不伪造已读取的 Git 版本。不下载模型权重，仅加载 tokenizer/processor。
 
 编码契约：现有 Char tokenizer、`template=qwen3`、`enable_thinking=false`、`template_backend=swift`、`loss_scale=default`、`use_chat_template=true`、最大长度 2048。**不是**无空 think 前缀的 `qwen3_nothinking` 模板，也不是 CPT 的 `loss_scale=all`。按官方模板生成完整 `input_ids/labels` 后统计，assistant loss 含模板实际参与 loss 的结束符等 token。超长完整样本剔除，不切断问答。
 
@@ -43,6 +43,8 @@ python -m scripts.ancient_sft.run prepare \
 `--limit` 是每个训练来源的原始记录窗口，不缩小 Benchmark 排除集。诊断模式只允许缺少 HistoryTrans 保留分区，**无法 finalize**；不要将诊断候选用于训练。
 
 输出阶段目录已有内容时直接拒绝，不自动删除、不复用部分任务。失败、修改配置/源文件/审核文件/实现后，换新 `--output-dir` 从 prepare 开始；同一轮 finalize 使用相同目录。不存在隐含 overwrite。
+
+针对初版 finalize 强制要求 `.git` 的问题，支持复用实现指纹为 `a26014c8a6984f426ff9457f69527e9d5979238043126d460bda405f620b5c91` 的已知旧 prepare：必须确认准备阶段代码未变，且配置、原始文件、数据库仍通过原有校验。该兼容不会修改旧 manifest，不接受任意旧代码版本，也不允许诊断产物转正。只遇到 Git 校验报错时尚未创建 final，完整同步本次修复文件后直接重新 finalize，无须 overwrite 或重跑 prepare。
 
 ## 分组、去重与审核
 
