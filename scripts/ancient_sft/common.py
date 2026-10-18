@@ -61,8 +61,18 @@ def load_config(path: str | Path) -> dict:
         raise ValueError(f"quotas must specify exactly {TASKS}")
     if any(not isinstance(n, int) or n < 0 for n in config["quotas"].values()):
         raise ValueError("quotas must be nonnegative integers")
-    if not 0 < config["dev_fraction"] < 0.5:
-        raise ValueError("dev_fraction must be between zero and 0.5")
+    if set(config["dev_quotas"]) != set(TASKS) or any(
+        not isinstance(n, int) or n < 0 for n in config["dev_quotas"].values()
+    ) or any(config["dev_quotas"][task] <= 0 for task in TASKS[:3]):
+        raise ValueError("dev_quotas must cover all tasks and require each core task")
+    if (not 0 < config["dev_max_book_fraction"] <= 1 or config["dev_pool_factor"] < 1
+            or config["dev_min_books"] < 1 or config["dev_min_groups"] < 1):
+        raise ValueError("invalid Dev coverage constraints")
+    low, high = config["punctuation_loss_fraction"]
+    if not 0 <= low < high < 1:
+        raise ValueError("punctuation_loss_fraction must be an interval within [0, 1)")
+    if config["punctuation_max_samples"] < config["quotas"]["punctuate"]:
+        raise ValueError("punctuation_max_samples must not be below the initial quota")
     if config["max_length"] < 32 or not 0 < config["max_book_fraction"] <= 1:
         raise ValueError("invalid sequence length or book fraction")
     if not 0 <= config["history_target"] <= config["quotas"]["c2m"]:
@@ -166,8 +176,3 @@ class Groups:
     def union(self, left: str, right: str):
         left, right = self.root(left), self.root(right)
         self.parent[max(left, right)] = min(left, right)
-
-
-def split_for(group: str, config: dict) -> str:
-    fraction = int(digest(f"{config['seed']}:{group}")[:13], 16) / 16**13
-    return "dev" if fraction < config["dev_fraction"] else "train"

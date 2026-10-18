@@ -22,8 +22,11 @@ def jsonl(path, rows):
 @pytest.fixture
 def config(tmp_path):
     value = load_config("scripts/ancient_sft/config.yaml")
-    value.update(output_dir=str(tmp_path / "output"), dev_fraction=.25, max_book_fraction=1.0,
+    value.update(output_dir=str(tmp_path / "output"), max_book_fraction=1.0,
                  history_target=2, quotas={"c2m": 8, "m2c": 3, "punctuate": 3, "dictionary": 1, "provenance": 1})
+    value.update(dev_quotas={"c2m": 2, "m2c": 2, "punctuate": 2, "dictionary": 0, "provenance": 0},
+                 dev_min_books=1, dev_min_groups=1, dev_max_book_fraction=1.0,
+                 dev_pool_factor=1.0, punctuation_loss_fraction=[0.0, .95])
     value["sources"] = {name: str(tmp_path / f"{name}.jsonl") for name in value["sources"]}
     history_dir = tmp_path / "HistoryTrans"
     history_dir.mkdir()
@@ -220,7 +223,7 @@ def test_end_to_end_report_and_aligned_metadata(config):
     jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(40)])
     prepare(config)
     result = finalize(config, FixtureEncoder())
-    assert result["ready_for_training"]
+    assert not result["ready_for_training"]  # Missing core Dev tasks are no longer accepted.
     assert result["tasks"]["train/c2m"]["selected"] == 8
     assert not result["quotas_passed"]  # Optional and other task shortfalls stay visible.
     final = Path(config["output_dir"]) / "final"
@@ -246,9 +249,10 @@ def test_inputs_and_config_cannot_change_between_stages(config):
         finalize(config, FixtureEncoder())
 
 
-def test_verified_legacy_prepare_can_finalize_without_rewriting_it(config):
+def test_verified_legacy_candidates_can_repartition_without_rewriting_them(config):
     from scripts.ancient_sft.common import file_hash
     from scripts.ancient_sft.provenance import profile
+    from scripts.ancient_sft.repartition import repartition
 
     jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(40)])
     manifest = prepare(config)
@@ -256,15 +260,17 @@ def test_verified_legacy_prepare_can_finalize_without_rewriting_it(config):
     manifest["implementation_sha256"] = profile()["legacy_prepare"]["implementation_sha256"]
     write_json(path, manifest)
     before = file_hash(path)
-    result = finalize(config, FixtureEncoder())
-    assert result["ready_for_training"]
-    assert result["prepared_implementation_check"] == "verified_legacy_prepare_encoder_provenance_fix"
+    parent = path.parent
+    config["output_dir"] += "_v2"
+    result = repartition(config, str(parent))
+    assert result["reused_from"]["table"] == "eligible"
     assert file_hash(path) == before
 
 
 @pytest.mark.parametrize("changed", ["input", "database"])
 def test_legacy_prepare_keeps_data_integrity_guards(config, changed):
     from scripts.ancient_sft.provenance import profile
+    from scripts.ancient_sft.repartition import repartition
 
     manifest = prepare(config)
     root = Path(config["output_dir"]) / "prepared"
@@ -273,8 +279,9 @@ def test_legacy_prepare_keeps_data_integrity_guards(config, changed):
     target = Path(config["sources"]["translate"]) if changed == "input" else root / "candidates.sqlite"
     with target.open("ab") as handle:
         handle.write(b"\n")
-    with pytest.raises(RuntimeError, match="input files changed|database changed"):
-        finalize(config, FixtureEncoder())
+    config["output_dir"] += "_v2"
+    with pytest.raises(RuntimeError, match="inputs or exclusion sets changed|database changed"):
+        repartition(config, str(root))
 
 
 def test_overlength_rejected_without_splitting(config):
@@ -289,7 +296,7 @@ def test_overlength_rejected_without_splitting(config):
 def test_unknown_history_is_not_randomly_split(config):
     jsonl(Path(config["sources"]["history_train"]), [{"inputs": "天下大事必作於細天下難事必作於易", "truth": "天下的大事需要从细节做起难事从容易处着手"}])
     result = prepare(config)
-    assert result["statistics"]["unresolved_history_group"] == 1
+    assert result["partition"]["statistics"]["unresolved_or_ambiguous_chapter"] == 1
 
 
 def test_history_can_contribute_new_pairs_using_corpus_ownership(config):
@@ -308,9 +315,149 @@ def test_history_can_contribute_new_pairs_using_corpus_ownership(config):
     db.close()
 
 
+def populate_multitask(config):
+    corpus, translations, punctuation = [], [], []
+    for i in range(24):
+        book, chapter = f"典籍{i // 4}", str(i % 4)
+        text = "".join(chr(0x5000 + i * 80 + k) for k in range(40))
+        modern = "现代释义" + text[::-1]
+        corpus.append({"id": f"p{i}", "source": book, "chapter": chapter, "content": text, "era": "唐"})
+        translations.extend([
+            {"id": f"c{i}", "task": "c2m", "input": text, "output": modern, "source": f"{book}·{chapter}"},
+            {"id": f"m{i}", "task": "m2c", "input": modern, "output": text, "source": f"{book}·{chapter}"},
+        ])
+        punctuation.append({"id": f"p{i}", "task": "punctuate", "input": text,
+                            "output": text[:20] + "，" + text[20:] + "。", "source": book})
+    jsonl(Path(config["sources"]["corpus"]), corpus)
+    jsonl(Path(config["sources"]["translate"]), translations)
+    jsonl(Path(config["sources"]["punctuate"]), punctuation)
+    config.update(dev_min_books=2, dev_min_groups=2, dev_max_book_fraction=.5)
+
+
+def test_all_core_tasks_have_representative_dev(config):
+    populate_multitask(config)
+    prepared = prepare(config)
+    assert prepared["partition"]["strategy"] == "chapter_stratified_holdout_v2"
+    report = finalize(config, FixtureEncoder())
+    assert report["ready_for_training"]
+    for task in ("c2m", "m2c", "punctuate"):
+        assert report["dev_checks"][task]["passed"]
+        assert report["dev_checks"][task]["selected"] == 2
+        assert (Path(config["output_dir"]) / f"final/dev_by_task/{task}.jsonl").is_file()
+
+
+def test_punctuation_budget_never_splits_or_overweights_examples(config):
+    populate_multitask(config)
+    config["punctuation_loss_fraction"] = [.20, .40]
+    prepare(config)
+    class Encoder(FixtureEncoder):
+        def __call__(self, messages):
+            return {"sequence_tokens": 100, "assistant_loss_tokens": 40 if "添加标点" in messages[0]["content"] else 10}
+    report = finalize(config, Encoder())
+    assert report["punctuation_budget"]["fraction"] <= .40
+    assert report["statistics"]["punctuation_token_budget_rejected"] > 0
+    assert report["tasks"]["train/punctuate"]["selected"] == 1
+    assert not report["ready_for_training"]  # A token budget does not silently waive quota shortfalls.
+
+
+def test_short_punctuation_samples_can_top_up_to_token_floor(config):
+    populate_multitask(config)
+    config.update(punctuation_loss_fraction=[.20, .40], punctuation_max_samples=6)
+    prepare(config)
+    class Encoder(FixtureEncoder):
+        def __call__(self, messages):
+            return {"sequence_tokens": 100, "assistant_loss_tokens": 5 if "添加标点" in messages[0]["content"] else 10}
+    report = finalize(config, Encoder())
+    assert report["tasks"]["train/punctuate"]["selected"] == 6
+    assert report["punctuation_budget"]["passed"]
+    assert report["ready_for_training"]
+
+
+def test_one_book_dev_does_not_pass_readiness(config):
+    from scripts.ancient_sft.selection import acceptance
+    from scripts.ancient_sft.common import TASKS
+    selected = {split: {t: [] for t in TASKS} for split in ("train", "dev")}
+    for task in TASKS[:3]:
+        row = {"book_key": "笑林广记", "document_group": "one", "assistant_loss_tokens": 10}
+        selected["dev"][task] = [row] * config["dev_quotas"][task]
+        selected["train"][task] = [row] * config["quotas"][task]
+    config["dev_min_books"] = 5
+    assert not acceptance(selected, config)["ready_for_training"]
+
+
+def test_cross_book_quote_does_not_merge_whole_books(config):
+    from scripts.ancient_sft.partition import ChapterResolver, BoundaryIndex
+    norm = Normalizer()
+    shared = "".join(chr(0x6500 + i) for i in range(32))
+    first, second = "".join(chr(0x6800 + i) for i in range(35)), "".join(chr(0x6900 + i) for i in range(35))
+    jsonl(Path(config["sources"]["corpus"]), [
+        {"id": "a", "source": "甲书", "chapter": "甲卷", "content": first + shared},
+        {"id": "b", "source": "乙书", "chapter": "乙卷", "content": second + shared},
+    ])
+    db = sqlite3.connect(":memory:")
+    resolver = ChapterResolver(db, Path(config["sources"]["corpus"]), norm)
+    records = []
+    for text, book in [(first, "甲书"), (second, "乙书"), (shared, "甲书")]:
+        r = candidate("c2m", "gujilab", text, text, "译文" + text, book, book, {"source_label": book})
+        r["near_group"] = text
+        assert resolver.assign(r)
+        records.append(r)
+    assert records[0]["document_group"] != records[1]["document_group"]
+    assert len(records[2]["document_groups"]) == 2
+    boundary = BoundaryIndex([records[0]], norm)
+    assert boundary.conflict(records[1]) is None
+    assert boundary.conflict(records[2]) == "chapter"
+    db.close()
+
+
+def test_unaligned_chapter_labels_are_not_selected_for_dev(config):
+    jsonl(Path(config["sources"]["corpus"]), [
+        {"id": "known", "source": "典籍甲", "chapter": "第一章", "content": "这是已有篇章中的古文内容用于定位"},
+    ])
+    rows = [translation(i, "典籍甲·未能对齐的章") for i in range(10)]
+    jsonl(Path(config["sources"]["translate"]), rows)
+    result = prepare(config)
+    assert result["partition"]["allocation"]["reserved_groups"] == []
+    db = sqlite3.connect(Path(config["output_dir"]) / "prepared/candidates.sqlite")
+    assert db.execute("SELECT COUNT(*) FROM pool WHERE dev_eligible=1").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM eligible WHERE split='train'").fetchone()[0] == 10
+    db.close()
+
+
+def test_partition_is_deterministic_for_identical_seed_and_inputs(config):
+    populate_multitask(config)
+    first = prepare(config)
+    config["output_dir"] += "_repeat"
+    second = prepare(config)
+    assert first["partition"] == second["partition"]
+
+
+def test_partial_and_inverse_containment_removed_at_boundary():
+    from scripts.ancient_sft.partition import BoundaryIndex
+    norm = Normalizer()
+    text = "".join(chr(0x5500 + i) for i in range(100))
+    def record(ancient, group):
+        return {"ancient": ancient, "modern": "", "task": "punctuate", "near_group": group,
+                "document_groups": [group], "origin_books": [group],
+                "group_resolution": "corpus_chapter", "uncertain_chapter_book": False}
+    index = BoundaryIndex([record(text[25:75], "dev")], norm)
+    assert index.conflict(record(text, "train")) == "dev_text_in_train"
+    assert index.conflict(record(text[30:45], "other")) == "train_text_in_dev"
+    assert index.conflict(record("附加前缀" + text[7:50], "third")) == "shared_24_char_span"
+
+
+def test_repartition_rejects_changed_filter_or_benchmark(config):
+    from scripts.ancient_sft.repartition import repartition
+    prepare(config)
+    parent = Path(config["output_dir"]) / "prepared"
+    config["output_dir"] += "_next"
+    config["near_threshold"] = .95
+    with pytest.raises(RuntimeError, match="non-selection configuration changed"):
+        repartition(config, str(parent))
+
+
 @pytest.mark.skipif(os.getenv("ANCIENT_SWIFT_INTEGRATION") != "1", reason="requires pinned ms-swift environment")
-@pytest.mark.parametrize("legacy", [False, True])
-def test_real_swift_encoding_and_finalize(config, legacy):
+def test_real_swift_encoding_and_finalize(config):
     from scripts.ancient_sft.encoding import SwiftEncoder
 
     config["tokenizer_path"] = "models/Qwen3-1.7B-Base-Char"
@@ -326,16 +473,9 @@ def test_real_swift_encoding_and_finalize(config, legacy):
     assert "<think>\n\n</think>\n\n" in encoder.template.tokenizer.decode(raw["input_ids"])
     assert long["assistant_loss_tokens"] == sum(label != -100 for label in raw["labels"][1:])
     jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(40)])
-    manifest = prepare(config)
-    if legacy:
-        from scripts.ancient_sft.provenance import profile
-
-        manifest["implementation_sha256"] = profile()["legacy_prepare"]["implementation_sha256"]
-        write_json(Path(config["output_dir"]) / "prepared/manifest.json", manifest)
+    prepare(config)
     report = finalize(config, encoder)
-    assert report["ready_for_training"]
+    assert not report["ready_for_training"]
     assert report["encoding"]["backend"] == "ms-swift"
     assert report["tasks"]["train/c2m"]["assistant_loss_fraction"] == 1
-    assert report["prepared_implementation_check"] == (
-        "verified_legacy_prepare_encoder_provenance_fix" if legacy else "exact"
-    )
+    assert report["prepared_implementation_check"] == "exact"

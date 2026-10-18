@@ -4,6 +4,13 @@
     "source_sha256": "9fbbe9a04d35ebc4add7105e45cbeebed9ea18355715a69455b9c41705b7a13b",
     "python_files": 540
   },
+  "candidate_reuse": {
+    "implementations": [
+      "a26014c8a6984f426ff9457f69527e9d5979238043126d460bda405f620b5c91",
+      "bf96a032a6cf1d4a8001b053b388c9b12f3ab04b8536545ba40bca34b9e1661f"
+    ],
+    "filter_sha256": "45892372e6479f69070994b8cf6039f405a06ed634d67b83a86e37228080db80"
+  },
   "legacy_prepare": {
     "implementation_sha256": "a26014c8a6984f426ff9457f69527e9d5979238043126d460bda405f620b5c91",
     "preparation_sha256": "2c67b37b1a2d05a2b113d48367b65eed845d7fccc8f302bdcf8697c2b29a3bae"

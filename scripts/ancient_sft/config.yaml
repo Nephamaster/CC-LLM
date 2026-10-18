@@ -1,9 +1,8 @@
-version: ancient_sft_v1
+version: ancient_sft_v2
 seed: 42
-dev_fraction: 0.02
 max_length: 2048
 tokenizer_path: models/Qwen3-1.7B-Base-Char
-output_dir: data/downstream/ancient_sft_v1
+output_dir: data/downstream/ancient_sft_v2
 swift_commit: 1516d78d627381c2072be80037a7a64c3811480d
 template: qwen3
 enable_thinking: false
@@ -21,11 +20,23 @@ benchmarks:
 quotas:
   c2m: 38000
   m2c: 10000
-  punctuate: 24000
+  punctuate: 5000
   dictionary: 4000
   provenance: 4000
 history_target: 13000
 max_book_fraction: 0.20
+dev_quotas:
+  c2m: 600
+  m2c: 600
+  punctuate: 600
+  dictionary: 0
+  provenance: 0
+dev_min_books: 5
+dev_min_groups: 10
+dev_max_book_fraction: 0.20
+dev_pool_factor: 1.5
+punctuation_loss_fraction: [0.30, 0.40]
+punctuation_max_samples: 6000
 lengths:
   translation: [8, 256]
   punctuation: [30, 240]

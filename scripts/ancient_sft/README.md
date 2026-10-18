@@ -10,13 +10,15 @@
 - HistoryTrans：`HistoryTrans/HistoryTrans-{train,validation,test}.jsonl`。仅 train 入候选；validation/test 作为所有来源的排除集，不混作本实验 Dev。
 - C³Bench：`benchmark/c3bench/C3_bench.json`，读取 **classical_Chinese/modern_Chinese**，不是通用 question/answer 字段。
 - Fùxì：`benchmark/FuxiBench/test_data/*.json`，并排除 `dev_fewshot.json` 的示例。
-- 不含 EvaHan。标点目标 24,000 条全部来自 Gujilab，报告明确标识专家数据未纳入。
+- 不含 EvaHan。标点初始目标 5,000 条全部来自 Gujilab，并控制实际监督 token 占比，报告明确标识专家数据未纳入。
 
 安装轻量构建依赖：
 
 ```bash
-pip install -r scripts/ancient_sft/requirements.txt
+python -m pip install -r scripts/ancient_sft/requirements.txt
 ```
+
+Python 的 SQLite 需支持 FTS5 trigram（用于原文子串检索，检索后仍验证完整包含）；不需要额外模型服务。
 
 `finalize` 必须在已安装用户 ms-swift fork 的环境执行；当前锁定提交 `1516d78d627381c2072be80037a7a64c3811480d`。支持完整 Git checkout 或不带 `.git` 的源码副本：两者均校验 `swift/` 下全部 540 个 Python 文件的路径与内容聚合 SHA256，基准记录在 `provenance_profile.json`，不依赖网络。完整 checkout 还需 commit 一致且 `swift/` 无未提交变动；其他目录的训练脚本变动不影响检查。无 Git 时记录实际 commit 为 null、校验依据为源码指纹和参考 commit，不伪造已读取的 Git 版本。不下载模型权重，仅加载 tokenizer/processor。
 
@@ -44,18 +46,26 @@ python -m scripts.ancient_sft.run prepare \
 
 输出阶段目录已有内容时直接拒绝，不自动删除、不复用部分任务。失败、修改配置/源文件/审核文件/实现后，换新 `--output-dir` 从 prepare 开始；同一轮 finalize 使用相同目录。不存在隐含 overwrite。
 
-针对初版 finalize 强制要求 `.git` 的问题，支持复用实现指纹为 `a26014c8a6984f426ff9457f69527e9d5979238043126d460bda405f620b5c91` 的已知旧 prepare：必须确认准备阶段代码未变，且配置、原始文件、数据库仍通过原有校验。该兼容不会修改旧 manifest，不接受任意旧代码版本，也不允许诊断产物转正。只遇到 Git 校验报错时尚未创建 final，完整同步本次修复文件后直接重新 finalize，无须 overwrite 或重跑 prepare。
+v2 改变了分组和采样，旧 prepare 不能直接 finalize。已有 v1 的完整 prepared 目录时，可安全复用已准入候选，避免重复 Benchmark 去污染和 MinHash：
+
+```bash
+python -m scripts.ancient_sft.run repartition \
+  --from-prepared data/downstream/ancient_sft_v1/prepared
+python -m scripts.ancient_sft.run finalize
+```
+
+默认写入新目录 `data/downstream/ancient_sft_v2`，不覆盖 v1。必须同步整个模块和新版 config；只有 final metadata、没有 prepared/candidates.sqlite 时不能执行此复用，需要完整 prepare。复用前核验已知旧实现、过滤规则、OpenCC 版本、所有输入/排除集与数据库哈希；仅允许修改划分/采样配置。只读取旧 eligible 表，不从 raw candidates 或审核隔离区恢复记录。历史已删记录不恢复，旧 manifest 保持不变。
 
 ## 分组、去重与审核
 
 1. 训练正文仅 NFC，保留简繁、异体和扩展区字；判重文本用 OpenCC t2s、去标点空白，不回写训练文本。
-2. 保留 source_id、原始记录 ID、pair_group、document_group。缺少统一章卷标识时保守使用整部作品为分组；《说文》以字头条目为组。共享古文、译文和近重复记录连接分组后再确定 Train/Dev。
+2. 保留 source_id、原始记录 ID、pair_group、document_group/document_groups。在 corpus 原文中进行精确子串定位，优先以卷/章或可追溯原记录作为边界；再使用明确的来源篇章标签，无可靠信息才回退整书。《说文》以字头条目为组。跨书引用不再把整书传递合并。
 3. 古文 5-gram MinHash（64 permutations，16×4 LSH）召回候选，实际 Jaccard 达到阈值才合并；这是近似召回，不承诺穷尽语义相似或所有包含关系。对同一任务的近重复组及同一规范化输入各保留一条。Gujilab 优先，HistoryTrans 仅作补充。
-4. HistoryTrans 先通过精确/近重复平行对恢复分组，再尝试定位到 corpus 原文（24 字锚点召回，完整包含验证）；多作品命中会连接分组。仍无法恢复来源时隔离，尤其不猜测短句归属。不得随机分配这些未知来源句子来宣称篇章隔离；不足部分从 Gujilab 补采，仍不足则报告缺额。
+4. HistoryTrans 从 corpus 恢复作品/篇章；无法恢复或作品归属有歧义时隔离。先按任务、书籍覆盖确定完整 Dev 候选组，再排除 Train 中同篇章、多出处交集、同近重复组、同译文、完整包含或共享至少 24 字连续片段的记录。无法对齐章名的同书边界从严排除，不随机拆句，不合并整部书。不足部分由 Gujilab 补采或报告缺额。
 5. Benchmark 规范化整段精确匹配直接排除，不能人工放行。通过 24 字采样锚点召回并验证的共享片段进入待审核；这是近似召回，短错位片段和语义改写可能漏检，不等于穷尽去污染。短答案本身相同（例如作者名）仅统计，不自动删除整部作品。短问答完整重合仍排除。
 6. 所有可选字书/出处候选必须经过源数据质量审核。代码只摘录原始字段和原释，绝不自动生成现代释义；默认不将未审核样本导出。
 
-审核记录在 `prepared/audit.jsonl`。可将以下结构写入独立 JSONL，再在配置的 `reviews` 中指定路径，并构建新版本：
+首次 prepare 的审核记录在 `prepared/audit.jsonl`；新划分的边界排除在 `prepared/partition_audit.jsonl`。repartition 不复制旧审核文件，旧目录仍保留。可将以下结构写入独立 JSONL，再在配置的 `reviews` 中指定路径，并完整 prepare 新版本（审核变化不允许复用）：
 
 ```json
 {"id":"审核清单中的完整内容ID","decision":"allow","reviewer":"审核人","reason":"核对来源后的具体依据"}
@@ -65,16 +75,21 @@ python -m scripts.ancient_sft.run prepare \
 
 ## 配额与产物
 
-Train 目标：c2m 38K、m2c 10K、标点 24K、字书最多 4K、出处最多 4K。HistoryTrans 优先预留最多 13K 新增 c2m，其余由 Gujilab 补充。普通任务单部作品最多占该任务目标的 20%；字书任务专门来自《说文》，不应用该上限。Dev 采用稳定分组哈希约 2%，另行采样，不从 Train 的 80K 扣除；整书分组会使实际比例偏离目标，必须检查报告。
+Train 初始目标：c2m 38K、m2c 10K、标点 5K，核心 53K；字书、出处各最多 4K，仍需审核。HistoryTrans 最多 13K 新增 c2m，不足由 Gujilab 补充。普通任务单书上限 20%；字书专门来自《说文》，不应用该上限。按作品、篇章、长度档和简繁类型交错抽样，避免只取短文本。
 
-最终目录 `data/downstream/ancient_sft_v1/final/`：
+Dev 独立目标为 c2m/m2c/punctuate 各 600 条，合计 1,800；每任务至少 5 部作品、10 个独立组，单书至多 20%。先预留约 1.5 倍候选容量，留出的是完整组而非随机句子，实际编码后再选样。若安全边界下无法满足条件，应报告失败，不放宽隔离或自动更换随机种子。
+
+标点在其他任务选完后编码入选，累计 assistant loss token 不允许超过全部监督 token 的 40%，完整样本超过剩余预算就跳过，绝不截断答案。达到初始 5K 后若占比仍低于 30%，可继续补采至最多 6K（`punctuation_max_samples`）；仍不足则验收失败。最终占比须在 30%–40%，条数缺额也明确报告，不冒充达标。该范围是实验起点，不等同于真实梯度权重。
+
+最终目录 `data/downstream/ancient_sft_v2/final/`：
 
 - `train.jsonl`、`dev.jsonl`：仅标准 messages。
+- `dev_by_task/{c2m,m2c,punctuate}.jsonl`：用于分任务评估。训练端可计算预先约定的 `(loss_c2m + loss_m2c + loss_punctuate) / 3`，不要仅按合并 eval_loss 选择 checkpoint；数据管线不自动修改 Trainer 的评估逻辑。
 - `train.metadata.jsonl`、`dev.metadata.jsonl`：按行一一对应，包含稳定 ID、row_number、messages 哈希、来源/分组、审核、实际长度和 assistant loss token 数。
 - `report.json`：合格候选数、实际数量/缺额、来源/作品/时代/简繁启发式分布、分组数量、token 长度均值/P95/P99及 loss token 比例。
 - `manifest.json`：完整配置、所有原始文件 SHA256、来源版本/许可证（配置 provenance 提供，未提供明确标 unknown）、ms-swift commit、依赖版本和输出哈希。
 
-`execution_passed` 只代表流程完成，`quotas_passed/core_quotas_passed` 分别记录完整/核心配额。`ready_for_training` 要求完成严格预检、真实编码、分组隔离且 Train/Dev 均非空；它不代表配额已满足或人工审核覆盖所有原始译文。启动训练前核对实际数量和任务缺额，不只检查程序退出码。
+`execution_passed` 只代表流程完成，`quotas_passed/core_quotas_passed` 分别记录完整/核心配额。`ready_for_training` 还要求核心 Train 配额、三项 Dev 的数量/作品/独立组/集中度验收，以及标点 token 占比均通过；`dev_checks`、`dev_coverage_passed`、`punctuation_budget` 给出明细。没有满足条件的输出不能作为正式验收通过的数据集，程序退出成功也不等于验收成功。
 
 训练需继续使用上述模板契约，以 `swift sft` 消费 train/dev，并显式指定验证集。不要用 CPT 导出脚本处理这份 SFT 数据；该脚本的非聊天全文 loss 契约不同。
 

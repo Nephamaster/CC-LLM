@@ -77,12 +77,11 @@ def test_git_and_hash_both_verified(swift_tree, monkeypatch):
     assert provenance.verify_swift(swift_tree, "pinned")["verification"] == "git_and_source_sha256"
 
 
-def test_known_legacy_prepare_passes_without_touching_manifest():
+def test_v2_does_not_finalize_legacy_splits_without_repartition():
     legacy = provenance.profile()["legacy_prepare"]
-    assert provenance.preparation_fingerprint(provenance.MODULE_DIR) == legacy["preparation_sha256"]
-    assert provenance.verify_prepared_implementation(legacy["implementation_sha256"], "new") == (
-        "verified_legacy_prepare_encoder_provenance_fix"
-    )
+    assert provenance.preparation_fingerprint(provenance.MODULE_DIR) != legacy["preparation_sha256"]
+    with pytest.raises(RuntimeError, match="implementation changed"):
+        provenance.verify_prepared_implementation(legacy["implementation_sha256"], "new")
 
 
 def test_unknown_legacy_implementation_rejected():

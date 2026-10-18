@@ -12,9 +12,11 @@ from pathlib import Path
 
 from .common import (
     TASKS, Groups, Normalizer, digest, file_hash, input_inventory, read_jsonl,
-    resolve, split_for, write_json, write_line,
+    resolve, write_json, write_line,
 )
-from .overlap import BenchmarkIndex, CorpusLocator, NearIndex
+from .overlap import BenchmarkIndex, NearIndex
+from .partition import partition_candidates
+from .selection import acceptance, select_records
 from .sources import iter_candidates
 
 
@@ -60,15 +62,13 @@ def prepare(config, *, limit=None, diagnostic=False):
     root = resolve(config["output_dir"])
     destination = root / "prepared"
     destination.mkdir(parents=True, exist_ok=False)
-    normalize, documents, parallels = Normalizer(), Groups(), Groups()
+    normalize, parallels = Normalizer(), Groups()
     index, reviews = BenchmarkIndex(inventory, normalize), read_reviews(config)
-    locator = CorpusLocator(resolve(config["sources"]["corpus"]), normalize)
     stats, blocked = Counter(), set()
     db = sqlite3.connect(destination / "candidates.sqlite")
     db.executescript("""
         CREATE TABLE candidates (id TEXT PRIMARY KEY, task TEXT, source TEXT, node TEXT, doc TEXT,
                                  priority TEXT, payload TEXT);
-        CREATE TABLE modern_groups (hash TEXT PRIMARY KEY, doc TEXT);
     """)
     near = NearIndex(db, config["near_threshold"])
     try:
@@ -81,40 +81,14 @@ def prepare(config, *, limit=None, diagnostic=False):
                 group = normalize(record["document_group"]) if record["document_group"] else ""
                 node, matches = near.add(canonical, group)
                 parallels.root(node)
-                if not group:
-                    known = sorted({doc for _, doc in matches if doc})
-                    recovered = locator.find(canonical) if not known else []
-                    if recovered:
-                        known = sorted({normalize("book:" + book) for book, _ in recovered})
-                        record["book"] = recovered[0][0]
-                        record["metadata"]["era"] = recovered[0][1] if len(recovered) == 1 else "unknown"
-                        record["metadata"]["recovered_books"] = [book for book, _ in recovered]
-                    if not known:
-                        stats["unresolved_history_group"] += 1
-                        write_line(audit, {"id": record["id"], "reason": "unresolved_history_group", "record": record})
-                        continue
-                    group = known[0]
-                    for other_group in known[1:]:
-                        documents.union(group, other_group)
-                    record["metadata"]["group_recovery"] = "corpus_containment" if recovered else "normalized_exact_or_verified_near"
-                    db.execute("UPDATE near_texts SET doc=? WHERE id=? AND doc=''", (group, node))
-                documents.root(group)
+                group = group or "unresolved:" + node
                 for other, doc in matches:
                     parallels.union(node, other)
-                    if doc:
-                        documents.union(group, doc)
-                # Shared modern translations also stay in one split, even with different ancient wording.
                 if record["task"] in {"c2m", "m2c"}:
                     modern = normalize(record["modern"])
                     if modern == canonical:
                         stats["identical_normalized_translation"] += 1
                         continue
-                    modern_key = digest(modern)
-                    previous = db.execute("SELECT doc FROM modern_groups WHERE hash=?", (modern_key,)).fetchone()
-                    if previous:
-                        documents.union(group, previous[0])
-                    else:
-                        db.execute("INSERT INTO modern_groups VALUES (?,?)", (modern_key, group))
                 record["canonical_ancient_sha256"] = digest(canonical)
                 record["pair_group"] = digest(canonical + "\0" + normalize(record["modern"]))
                 record["metadata"]["script"] = normalize.script(record["ancient"])
@@ -162,28 +136,28 @@ def prepare(config, *, limit=None, diagnostic=False):
             if cluster in blocked:
                 stats["blocked_parallel_cluster"] += 1
                 continue
-            document = documents.root(doc)
-            split = split_for(document, config)
             record = json.loads(payload)
-            record.update({"document_group": document, "near_group": cluster, "split": split})
+            record.update({"document_group": doc, "near_group": cluster, "split": "unassigned"})
             inserted = db.execute("INSERT OR IGNORE INTO eligible VALUES (?,?,?,?,?,?,?,?,?,?)", (
-                key, task, source, split, normalize(record["book"]), document, cluster, priority,
+                key, task, source, "unassigned", normalize(record["book"]), doc, cluster, priority,
                 json.dumps(record, ensure_ascii=False), digest(normalize(record["messages"][0]["content"])),
             )).rowcount
-            stats[f"eligible/{split}/{task}/{source}" if inserted else "duplicate_task_cluster"] += 1
+            stats[f"deduplicated/{task}/{source}" if inserted else "duplicate_task_cluster"] += 1
         db.commit()
+        partition = partition_candidates(db, config, destination)
         manifest = {
             "stage": "prepare", "config": config, "config_sha256": digest(json.dumps(config, sort_keys=True)),
             "implementation_sha256": implementation_hash(), "inventory": inventory,
             "diagnostic": bool(diagnostic or limit is not None), "limit_per_source": limit,
             "evahan_included": False, "benchmark_counts": index.counts,
             "statistics": dict(stats), "database_sha256": file_hash(destination / "candidates.sqlite"),
+            "partition": partition,
             "source_provenance": config.get("provenance", {}),
             "build_dependencies": {name: importlib.metadata.version(name) for name in
                                    ("opencc-python-reimplemented", "datasketch", "numpy", "PyYAML")},
             "python": sys.version, "sqlite": sqlite3.sqlite_version,
             "unknown_provenance": [name for name in config["sources"] if name not in config.get("provenance", {})],
-            "grouping": "conservative whole-book; dictionary by headword; corpus containment recovery; unresolved HistoryTrans quarantined",
+            "grouping": "chapter-stratified Dev; shared content excluded from Train without merging books",
             "near_detection": "64-permutation 5-character MinHash, 16x4 LSH; verified Jaccard; approximate recall",
             "benchmark_detection": "normalized exact plus sampled-anchor shared >=24-character spans; approximate recall, not semantic equivalence",
             "cpt_contamination_audited": False,
@@ -224,68 +198,37 @@ def finalize(config, encoder=None):
     final = root / "final"
     final.mkdir(exist_ok=False)
     db = sqlite3.connect(f"file:{prepared / 'candidates.sqlite'}?mode=ro", uri=True)
-    stats, metrics = Counter(), {}
-    selected_groups, selected_ancient = {}, {}
+    metrics = {}
     try:
+        selected, stats = select_records(db, config, encoder)
+        checks = acceptance(selected, config)
+        (final / "dev_by_task").mkdir()
         for split in ("train", "dev"):
             with (final / f"{split}.jsonl").open("w", encoding="utf-8") as output, (
                 final / f"{split}.metadata.jsonl"
             ).open("w", encoding="utf-8") as metadata:
                 position = 0
                 for task in TASKS:
-                    target = config["quotas"][task]
-                    if split == "dev":
-                        target = math.ceil(target * config["dev_fraction"] / (1 - config["dev_fraction"]))
-                    selected, book_counts = [], Counter()
-                    # c2m first reserves a complementary HistoryTrans budget, then fills with Gujilab.
-                    passes = [(None, target)]
-                    if task == "c2m" and split == "train":
-                        passes = [("historytrans", min(config["history_target"], target)), ("gujilab", target)]
+                    target = (config["quotas"] if split == "train" else config["dev_quotas"])[task]
                     eligible_count = db.execute("SELECT COUNT(*) FROM eligible WHERE split=? AND task=?",
                                                 (split, task)).fetchone()[0]
-                    for source, capacity in passes:
-                        query = "SELECT book,payload FROM eligible WHERE split=? AND task=?"
-                        args = [split, task]
-                        if source:
-                            query += " AND source=?"
-                            args.append(source)
-                        query += " ORDER BY priority"
-                        added = 0
-                        for book, payload in db.execute(query, args):
-                            if len(selected) >= target or added >= capacity:
-                                break
-                            if task not in {"dictionary"} and book_counts[book] >= max(1, math.ceil(target * config["max_book_fraction"])):
-                                stats[f"book_cap/{split}/{task}"] += 1
-                                continue
-                            record = json.loads(payload)
-                            lengths = encoder(record["messages"])
-                            if lengths["sequence_tokens"] > config["max_length"]:
-                                stats[f"overlength/{split}/{task}"] += 1
-                                continue
-                            if lengths["assistant_loss_tokens"] <= 0:
-                                raise RuntimeError("empty assistant loss")
-                            for mapping, group in ((selected_groups, record["document_group"]),
-                                                   (selected_ancient, record["canonical_ancient_sha256"])):
-                                if group in mapping and mapping[group] != split:
-                                    raise RuntimeError("train/dev leakage detected")
-                                mapping[group] = split
-                            record.update(lengths)
-                            selected.append(record)
-                            book_counts[book] += 1
-                            added += 1
-                    metrics[f"{split}/{task}"] = task_report(selected, target, eligible_count)
-                    for record in selected:
+                    rows = selected[split][task]
+                    metrics[f"{split}/{task}"] = task_report(rows, target, eligible_count)
+                    if split == "dev" and target:
+                        with (final / "dev_by_task" / f"{task}.jsonl").open("w", encoding="utf-8") as task_file:
+                            for record in rows:
+                                write_line(task_file, {"messages": record["messages"]})
+                    for record in rows:
                         position += 1
                         write_line(output, {"messages": record["messages"]})
                         write_line(metadata, {**record, "row_number": position,
                                               "messages_sha256": digest(json.dumps(record["messages"], ensure_ascii=False))})
-        hashes = {path.name: file_hash(path) for path in final.glob("*.jsonl")}
+        hashes = {path.relative_to(final).as_posix(): file_hash(path) for path in final.rglob("*.jsonl")}
         report = {
             "stage": "finalize", "execution_passed": True, "tasks": metrics,
             "quotas_passed": all(metrics[f"train/{task}"]["shortfall"] == 0 for task in TASKS),
             "core_quotas_passed": all(metrics[f"train/{task}"]["shortfall"] == 0 for task in TASKS[:3]),
-            "ready_for_training": all(sum(v["selected"] for k, v in metrics.items() if k.startswith(split + "/"))
-                                      > 0 for split in ("train", "dev")),
+            **checks,
             "train_dev_group_overlap": 0, "train_dev_ancient_overlap": 0, "evahan_included": False,
             "encoding": encoder.info, "statistics": dict(stats), "output_sha256": hashes,
             "prepared_manifest_sha256": file_hash(prepared / "manifest.json"),
