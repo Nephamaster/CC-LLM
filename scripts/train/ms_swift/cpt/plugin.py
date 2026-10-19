@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 from copy import deepcopy
 from pathlib import Path
 
@@ -162,12 +163,17 @@ class CCLLMLoss(BaseLoss):
 class CCLLMOptimizer(OptimizerCallback):
     def create_optimizer(self, model=None):
         model = model if model is not None else self.trainer.model
+        branch_lr = self.args.learning_rate
+        if stage() == "phase2b":
+            branch_lr = float(os.environ.get("PHASE2_B_BRANCH_LR", "3e-5"))
+            if not math.isfinite(branch_lr) or branch_lr < 0:
+                raise ValueError("PHASE2_B_BRANCH_LR must be finite and non-negative")
         decay_names = set(self.trainer.get_decay_parameter_names(model))
         groups = {}
         for name, parameter in model.named_parameters():
             if not parameter.requires_grad:
                 continue
-            lr = 3e-5 if stage() == "phase2b" and is_branch_parameter(name) else self.args.learning_rate
+            lr = branch_lr if is_branch_parameter(name) else self.args.learning_rate
             decay = self.args.weight_decay if name in decay_names else 0.0
             groups.setdefault((lr, decay), []).append(parameter)
         optimizer_cls, kwargs = HFTrainer.get_optimizer_cls_and_kwargs(self.args, model)

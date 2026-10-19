@@ -162,6 +162,8 @@ if __name__ == "__main__":
             raise ValueError("prepared cache tokenizer or max_length mismatch; use a new cache directory")
         if report.get("world_size") != args.world_size or report.get("batch_size") != args.batch_size:
             raise ValueError("prepared cache distributed batch geometry mismatch; prepare new cache views")
+        if report["seed"] != args.seed:
+            raise ValueError("prepared cache data seed mismatch; use a new cache directory")
         if args.total_tokens and report["train_targets"] != args.total_tokens:
             raise ValueError("prepared cache token budget mismatch")
         if args.adaptation_tokens and report["splits"].get("train_a", {}).get("targets") != args.adaptation_tokens:

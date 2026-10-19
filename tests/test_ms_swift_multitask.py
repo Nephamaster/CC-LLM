@@ -60,6 +60,23 @@ def ddp_gradient_worker(rank, rendezvous):
 
 
 class PreparedDatasetTest(unittest.TestCase):
+    def test_cache_verification_rejects_changed_data_seed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            model.mkdir()
+            (model / "tokenizer.json").write_text("{}")
+            report = {"tokenizer_sha256": PREPARE["tokenizer_hash"](model), "max_length": 4,
+                      "world_size": 1, "batch_size": 1, "seed": 123}
+            (root / "preparation_report.json").write_text(json.dumps(report))
+            command = [sys.executable, "-B", str(BRIDGE / "prepare_data.py"), "--input", str(root / "raw"),
+                       "--output", str(root), "--model", str(model), "--max-length", "4", "--verify", "--seed"]
+            same = subprocess.run([*command, "123"], capture_output=True, text=True)
+            self.assertEqual(same.returncode, 0, same.stderr)
+            changed = subprocess.run([*command, "42"], capture_output=True, text=True)
+            self.assertNotEqual(changed.returncode, 0)
+            self.assertIn("data seed mismatch", changed.stderr)
+
     def test_token_ranges_are_disjoint_and_drop_empty_rows(self):
         rows = {"input_ids": [[2], [2, 3, 4], [4, 3, 2, 4]],
                 "labels": [[-100], [-100, 3, 4], [-100, 3, 2, 4]]}
@@ -94,6 +111,30 @@ class SwiftMultitaskTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.plugin = runpy.run_path(str(BRIDGE / "plugin.py"))
+
+    def test_phase2b_branch_learning_rate_is_configurable(self):
+        model = context_model()
+        args = SimpleNamespace(learning_rate=1e-5, weight_decay=0.0)
+        trainer = SimpleNamespace(model=model, get_decay_parameter_names=lambda model: [])
+        callback = self.plugin["CCLLMOptimizer"](args, trainer)
+        for run_stage in ("phase1", "phase2a", "phase2b"):
+            for branch_lr in (None, "8e-5"):
+                with self.subTest(stage=run_stage, branch_lr=branch_lr), patch.dict(os.environ, CC_LLM_STAGE=run_stage):
+                    os.environ.pop("PHASE2_B_BRANCH_LR", None)
+                    if branch_lr is not None:
+                        os.environ["PHASE2_B_BRANCH_LR"] = branch_lr
+                    with patch.object(self.plugin["HFTrainer"], "get_optimizer_cls_and_kwargs",
+                                      return_value=(torch.optim.AdamW, {"lr": args.learning_rate})):
+                        optimizer = callback.create_optimizer()
+                    rates = {id(parameter): group["lr"] for group in optimizer.param_groups for parameter in group["params"]}
+                    for name, parameter in model.named_parameters():
+                        expected = (float(branch_lr or "3e-5") if run_stage == "phase2b" and
+                                    self.plugin["is_branch_parameter"](name) else args.learning_rate)
+                        self.assertEqual(rates[id(parameter)], expected, name)
+        for value in ("nan", "inf", "-1"):
+            with self.subTest(invalid_lr=value), patch.dict(os.environ, CC_LLM_STAGE="phase2b", PHASE2_B_BRANCH_LR=value):
+                with self.assertRaisesRegex(ValueError, "PHASE2_B_BRANCH_LR"):
+                    callback.create_optimizer()
 
     def test_loss_ramp_and_shared_denominator(self):
         model = context_model()

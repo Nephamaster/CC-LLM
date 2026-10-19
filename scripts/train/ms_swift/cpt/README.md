@@ -41,6 +41,30 @@ scripts/train/ms_swift/env/bin/python -B -m src.pgca.validate_pgca \
 
 Phase2 默认按有效 next-token 监督目标划分为 100M＋9.9B。字音/字形权重在 A 的前 10M 有效目标内，按优化步从 0 升至 0.05/0.02。A/B 重新创建优化器和调度器。A 的最后 checkpoint 进入 B；Phase1/B 按 `eval_clm_loss` 选优。三个阶段使用同一套模型源码，不通过修改源码切换行为。
 
+### 参数在哪里改
+
+三个脚本顶部都有明确的“参数区”，默认数值与原方案一致，不需要去底部的启动命令里找参数。
+
+| 文件 | 参数区负责什么 |
+| --- | --- |
+| [common.sh](common.sh) | GPU、每卡 batch、梯度累积、dtype、梯度检查点、优化器、学习率调度、日志/保存间隔和随机种子 |
+| [phase1.sh](phase1.sh) | 输入模型、语料/输出/缓存路径、`MAX_LENGTH`、`PHASE1_TOKENS`、`PHASE1_LR`、断点路径 |
+| [phase2.sh](phase2.sh) | Phase1 checkpoint、语料/输出/缓存路径、`MAX_LENGTH`、A/B token 预算、三组学习率和 A/B 断点路径 |
+
+改默认值时，只修改 `${变量名:-默认值}` 中 `:-` 后的值。例如把 `PHASE1_LR="${PHASE1_LR:-1e-5}"` 改成 `PHASE1_LR="${PHASE1_LR:-2e-5}"`。
+临时实验也可通过同名环境变量覆盖，不必改文件；优先级为 **环境变量 > 脚本默认值**：
+
+```bash
+PHASE2_A_LR=5e-5 PHASE2_B_LR=8e-6 PHASE2_B_BRANCH_LR=2e-5 \
+bash scripts/train/ms_swift/cpt/phase2.sh
+```
+
+Phase2 的 `PHASE2_A_LR` 控制 A 的新增分支；`PHASE2_B_LR` 控制 B 的主干；`PHASE2_B_BRANCH_LR` 控制 B 的新增分支，已接入插件，不再需要编辑插件里的常量。`WARMUP_RATIO` 是学习率 warmup；辅助任务权重及其 warmup 仍来自模型 config 的 `pgca_aux_phonetic_weight`、`pgca_aux_glyph_weight`、`pgca_aux_warmup_tokens`。
+
+改变 `MAX_LENGTH` 后，未显式指定的缓存路径会相应改变；改变卡数、训练 batch、`DATA_SEED` 或预算时，应使用新的 `CACHE_DIR`，旧缓存不匹配会被拒绝。新实验使用新的 `OUT`，不要覆盖旧结果。单轮训练、冻结规则、`packing=false`、loss 插件和选优指标等固定约束在执行区单列，不作为常规调参入口。
+
+### 启动训练
+
 在 CC-LLM 根目录执行：
 
 ```bash
@@ -63,7 +87,10 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 - `DATASET_NUM_PROC`：默认 8。
 - `PHASE1_TOKENS`：默认 1B，语料不足则停止；显式设为 0 表示接受现有 Phase1 语料跑一遍并报告实际目标数，不把不足 1B 冒充为 1B。
 - `PHASE2_TOKENS`、`ADAPTATION_TOKENS`：默认 10B、100M。语料不足时会报错，需显式选择较小预算，且保持总预算大于适配预算。
+- `MAX_LENGTH`：Phase1 默认 2048，Phase2 默认 4096；同时用于准备缓存和训练。
+- `PHASE1_LR`、`PHASE2_A_LR`、`PHASE2_B_LR`、`PHASE2_B_BRANCH_LR`：默认分别为 `1e-5`、`5e-5`、`1e-5`、`3e-5`。
 - `EVAL_STEPS`、`SAVE_STEPS`、`LOGGING_STEPS`：默认 500、500、10；短冒烟可都设为 1。保存步数必须符合 HF 的最佳模型加载约束。
+- `SEED`、`DATA_SEED`：默认均为 42；后者同时用于导出、缓存分段前打乱和训练数据采样，复用缓存时会核对。
 - `RUN_STAGE=all|a|b`：Phase2 默认依次跑 A/B，可单独跑某阶段。
 
 默认例子：初始化权重 `models/Qwen3-1.7B-Base-PGCA/`；Phase1 为 `outputs/train/Qwen3-1.7B-Base-PGCA-ALIGN/`；Phase2 为 `outputs/train/Qwen3-1.7B-Base-PGCA-CPT/`，其 `adaptation/`、`joint/` 下分别保存两个阶段的 checkpoint 和 `logs/`。阶段结束的 `next_stage_model.txt` 指向实际模型，Phase2 根目录也发布此指针。
@@ -124,7 +151,7 @@ RUN_STAGE=b RESUME_B=/本轮CPT输出/joint/checkpoint-N \
 bash scripts/train/ms_swift/cpt/phase2.sh
 ```
 
-恢复时保持原 `OUT`、`CACHE_DIR`、模型/数据版本、卡数、batch、累积步数及预算。缓存不完整时脚本会停止，不会自动删掉重建。每个 checkpoint 的 `cc_llm_state.json` 记录阶段、step 和累计辅助训练 tokens；模型 buffer 同时保存该计数，恢复后不会重新开始辅助权重 warmup。
+恢复时保持原 `OUT`、`CACHE_DIR`、模型/数据版本、卡数、batch、累积步数、预算、随机种子、学习率及优化器配置。缓存不完整时脚本会停止，不会自动删掉重建。每个 checkpoint 的 `cc_llm_state.json` 记录阶段、step 和累计辅助训练 tokens；模型 buffer 同时保存该计数，恢复后不会重新开始辅助权重 warmup。
 
 ## 5. 验证指标与工程边界
 

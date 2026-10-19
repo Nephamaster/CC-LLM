@@ -17,7 +17,6 @@ scripts/
     lmeh/                        # MMLU / ARC / SQuAD v2 / GSM8K / CMMLU / CLUE
       env/
     ppl/                         # Base / Char / 语义对齐模型的 PPL
-      env/
     csc/                         # CSCD-NS / LEMON
       env/
     cgec/                        # FCGEC / NaCGEC
@@ -67,7 +66,7 @@ PGCA 已包含字符级 tokenizer 与完整音形分支，不再使用 `B-Char-P
 - 通用 benchmark：[scripts/evaluation/lmeh/README.md](scripts/evaluation/lmeh/README.md)。六类任务归入 lmeh；本轮不补齐任务 YAML/脚本。
 - PPL：[scripts/evaluation/ppl/README.md](scripts/evaluation/ppl/README.md)。归入评估，不把 Phase0 forward 诊断当作完整 PPL 实现。
 
-训练和下游评估脚本自行定位仓库根目录，默认调用所属子目录的 `env/bin/python`。训练用同一个 Python 执行 `swift.cli.main` 和数据准备，保留框架的 torchrun 分发，不再依赖 PATH 中另一个环境的 `swift`。可显式使用 `PYTHON_CMD`（训练）或 `PYTHON`（下游评估）指定另一个已配置环境。
+训练和下游评估脚本自行定位仓库根目录，默认调用所属子目录的 `env/bin/python`。训练用同一个 Python 执行 `swift.cli.main` 和数据准备，保留框架的 torchrun 分发，不再依赖 PATH 中另一个环境的 `swift`。可显式使用 `PYTHON_CMD`（训练）或 `PYTHON`（CSC/CGEC/古汉语评估）指定另一个已配置环境。PPL 入口独立于评估 common.sh，直接使用运行前激活环境的 `python`，不要求单独建立 env，也不读取 `PYTHON` 变量。
 
 ## 本轮审查后仍需注意
 
