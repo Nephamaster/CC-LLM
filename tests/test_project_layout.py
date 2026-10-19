@@ -51,7 +51,7 @@ def environment(**overrides):
                 "LR_SCHEDULER_TYPE", "WARMUP_RATIO", "MAX_GRAD_NORM", "LOGGING_STEPS",
                 "EVAL_STEPS", "SAVE_STEPS", "SAVE_TOTAL_LIMIT", "SEED", "DATA_SEED", "MAX_LENGTH",
                 "PHASE1_TOKENS", "PHASE2_TOKENS", "ADAPTATION_TOKENS", "PHASE1_LR",
-                "PHASE2_A_LR", "PHASE2_B_LR", "PHASE2_B_BRANCH_LR", "CAPTURE_ENV"):
+                "PHASE2_A_LR", "PHASE2_B_LR", "PHASE2_B_BRANCH_LR", "CAPTURE_ENV", "LOAD_FROM_CACHE_FILE"):
         env.pop(key, None)
     env.update({name: str(value) for name, value in overrides.items()})
     return env
@@ -72,7 +72,8 @@ def test_training_root_and_env_are_resolved_without_cwd(tmp_path):
                                         "Qwen3-1.7B-Base-PGCA", str(ROOT / "outputs/train")]
 
 
-@pytest.mark.parametrize("overrides", [{}, {
+@pytest.mark.parametrize("overrides", [{}, {"LOAD_FROM_CACHE_FILE": "false"}, {
+    "LOAD_FROM_CACHE_FILE": "true",
     "TRAIN_BATCH_SIZE": "2", "EVAL_BATCH_SIZE": "3", "GRAD_ACCUMULATION": "4",
     "DATASET_NUM_PROC": "6", "TORCH_DTYPE": "float32", "GRADIENT_CHECKPOINTING": "false",
     "OPTIM": "adamw_torch", "ADAM_BETA1": "0.8", "ADAM_BETA2": "0.99", "ADAM_EPSILON": "1e-7",
@@ -112,7 +113,7 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
     assert [option(args, "--max_length") for args in training] == [
         overrides.get("MAX_LENGTH", default) for default in ("2048", "4096", "4096")]
     shared_options = {
-        "TRAIN_BATCH_SIZE": ("--per_device_train_batch_size", "1"),
+        "TRAIN_BATCH_SIZE": ("--per_device_train_batch_size", "2"),
         "EVAL_BATCH_SIZE": ("--per_device_eval_batch_size", "1"),
         "GRAD_ACCUMULATION": ("--gradient_accumulation_steps", "8"),
         "TORCH_DTYPE": ("--torch_dtype", "bfloat16"),
@@ -124,6 +125,7 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
         "LOGGING_STEPS": ("--logging_steps", "10"), "EVAL_STEPS": ("--eval_steps", "500"),
         "SAVE_STEPS": ("--save_steps", "500"), "SAVE_TOTAL_LIMIT": ("--save_total_limit", "3"),
         "SEED": ("--seed", "42"), "DATA_SEED": ("--data_seed", "42"),
+        "LOAD_FROM_CACHE_FILE": ("--load_from_cache_file", "false"),
     }
     for args in training:
         assert option(args, "--external_plugins") == str(CPT / "plugin.py")
@@ -134,11 +136,12 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
         assert option(args, "--average_tokens_across_devices") == "true"
     exports = [args for args in calls if args[:4] == ["-B", "-m", "swift.cli.main", "export"]]
     for args in exports:
-        assert option(args, "--dataset_num_proc") == overrides.get("DATASET_NUM_PROC", "8")
+        assert option(args, "--dataset_num_proc") == overrides.get("DATASET_NUM_PROC", "32")
         assert option(args, "--data_seed") == overrides.get("DATA_SEED", "42")
+        assert option(args, "--load_from_cache_file") == overrides.get("LOAD_FROM_CACHE_FILE", "false")
     prepared = [args for args in calls if args[1] == str(CPT / "prepare_data.py")]
     for i, args in enumerate(prepared, start=1):
-        assert option(args, "--batch-size") == overrides.get("TRAIN_BATCH_SIZE", "1")
+        assert option(args, "--batch-size") == overrides.get("TRAIN_BATCH_SIZE", "2")
         assert option(args, "--world-size") == "2"
         assert option(args, "--seed") == overrides.get("DATA_SEED", "42")
         assert option(args, "--total-tokens") == overrides.get(f"PHASE{i}_TOKENS", "1000000000" if i == 1 else "10000000000")
@@ -150,6 +153,28 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
     assert [item["PGCA_ENABLED"] for item in stages] == ["false", "true", "true"]
     assert all(item["PHASE2_B_BRANCH_LR"] == overrides.get("PHASE2_B_BRANCH_LR", "3e-5") for item in stages[1:])
     assert all(args[:2] == ["-B", "-m"] or args[1] == str(CPT / "prepare_data.py") for args in calls)
+
+
+@pytest.mark.parametrize("load_from_cache_file", ["true", "false"])
+def test_native_cache_switch_preserves_prepared_data_validation(tmp_path, recorder, load_from_cache_file):
+    program, capture = recorder
+    model, data, cache = tmp_path / "model", tmp_path / "data", tmp_path / "prepared"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    for split in ("train", "validation"):
+        (data / split).mkdir(parents=True)
+        (data / split / "part.jsonl").write_text("{}\n")
+    cache.mkdir()
+    report = cache / "preparation_report.json"
+    report.write_text("{}")
+    command = 'source "$1"; prepare_cache "$2" "$3" "$4" 2048 0 1000'
+    subprocess.run(["bash", "-c", command, "_", str(CPT / "common.sh"), str(model), str(data), str(cache)],
+                   env=environment(PYTHON_CMD=program, CAPTURE=capture, LOAD_FROM_CACHE_FILE=load_from_cache_file), check=True)
+    calls = captured(capture)
+    assert len(calls) == 1
+    assert calls[0][1] == str(CPT / "prepare_data.py")
+    assert "--verify" in calls[0]
+    assert report.read_text() == "{}"
 
 
 @pytest.mark.parametrize("task,variables,relative", [

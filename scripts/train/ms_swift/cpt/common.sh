@@ -17,12 +17,15 @@ TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 # 单机 GPU 与 batch；有效 batch = 卡数 × TRAIN_BATCH_SIZE × GRAD_ACCUMULATION。
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-}"              # 留空时按可见 GPU 数推导
-TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"         # 每卡训练 batch
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2}"         # 每卡训练 batch
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"           # 每卡验证 batch
 GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-8}"
-DATASET_NUM_PROC="${DATASET_NUM_PROC:-8}"
+DATASET_NUM_PROC="${DATASET_NUM_PROC:-32}"
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
+
+# ms-swift 原生数据预处理缓存复用；不是模型 KV cache，也不清理已准备的 CACHE_DIR。
+LOAD_FROM_CACHE_FILE="${LOAD_FROM_CACHE_FILE:-false}"
 
 # 优化器；各阶段的学习率在对应 phase 脚本顶部。
 OPTIM="${OPTIM:-adamw_torch_fused}"
@@ -81,7 +84,7 @@ prepare_cache() {
         --model "$model" --model_type qwen3 --template cc_llm_multitask --load_args false \
         --dataset "${train_files[@]}" --val_dataset "${validation_files[@]}" \
         --dataset_num_proc "$DATASET_NUM_PROC" --data_seed "$DATA_SEED" --to_cached_dataset true \
-        --strict true --load_from_cache_file false --split_dataset_ratio 0 \
+        --strict true --load_from_cache_file "$LOAD_FROM_CACHE_FILE" --split_dataset_ratio 0 \
         --truncation_strategy split --max_length "$max_length" \
         --use_chat_template false --loss_scale all --disable_ignore_empty_think true --output_dir "$raw"
     "$PYTHON_CMD" -B "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}"
@@ -111,6 +114,7 @@ run_training() {
         --check_model false --load_args false --tuner_type full
         --torch_dtype "$TORCH_DTYPE" --max_length "$max_length"
         --cached_dataset "$train" --cached_val_dataset "$validation"
+        --load_from_cache_file "$LOAD_FROM_CACHE_FILE"
 
         # 当前链路固定约束：完整 logits、非 packing、单轮消耗指定 token 预算。
         --remove_unused_columns false --use_chat_template false

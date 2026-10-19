@@ -81,10 +81,11 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 - `MODEL`：Phase1 初始模型，或 Phase2 的 Phase1 checkpoint。Phase2 未设置时读取 ALIGN 输出的 `next_stage_model.txt`，不猜测 `best/` 路径。
 - `DATA_DIR`：含 `train/*.jsonl` 和 `validation/*.jsonl` 的目录，自动读取所有分片。
 - `OUT`、`CACHE_DIR`：独立实验输出/缓存目录。默认拒绝覆盖已有训练目录。
+- `LOAD_FROM_CACHE_FILE`：默认 `false`，控制 ms-swift 原生的 `--load_from_cache_file`，同时传给导出和训练命令。设为 `true` 允许复用框架的数据预处理缓存；设为 `false` 不复用该缓存，但不禁止框架写入新缓存，也不会删除已有数据。它不是模型的 KV cache 开关。
 
 - `CUDA_VISIBLE_DEVICES`：默认 8 卡；`NPROC_PER_NODE` 默认按可见卡列表推导。脚本按单机 DDP 编写。
-- `TRAIN_BATCH_SIZE`、`EVAL_BATCH_SIZE`、`GRAD_ACCUMULATION`：默认 1、1、8。
-- `DATASET_NUM_PROC`：默认 8。
+- `TRAIN_BATCH_SIZE`、`EVAL_BATCH_SIZE`、`GRAD_ACCUMULATION`：当前默认 2、1、8。
+- `DATASET_NUM_PROC`：当前默认 32。
 - `PHASE1_TOKENS`：默认 1B，语料不足则停止；显式设为 0 表示接受现有 Phase1 语料跑一遍并报告实际目标数，不把不足 1B 冒充为 1B。
 - `PHASE2_TOKENS`、`ADAPTATION_TOKENS`：默认 10B、100M。语料不足时会报错，需显式选择较小预算，且保持总预算大于适配预算。
 - `MAX_LENGTH`：Phase1 默认 2048，Phase2 默认 4096；同时用于准备缓存和训练。
@@ -109,6 +110,14 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 ## 3. 数据准备与 token 预算
 
 首次运行脚本会调用官方 `swift export`，用本插件的模板执行无 chat template 的预训练编码，再调用 `prepare_data.py`。不重采语料，不执行逐文 G2P，不改原始 JSONL。
+
+这里有两个不同层面：ms-swift 的预处理缓存复用由 `LOAD_FROM_CACHE_FILE` 控制；`prepare_data.py` 的额外工作是有效 token 预算、A/B 分段、无效监督过滤和 DDP 补齐，产物仍是 Hugging Face Dataset。后者不是另写一套 tokenizer 缓存。
+
+已有 `CACHE_DIR/preparation_report.json` 时，脚本继续校验并复用准备好的数据，不重新调用导出。因此 `LOAD_FROM_CACHE_FILE=false` **不等于强制重建 `CACHE_DIR`**；需要重新准备时，指定一个新的 `CACHE_DIR`。已有产物不会自动删除或覆盖。例如：
+
+```bash
+LOAD_FROM_CACHE_FILE=true bash scripts/train/ms_swift/cpt/phase1.sh
+```
 
 准备过程：
 
