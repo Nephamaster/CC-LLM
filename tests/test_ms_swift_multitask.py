@@ -67,7 +67,8 @@ class PreparedDatasetTest(unittest.TestCase):
             model.mkdir()
             (model / "tokenizer.json").write_text("{}")
             report = {"tokenizer_sha256": PREPARE["tokenizer_hash"](model), "max_length": 4,
-                      "world_size": 1, "batch_size": 1, "seed": 123}
+                      "world_size": 1, "batch_size": 1, "seed": 123,
+                      "available_targets": 5, "train_targets": 5}
             (root / "preparation_report.json").write_text(json.dumps(report))
             command = [sys.executable, "-B", str(BRIDGE / "prepare_data.py"), "--input", str(root / "raw"),
                        "--output", str(root), "--model", str(model), "--max-length", "4", "--verify", "--seed"]
@@ -76,6 +77,50 @@ class PreparedDatasetTest(unittest.TestCase):
             changed = subprocess.run([*command, "42"], capture_output=True, text=True)
             self.assertNotEqual(changed.returncode, 0)
             self.assertIn("data seed mismatch", changed.stderr)
+
+    def test_token_budget_is_an_upper_bound(self):
+        from datasets import load_from_disk
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, model = root / "raw", root / "model"
+            model.mkdir()
+            (model / "tokenizer.json").write_text("{}")
+            dataset = Dataset.from_dict({"input_ids": [[2, 3, 4], [4, 3, 2, 4]],
+                                         "labels": [[-100, 3, 4], [-100, 3, 2, 4]]})
+            for split in ("train", "val"):
+                dataset.save_to_disk(str(source / split))
+            for adaptation in (0, 2):
+                for requested in (0, 4, 5, 9):
+                    with self.subTest(adaptation=adaptation, requested=requested):
+                        target = root / f"prepared-{adaptation}-{requested}"
+                        report = PREPARE["prepare"](source, target, adaptation_tokens=adaptation,
+                                                    total_tokens=requested, model_path=model, max_length=4,
+                                                    world_size=2)
+                        actual = min(requested or 5, 5)
+                        self.assertEqual(report["requested_train_targets"], requested or 5)
+                        self.assertEqual(report["train_targets"], actual)
+                        self.assertEqual(report["shortfall_targets"], max(0, requested - 5))
+                        for name, info in report["splits"].items():
+                            rows = load_from_disk(str(target / name))
+                            self.assertEqual(sum(PREPARE["target_count"](row["labels"]) for row in rows), info["targets"])
+                        if adaptation:
+                            self.assertEqual(report["splits"]["train_a"]["range"], [0, 2])
+                            self.assertEqual(report["splits"]["train_b"]["range"], [2, actual])
+                        command = [sys.executable, "-B", str(BRIDGE / "prepare_data.py"), "--input", str(source),
+                                   "--output", str(target), "--model", str(model), "--max-length", "4",
+                                   "--world-size", "2", "--total-tokens", str(requested),
+                                   "--adaptation-tokens", str(adaptation), "--verify"]
+                        verified = subprocess.run(command, capture_output=True, text=True)
+                        self.assertEqual(verified.returncode, 0, verified.stderr)
+                        # A previously truncated cache cannot satisfy a request to use all data.
+                        if requested == 4:
+                            command[command.index("--total-tokens") + 1] = "0"
+                            changed = subprocess.run(command, capture_output=True, text=True)
+                            self.assertNotEqual(changed.returncode, 0)
+                            self.assertIn("token budget mismatch", changed.stderr)
+            with self.assertRaisesRegex(ValueError, "adaptation budget"):
+                PREPARE["prepare"](source, root / "empty-b", adaptation_tokens=5, total_tokens=9)
 
     def test_token_ranges_are_disjoint_and_drop_empty_rows(self):
         rows = {"input_ids": [[2], [2, 3, 4], [4, 3, 2, 4]],

@@ -12,7 +12,7 @@ OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
 MAX_LENGTH="${MAX_LENGTH:-2048}"
 CACHE_DIR="${CACHE_DIR:-$CC_ROOT/data/cc_llm_multitask/phase1_${MAX_LENGTH}}"
 
-# 训练预算与学习率。tokens=0 表示接受现有语料跑一遍，不保证足额 1B。
+# 训练 token 上限与学习率；数据不足时使用全部可用数据，tokens=0 表示不设上限。
 PHASE1_TOKENS="${PHASE1_TOKENS:-1000000000}"
 PHASE1_LR="${PHASE1_LR:-1e-5}"
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"  # 留空为新训练，否则填本阶段 checkpoint

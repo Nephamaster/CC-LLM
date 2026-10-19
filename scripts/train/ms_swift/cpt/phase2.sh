@@ -13,7 +13,7 @@ OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
 MAX_LENGTH="${MAX_LENGTH:-4096}"
 CACHE_DIR="${CACHE_DIR:-$CC_ROOT/data/cc_llm_multitask/phase2_${MAX_LENGTH}}"
 
-# A/B 共享这份总预算；B 使用总预算减去 A 后的剩余监督目标，不重跑整份数据。
+# A/B 共享总 token 上限；数据不足时用实际可用量，B 使用扣除 A 后的剩余目标。
 PHASE2_TOKENS="${PHASE2_TOKENS:-10000000000}"
 ADAPTATION_TOKENS="${ADAPTATION_TOKENS:-100000000}"
 PHASE2_A_LR="${PHASE2_A_LR:-5e-5}"                 # A：仅新增分支

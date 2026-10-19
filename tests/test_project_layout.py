@@ -125,7 +125,7 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
         "LOGGING_STEPS": ("--logging_steps", "10"), "EVAL_STEPS": ("--eval_steps", "500"),
         "SAVE_STEPS": ("--save_steps", "500"), "SAVE_TOTAL_LIMIT": ("--save_total_limit", "3"),
         "SEED": ("--seed", "42"), "DATA_SEED": ("--data_seed", "42"),
-        "LOAD_FROM_CACHE_FILE": ("--load_from_cache_file", "false"),
+        "LOAD_FROM_CACHE_FILE": ("--load_from_cache_file", "true"),
     }
     for args in training:
         assert option(args, "--external_plugins") == str(CPT / "plugin.py")
@@ -138,7 +138,7 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
     for args in exports:
         assert option(args, "--dataset_num_proc") == overrides.get("DATASET_NUM_PROC", "32")
         assert option(args, "--data_seed") == overrides.get("DATA_SEED", "42")
-        assert option(args, "--load_from_cache_file") == overrides.get("LOAD_FROM_CACHE_FILE", "false")
+        assert option(args, "--load_from_cache_file") == overrides.get("LOAD_FROM_CACHE_FILE", "true")
     prepared = [args for args in calls if args[1] == str(CPT / "prepare_data.py")]
     for i, args in enumerate(prepared, start=1):
         assert option(args, "--batch-size") == overrides.get("TRAIN_BATCH_SIZE", "2")

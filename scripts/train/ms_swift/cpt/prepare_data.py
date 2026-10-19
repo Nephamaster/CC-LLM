@@ -104,15 +104,15 @@ def prepare(input_dir, output_dir, *, adaptation_tokens=0, total_tokens=0, seed=
     order = np.random.default_rng(seed).permutation(len(train))
     train, counts = train.select(order.tolist()), counts[order]
     available = int(counts.sum())
-    budget = total_tokens or available
-    if budget > available:
-        raise ValueError(f"requested {budget} targets, only {available} available; choose an explicit smaller budget")
+    requested_budget = total_tokens or available
+    budget = min(requested_budget, available)
     if not 0 <= adaptation_tokens < budget:
         raise ValueError("adaptation budget must be below the total budget")
     ranges = ({"train_a": (0, adaptation_tokens), "train_b": (adaptation_tokens, budget)}
               if adaptation_tokens else {"train": (0, budget)})
     output_dir.mkdir(parents=True)
     report = {"input": str(input_dir.resolve()), "seed": seed, "available_targets": available,
+              "requested_train_targets": requested_budget, "shortfall_targets": requested_budget - budget,
               "train_targets": budget, "validation_targets": int(val_counts.sum()),
               "dropped_train_rows": dropped_train, "dropped_validation_rows": dropped_val, "splits": {}}
     report["tokenizer_sha256"] = tokenizer_hash(model_path) if model_path is not None else None
@@ -164,7 +164,8 @@ if __name__ == "__main__":
             raise ValueError("prepared cache distributed batch geometry mismatch; prepare new cache views")
         if report["seed"] != args.seed:
             raise ValueError("prepared cache data seed mismatch; use a new cache directory")
-        if args.total_tokens and report["train_targets"] != args.total_tokens:
+        expected_budget = min(args.total_tokens or report["available_targets"], report["available_targets"])
+        if report["train_targets"] != expected_budget:
             raise ValueError("prepared cache token budget mismatch")
         if args.adaptation_tokens and report["splits"].get("train_a", {}).get("targets") != args.adaptation_tokens:
             raise ValueError("prepared cache adaptation budget mismatch")

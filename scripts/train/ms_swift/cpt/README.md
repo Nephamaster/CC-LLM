@@ -81,13 +81,13 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 - `MODEL`：Phase1 初始模型，或 Phase2 的 Phase1 checkpoint。Phase2 未设置时读取 ALIGN 输出的 `next_stage_model.txt`，不猜测 `best/` 路径。
 - `DATA_DIR`：含 `train/*.jsonl` 和 `validation/*.jsonl` 的目录，自动读取所有分片。
 - `OUT`、`CACHE_DIR`：独立实验输出/缓存目录。默认拒绝覆盖已有训练目录。
-- `LOAD_FROM_CACHE_FILE`：默认 `false`，控制 ms-swift 原生的 `--load_from_cache_file`，同时传给导出和训练命令。设为 `true` 允许复用框架的数据预处理缓存；设为 `false` 不复用该缓存，但不禁止框架写入新缓存，也不会删除已有数据。它不是模型的 KV cache 开关。
+- `LOAD_FROM_CACHE_FILE`：当前默认 `true`，控制 ms-swift 原生的 `--load_from_cache_file`，同时传给导出和训练命令。设为 `true` 允许复用框架的数据预处理缓存；设为 `false` 不复用该缓存，但不禁止框架写入新缓存，也不会删除已有数据。它不是模型的 KV cache 开关。
 
 - `CUDA_VISIBLE_DEVICES`：默认 8 卡；`NPROC_PER_NODE` 默认按可见卡列表推导。脚本按单机 DDP 编写。
 - `TRAIN_BATCH_SIZE`、`EVAL_BATCH_SIZE`、`GRAD_ACCUMULATION`：当前默认 2、1、8。
 - `DATASET_NUM_PROC`：当前默认 32。
-- `PHASE1_TOKENS`：默认 1B，语料不足则停止；显式设为 0 表示接受现有 Phase1 语料跑一遍并报告实际目标数，不把不足 1B 冒充为 1B。
-- `PHASE2_TOKENS`、`ADAPTATION_TOKENS`：默认 10B、100M。语料不足时会报错，需显式选择较小预算，且保持总预算大于适配预算。
+- `PHASE1_TOKENS`：默认上限 1B；语料不足时直接使用全部可用目标，不因短缺而停止。设为 0 表示不设上限、使用全部语料，报告按实际目标数记录。
+- `PHASE2_TOKENS`、`ADAPTATION_TOKENS`：默认总上限 10B、A 段 100M。总量不足时按可用量继续，B 使用实际总量减去 A 后的剩余目标；仍需保证 A 小于实际总量，避免 B 成为空集。
 - `MAX_LENGTH`：Phase1 默认 2048，Phase2 默认 4096；同时用于准备缓存和训练。
 - `PHASE1_LR`、`PHASE2_A_LR`、`PHASE2_B_LR`、`PHASE2_B_BRANCH_LR`：默认分别为 `1e-5`、`5e-5`、`1e-5`、`3e-5`。
 - `EVAL_STEPS`、`SAVE_STEPS`、`LOGGING_STEPS`：默认 500、500、10；短冒烟可都设为 1。保存步数必须符合 HF 的最佳模型加载约束。
@@ -125,11 +125,13 @@ LOAD_FROM_CACHE_FILE=true bash scripts/train/ms_swift/cpt/phase1.sh
 2. 用 Arrow/NumPy 分批计数 `labels[1:] != -100`，固定 seed 打乱训练样本；验证集不打乱。
 3. A/B 使用不重叠的监督目标区间。跨分界的同一输入片段可能出现在两段中，但 labels 使用互补 mask，不重复训练目标，也不丢掉边界目标。
 4. 训练样本数补齐到 `world_size × per_device_train_batch_size` 的倍数。补齐行复制输入但全标签置 -100，携带 `is_padding_dummy=true`，贡献图连接的零损失；避免 DDP 自动重复真实样本。改变卡数/batch 时必须重新准备视图。
-5. 保存 `preparation_report.json`：实际 token 数、丢弃行数、A/B 区间、补齐行数、tokenizer 指纹、长度及 batch 几何。
+5. 保存 `preparation_report.json`：请求上限 `requested_train_targets`、实际量 `train_targets`、短缺量 `shortfall_targets`，以及丢弃行数、A/B 区间、补齐行数、tokenizer 指纹、长度及 batch 几何。缓存复用按请求上限与可用量的较小值校验，不再要求不足额的数据满足原上限。
 
 缓存以 `--cached_dataset` / `--cached_val_dataset` 加载，必须保持 `truncation_strategy=split`。当前 Swift 对非 split 缓存会走 LazyLLMDataset，不能把编码后的行重新当作原始 messages。
 
 原始官方缓存保存在 `${CACHE_DIR}.raw`，分段缓存和中间 Arrow 文件保存在 `CACHE_DIR`。**需预留额外磁盘空间**，不能把它们视为仅有几个字节的索引文件。已有兼容官方缓存可直接调用：
+
+如果旧版本因预算不足停在 `prepare_data.py`，此时 `.raw` 通常已成功导出，分段目录尚未创建；可直接运行下面的准备命令（填写本阶段的实际路径、长度、卡数和 batch），完成后再启动原训练脚本，不必重新导出。直接重跑整段脚本仍可能触发已有 raw 目录的保护检查。
 
 ```bash
 scripts/train/ms_swift/env/bin/python -B scripts/train/ms_swift/cpt/prepare_data.py \
