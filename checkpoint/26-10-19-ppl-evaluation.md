@@ -2,7 +2,9 @@
 
 ## 实施边界
 
-入口 `scripts/evaluation/ppl/run.sh` / `python -m scripts.evaluation.ppl.evaluate`，独立环境 `scripts/evaluation/ppl/env/`，默认只读 `data/ppl/`，输出 `outputs/evaluation/ppl/<MODEL_NAME>/`。不依赖 ms-swift、CLLM 外部源码或 SFT args.json；不修改数据、模型、训练入口或 Phase0 验证。
+入口 `scripts/evaluation/ppl/run.sh` / `python -m scripts.evaluation.ppl.evaluate`，默认只读 `data/ppl/`，输出 `outputs/evaluation/ppl/<MODEL_NAME>/`。不依赖 ms-swift、CLLM 外部源码或 SFT args.json；不修改数据、模型、训练入口或 Phase0 验证。
+
+按用户后续决定，run.sh 不再加载评估 common.sh 或绑定独立 env，而直接调用当前 PATH 的 python：运行前激活已有合适环境即可，不读取 PYTHON 变量。模型名校验、结果目录与仓库定位保持原规则；其他评估入口不受影响。
 
 支持本地完整 HF 模型及自包含 PGCA AutoClass；tokenizer-only、LoRA adapter、缺失权重、模型加载缺键会拒绝。每个模型用自己 checkpoint 内的 tokenizer，不用 Char tokenizer 给原始 Base 评分。
 

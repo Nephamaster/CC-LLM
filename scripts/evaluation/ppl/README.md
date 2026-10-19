@@ -4,16 +4,16 @@
 
 ## 环境
 
-独立环境使用 `scripts/evaluation/ppl/env/`，普通安装，不使用 editable 安装：
+运行前自行激活合适的环境即可，例如已有的 ms-swift 训练环境。`run.sh` 直接调用当前 `PATH` 中的 `python`，不加载 `scripts/evaluation/common.sh`，不绑定 `ppl/env/`，也不读取 `PYTHON` 环境变量。
+
+当前环境已满足依赖时不需要重复安装；需要补齐依赖时，在该环境中执行：
 
 ```bash
-python3.11 -m venv scripts/evaluation/ppl/env
-# 先在此环境安装与服务器 CUDA 匹配的 PyTorch，再安装下面的依赖。
-scripts/evaluation/ppl/env/bin/python -m pip install -r scripts/evaluation/ppl/requirements.txt
-scripts/evaluation/ppl/env/bin/python -m pip check
+python -m pip install -r scripts/evaluation/ppl/requirements.txt
+python -m pip check
 ```
 
-Transformers 固定为与本仓库训练入口一致的 `5.12.1`；实际运行版本写入 manifest。默认 SDPA，不依赖 flash-attn。可用 `PYTHON=/另一个环境/bin/python` 显式指定已配置环境。
+requirements 中的 Transformers 固定为与本仓库训练入口一致的 `5.12.1`，实际运行版本写入 manifest；安装前注意是否会改变共享训练环境的依赖版本。脚本不会自行安装或切换环境。默认 SDPA，不依赖 flash-attn。
 
 ## 数据与启动
 
@@ -87,7 +87,7 @@ Base 与 Char 的 token PPL **不能直接横比**；应使用同一原始数据
 在已安装上述依赖及 pytest 的环境执行：
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 scripts/evaluation/ppl/env/bin/python -B -m pytest -q tests/test_evaluation_ppl.py
+PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q tests/test_evaluation_ppl.py
 ```
 
 覆盖短文/长文/尾窗、逐 token 计数、Unicode 字符/字节口径、忽略模型 loss、语料加权汇总、异常输入、CPU Qwen3 保存/加载到最终报告，以及 PGCA 上下文分支的 logits 计分。实际服务器权重、GPU 性能和全量 PPL 需在服务器运行后确认。

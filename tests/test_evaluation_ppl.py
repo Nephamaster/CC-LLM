@@ -251,17 +251,36 @@ def test_interrupted_evaluation_leaves_diagnostics_not_success(tmp_path, tiny_ch
         evaluate_ppl(tiny_checkpoint, source, output, 4, 2, device="cpu")
 
 
-def test_launcher_uses_task_env_and_model_scoped_output(tmp_path):
+@pytest.mark.parametrize("overrides,relative", [
+    ({"MODEL_NAME": "Example-Char-ALIGN", "RUN_NAME": "trial"},
+     "outputs/evaluation/ppl/Example-Char-ALIGN/trial/metrics.json"),
+    ({"OUT": "explicit-output"}, "explicit-output/metrics.json"),
+])
+def test_launcher_uses_active_environment_and_model_scoped_output(tmp_path, overrides, relative):
     root = Path(__file__).resolve().parents[1]
     recorder = tmp_path / "python"
     recorder.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
     recorder.chmod(0o755)
     env = {key: value for key, value in os.environ.items()
-           if key not in {"OUT", "RUN_NAME", "DATA_DIR", "WINDOW", "STRIDE", "DTYPE", "DEVICE", "ATTENTION", "LOSS_CHUNK_SIZE"}}
-    env.update(PYTHON=str(recorder), MODEL="/path/to/checkpoint", MODEL_NAME="Example-Char-ALIGN", RUN_NAME="trial")
+           if key not in {"OUT", "MODEL_NAME", "RUN_NAME", "DATA_DIR", "WINDOW", "STRIDE", "DTYPE", "DEVICE", "ATTENTION", "LOSS_CHUNK_SIZE"}}
+    env.update(PATH=f"{tmp_path}{os.pathsep}{env['PATH']}", PYTHON="/must/not/be/used",
+               MODEL="/path/to/checkpoint", **overrides)
     result = subprocess.run(["bash", str(root / "scripts/evaluation/ppl/run.sh")], cwd=tmp_path,
                             env=env, check=True, capture_output=True, text=True)
     args = json.loads(result.stdout)
     assert args[:3] == ["-B", "-m", "scripts.evaluation.ppl.evaluate"]
     assert args[args.index("--input-dir") + 1] == str(root / "data/ppl")
-    assert args[args.index("--output") + 1] == str(root / "outputs/evaluation/ppl/Example-Char-ALIGN/trial/metrics.json")
+    expected = str(root / relative) if "OUT" not in overrides else relative
+    assert args[args.index("--output") + 1] == expected
+
+
+@pytest.mark.parametrize("overrides", [{}, {"MODEL_NAME": "../escape"},
+                                      {"MODEL_NAME": "Example", "RUN_NAME": "../escape"}])
+def test_launcher_rejects_missing_or_unsafe_output_names(tmp_path, overrides):
+    root = Path(__file__).resolve().parents[1]
+    env = {key: value for key, value in os.environ.items() if key not in {"OUT", "MODEL_NAME", "RUN_NAME"}}
+    env.update(MODEL="/path/to/checkpoint", **overrides)
+    result = subprocess.run(["bash", str(root / "scripts/evaluation/ppl/run.sh")], cwd=tmp_path,
+                            env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "MODEL_NAME" in result.stderr or "single directory components" in result.stderr

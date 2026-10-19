@@ -58,7 +58,7 @@ Phase2增强池内部来源配比：CCI3-HQ 20%、FineWeb-Edu-Chinese 20%、WanJ
 
 下游评估入口见 `scripts/evaluation/`：CSC 默认仅 CSCD-NS 与 LEMON，不删除本地其他数据；FCGEC valid 可本地评分，公开 test 无标签，仅导出预测；NaCGEC 使用字级 ChERRANT 与词级 THULAC/MaxMatch。古汉语使用 C³Bench 与 Fùxì，后者裁判未配置时保留待评分状态。
 
-通用 benchmark（MMLU、ARC、SQuAD v2、GSM8K、CMMLU、CLUE）归入 `scripts/evaluation/lmeh/`，Base/Char/语义对齐模型的 PPL 归入 `scripts/evaluation/ppl/`。框架在各自子目录的 `env/` 普通安装，不再依赖外部框架仓库启动。训练产物为 `outputs/train/<模型名>/`，评估产物为 `outputs/evaluation/<评估项>/<模型名>/`；命名统一使用根 README 的 `B`、`B-Char`、`B-PGCA` 及 `-ALIGN/-CPT/-CSC/-CGEC/-ACT` 规则。
+通用 benchmark（MMLU、ARC、SQuAD v2、GSM8K、CMMLU、CLUE）归入 `scripts/evaluation/lmeh/`，Base/Char/语义对齐模型的 PPL 归入 `scripts/evaluation/ppl/`。PPL 直接使用运行前激活环境的 `python`，可复用已有训练环境；其他入口仍按各自环境说明普通安装框架，不再依赖外部框架仓库启动。训练产物为 `outputs/train/<模型名>/`，评估产物为 `outputs/evaluation/<评估项>/<模型名>/`；命名统一使用根 README 的 `B`、`B-Char`、`B-PGCA` 及 `-ALIGN/-CPT/-CSC/-CGEC/-ACT` 规则。
 
 其中古汉语训练数据以 [ancient_sft.md](ancient_sft.md) 为准，不再固定按来源 60%/25%/15% 混合：
 
