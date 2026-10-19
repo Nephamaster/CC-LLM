@@ -3,7 +3,6 @@ seed: 42
 max_length: 2048
 tokenizer_path: models/Qwen3-1.7B-Base-Char
 output_dir: data/downstream/ancient/train
-swift_commit: 1516d78d627381c2072be80037a7a64c3811480d
 template: qwen3
 enable_thinking: false
 sources:

@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import importlib.metadata
-import inspect
-from pathlib import Path
 
-from .common import file_hash, resolve
-from .provenance import verify_swift
+from .common import resolve
+
+
+def installed_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 class SwiftEncoder:
     def __init__(self, config):
         import swift
 
-        root = Path(swift.__file__).resolve().parent.parent
-        provenance = verify_swift(root, config["swift_commit"])
         from swift.model import get_model_processor
         from swift.template import get_template
         _, processor = get_model_processor(
@@ -29,15 +31,14 @@ class SwiftEncoder:
         )
         self.template.set_mode("train")
         self.info = {
-            "backend": "ms-swift", "commit": provenance["git_commit"], "template": "qwen3",
-            "provenance": provenance, "package_version": getattr(swift, "__version__", None),
+            "backend": "ms-swift", "template": "qwen3",
+            "package_version": getattr(swift, "__version__", None) or installed_version("ms-swift"),
             "enable_thinking": False, "loss_scale": "default", "template_backend": "swift",
             "add_non_thinking_prefix": True, "use_chat_template": True,
             "system": None,
             "max_length": config["max_length"], "truncation_strategy": "raise",
-            "dependencies": {name: importlib.metadata.version(name) for name in
+            "dependencies": {name: installed_version(name) for name in
                              ("transformers", "tokenizers", "torch")},
-            "template_source_sha256": file_hash(Path(inspect.getfile(type(self.template)))),
         }
 
     def __call__(self, messages):

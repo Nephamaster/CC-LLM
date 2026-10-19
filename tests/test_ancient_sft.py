@@ -257,7 +257,7 @@ def test_verified_legacy_candidates_can_repartition_without_rewriting_them(confi
     jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(40)])
     manifest = prepare(config)
     path = Path(config["output_dir"]) / "prepared/manifest.json"
-    manifest["implementation_sha256"] = profile()["legacy_prepare"]["implementation_sha256"]
+    manifest["implementation_sha256"] = profile()["candidate_reuse"]["implementations"][0]
     write_json(path, manifest)
     before = file_hash(path)
     parent = path.parent
@@ -274,7 +274,7 @@ def test_legacy_prepare_keeps_data_integrity_guards(config, changed):
 
     manifest = prepare(config)
     root = Path(config["output_dir"]) / "prepared"
-    manifest["implementation_sha256"] = profile()["legacy_prepare"]["implementation_sha256"]
+    manifest["implementation_sha256"] = profile()["candidate_reuse"]["implementations"][0]
     write_json(root / "manifest.json", manifest)
     target = Path(config["sources"]["translate"]) if changed == "input" else root / "candidates.sqlite"
     with target.open("ab") as handle:
@@ -456,7 +456,7 @@ def test_repartition_rejects_changed_filter_or_benchmark(config):
         repartition(config, str(parent))
 
 
-@pytest.mark.skipif(os.getenv("ANCIENT_SWIFT_INTEGRATION") != "1", reason="requires pinned ms-swift environment")
+@pytest.mark.skipif(os.getenv("ANCIENT_SWIFT_INTEGRATION") != "1", reason="requires ms-swift environment")
 def test_real_swift_encoding_and_finalize(config):
     from scripts.data_factory.ancient_sft.encoding import SwiftEncoder
 
@@ -478,4 +478,4 @@ def test_real_swift_encoding_and_finalize(config):
     assert not report["ready_for_training"]
     assert report["encoding"]["backend"] == "ms-swift"
     assert report["tasks"]["train/c2m"]["assistant_loss_fraction"] == 1
-    assert report["prepared_implementation_check"] == "exact"
+    assert report["prepared_implementation_check"] == "not_enforced"

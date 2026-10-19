@@ -1,5 +1,7 @@
 # 古汉语数据及源码目录规范化（2026-10-19）
 
+后续调整：finalize 不再以实现源码指纹作为兼容门槛，改验 v2 数据划分标记及内容完整性；环境版本只记录，见 ancient_sft_runtime_version_policy.md。下文迁移指纹是历史实现记录，不是当前运行要求。
+
 - 用户已将模块移入 `scripts/data_factory/ancient_sft`，入口改为 `python -m scripts.data_factory.ancient_sft.run`。common.py 的项目根定位必须从 parents[2] 改为 parents[3]，否则相对数据/模型路径会错误指向 scripts 下。
 - 原始数据统一到 `data/downstream/ancient/raw/{chinese-classical-corpus,HistoryTrans}`；Benchmark 仍在 `ancient/benchmark`；默认输出为 `ancient/train/{prepared,final}`。prepared 在服务器已有，本地为空不代表服务器需要重建。
 - 配置、模块文档相对链接、测试导入、根 README、方案、Dashboard 和历史检查点中的操作命令已同步。数据版本标签仍是 ancient_sft_v2，不再用版本标签充当默认物理目录名。

@@ -1,5 +1,7 @@
 # 古汉语 SFT 构建实现与验收边界
 
+注意：下文历史上的固定 Swift commit/源码指纹准入已撤销，现行规则见 ancient_sft_runtime_version_policy.md。
+
 操作路径已按 2026-10-19 的统一布局更新：源码在 scripts/data_factory/ancient_sft，原始数据在 ancient/raw，训练产物在 ancient/train；下文历史验证结果不变。
 
 ## 2026-10-18 决策

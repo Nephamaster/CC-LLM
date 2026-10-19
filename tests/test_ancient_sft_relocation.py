@@ -2,7 +2,6 @@
 
 import copy
 import json
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -42,19 +41,12 @@ class RelocationTest(unittest.TestCase):
         new["files"]["corpus"][0].update(sha256="same", bytes=8)
         self.assertNotEqual(relocation.canonical_inventory(old), relocation.canonical_inventory(new))
 
-    def test_known_code_move_is_verified_but_logic_changes_are_not(self):
-        expected = provenance.profile()["relocation"]
-        self.assertEqual(relocation.preparation_contract(provenance.MODULE_DIR), expected["preparation_contract_sha256"])
-        self.assertEqual(provenance.verify_prepared_implementation(expected["implementation_sha256"], "new"),
-                         "verified_directory_relocation")
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory)
-            for path in provenance.MODULE_DIR.glob("*.py"):
-                shutil.copy2(path, target / path.name)
-            with (target / "partition.py").open("a") as handle:
-                handle.write("\nUNRELATED_CHANGE = True\n")
-            with self.assertRaisesRegex(RuntimeError, "implementation changed"):
-                provenance.verify_prepared_implementation(expected["implementation_sha256"], "new", target)
+    def test_obsolete_environment_pin_is_not_a_data_configuration_change(self):
+        config = {"sources": {}, "benchmarks": {}, "max_length": 2048}
+        self.assertEqual(relocation.canonical_config(config),
+                         relocation.canonical_config({**config, "swift_commit": "old"}))
+        self.assertNotEqual(relocation.canonical_config(config),
+                            relocation.canonical_config({**config, "max_length": 1024}))
 
     def fixture(self, root):
         output = root / "data/downstream/ancient/train"
@@ -66,6 +58,7 @@ class RelocationTest(unittest.TestCase):
         old = copy.deepcopy(config)
         old["sources"]["corpus"] = "data/downstream/ancient/chinese-classical-corpus/corpus.jsonl"
         old["output_dir"] = "data/downstream/ancient_sft_v2"
+        old["swift_commit"] = "obsolete-pin"
         inventory = {"missing": [], "files": {"corpus": [{"path": str(root / old["sources"]["corpus"]),
                                                          "bytes": 7, "sha256": "same"}]}}
         current_inventory = copy.deepcopy(inventory)
@@ -75,7 +68,8 @@ class RelocationTest(unittest.TestCase):
                        "cluster TEXT,priority TEXT,payload TEXT,input_hash TEXT)")
         db.close()
         manifest = {"diagnostic": False, "config": old, "inventory": inventory, "statistics": {},
-                    "implementation_sha256": provenance.profile()["relocation"]["implementation_sha256"],
+                    "partition": {"strategy": "chapter_stratified_holdout_v2"},
+                    "implementation_sha256": provenance.profile()["candidate_reuse"]["implementations"][-1],
                     "database_sha256": common.file_hash(prepared / "candidates.sqlite"),
                     "build_dependencies": {"opencc-python-reimplemented": "fixture"}}
         common.write_json(prepared / "manifest.json", manifest)
@@ -100,6 +94,17 @@ class RelocationTest(unittest.TestCase):
             with patch.object(relocation, "ROOT", root), patch.object(pipeline, "input_inventory", return_value=inventory):
                 with self.assertRaisesRegex(RuntimeError, "input files changed"):
                     pipeline.finalize(config, encoder=object())
+
+    def test_old_partition_strategy_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, prepared, _ = self.fixture(root)
+            path = prepared / "manifest.json"
+            manifest = json.loads(path.read_text())
+            manifest.pop("partition")
+            common.write_json(path, manifest)
+            with self.assertRaisesRegex(RuntimeError, "requires v2 chapter partitions"):
+                pipeline.finalize(config, encoder=object())
 
     def test_repartition_accepts_relocated_inputs(self):
         module = "scripts.data_factory.ancient_sft.repartition"

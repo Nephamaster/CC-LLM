@@ -1,101 +1,55 @@
-"""Version checks do not depend on .git being shipped with Swift sources."""
+"""Environment upgrades must not block encoding via Git or source fingerprints."""
 
-import shutil
+import importlib.metadata
+import sys
+import types
+import unittest
+from unittest.mock import Mock, patch
 
-import pytest
-
-from scripts.data_factory.ancient_sft import provenance
-
-
-@pytest.fixture
-def swift_tree(tmp_path, monkeypatch):
-    root = tmp_path / "export"
-    (root / "swift").mkdir(parents=True)
-    (root / "swift/__init__.py").write_text("__version__ = 'fixture'\n")
-    (root / "swift/template.py").write_text("VALUE = 1\n")
-    value = {"swift": {"commit": "pinned", **provenance.source_fingerprint(root)}}
-    monkeypatch.setattr(provenance, "profile", lambda: value)
-    return root
+from scripts.data_factory.ancient_sft.encoding import SwiftEncoder
 
 
-def test_source_export_without_git_passes(swift_tree, capsys):
-    result = provenance.verify_swift(swift_tree, "pinned")
-    assert result["verification"] == "source_sha256_without_git"
-    assert result["git_commit"] is None
-    assert result["verified_reference_commit"] == "pinned"
-    assert "fatal:" not in capsys.readouterr().err
+class EncoderEnvironmentTest(unittest.TestCase):
+    def encoder(self, metadata_missing=False):
+        swift = types.ModuleType("swift")
+        swift.__version__ = "new-installed-version"
+        swift.__file__ = "/environment/site-packages/swift/__init__.py"
+        model = types.ModuleType("swift.model")
+        template_module = types.ModuleType("swift.template")
+        model.get_model_processor = Mock(return_value=(None, object()))
+        template = Mock()
+        template.encode.return_value = {"input_ids": [1, 2, 3], "labels": [-100, 2, 3]}
+        template_module.get_template = Mock(return_value=template)
+        version = Mock(return_value="current-version")
+        if metadata_missing:
+            version.side_effect = importlib.metadata.PackageNotFoundError
+        with patch.dict(sys.modules, {"swift": swift, "swift.model": model, "swift.template": template_module}), \
+                patch("importlib.metadata.version", version), \
+                patch("subprocess.run", side_effect=AssertionError("Git must not be invoked")), \
+                patch("pathlib.Path.rglob", side_effect=AssertionError("Sources must not be fingerprinted")):
+            encoder = SwiftEncoder({"tokenizer_path": "/local/model", "max_length": 2048,
+                                    "swift_commit": "obsolete-pin"})
+        return encoder, model, template_module, template
+
+    def test_installed_or_modified_swift_is_used_without_version_gate(self):
+        encoder, model, templates, template = self.encoder()
+        self.assertEqual(encoder.info["package_version"], "new-installed-version")
+        self.assertNotIn("template_source_sha256", encoder.info)
+        self.assertFalse(model.get_model_processor.call_args.kwargs["load_model"])
+        self.assertFalse(templates.get_template.call_args.kwargs["enable_thinking"])
+        template.set_mode.assert_called_once_with("train")
+        self.assertEqual(encoder([{"role": "user", "content": "test"}])["assistant_loss_tokens"], 2)
+
+    def test_missing_package_metadata_does_not_block_encoding(self):
+        encoder, _, _, _ = self.encoder(metadata_missing=True)
+        self.assertEqual(encoder.info["dependencies"], {"transformers": None, "tokenizers": None, "torch": None})
+
+    def test_actual_label_errors_are_still_rejected(self):
+        encoder, _, _, template = self.encoder()
+        template.encode.return_value = {"input_ids": [1, 2], "labels": [-100, -100]}
+        with self.assertRaisesRegex(RuntimeError, "missing answer loss"):
+            encoder([])
 
 
-def test_unrelated_parent_checkout_does_not_supply_git_identity(swift_tree, monkeypatch):
-    monkeypatch.setattr(provenance, "git_output", lambda root, *args: str(root.parent))
-    assert provenance.verify_swift(swift_tree, "pinned")["git_commit"] is None
-
-
-def test_git_binary_unavailable_falls_back_to_sources(swift_tree, monkeypatch):
-    def unavailable(*args, **kwargs):
-        raise FileNotFoundError("git unavailable")
-    monkeypatch.setattr(provenance.subprocess, "run", unavailable)
-    assert provenance.verify_swift(swift_tree, "pinned")["verification"] == "source_sha256_without_git"
-
-
-@pytest.mark.parametrize("change", ["edit", "delete", "add"])
-def test_source_drift_fails_closed(swift_tree, change):
-    path = swift_tree / "swift/template.py"
-    if change == "edit":
-        path.write_text("VALUE = 2\n")
-    elif change == "delete":
-        path.unlink()
-    else:
-        (swift_tree / "swift/extra.py").write_text("VALUE = 3\n")
-    with pytest.raises(RuntimeError, match="fingerprint mismatch"):
-        provenance.verify_swift(swift_tree, "pinned")
-
-
-def test_unknown_reference_is_not_silently_accepted(swift_tree):
-    with pytest.raises(RuntimeError, match="no audited"):
-        provenance.verify_swift(swift_tree, "other")
-
-
-@pytest.mark.parametrize("commit,dirty,error", [("other", "", "commit mismatch"),
-                                               ("pinned", "M swift/template.py", "dirty")])
-def test_git_guards_retained(swift_tree, monkeypatch, commit, dirty, error):
-    def output(root, *args):
-        if args == ("rev-parse", "--show-toplevel"):
-            return str(root)
-        if args == ("rev-parse", "HEAD"):
-            return commit
-        return dirty
-    monkeypatch.setattr(provenance, "git_output", output)
-    with pytest.raises(RuntimeError, match=error):
-        provenance.verify_swift(swift_tree, "pinned")
-
-
-def test_git_and_hash_both_verified(swift_tree, monkeypatch):
-    def output(root, *args):
-        return str(root) if args[-1] == "--show-toplevel" else "pinned" if args[-1] == "HEAD" else ""
-    monkeypatch.setattr(provenance, "git_output", output)
-    assert provenance.verify_swift(swift_tree, "pinned")["verification"] == "git_and_source_sha256"
-
-
-def test_v2_does_not_finalize_legacy_splits_without_repartition():
-    legacy = provenance.profile()["legacy_prepare"]
-    assert provenance.preparation_fingerprint(provenance.MODULE_DIR) != legacy["preparation_sha256"]
-    with pytest.raises(RuntimeError, match="implementation changed"):
-        provenance.verify_prepared_implementation(legacy["implementation_sha256"], "new")
-
-
-def test_unknown_legacy_implementation_rejected():
-    with pytest.raises(RuntimeError, match="implementation changed"):
-        provenance.verify_prepared_implementation("unknown", "new")
-
-
-@pytest.mark.parametrize("filename", ["sources.py", "pipeline.py", "new_module.py"])
-def test_legacy_exception_does_not_hide_preparation_changes(tmp_path, filename):
-    root = tmp_path / "module"
-    shutil.copytree(provenance.MODULE_DIR, root)
-    path = root / filename
-    # A new top-level statement changes the preparation contract even outside a function.
-    with path.open("a") as handle:
-        handle.write("\nUNREVIEWED_CHANGE = True\n")
-    with pytest.raises(RuntimeError, match="implementation changed"):
-        provenance.verify_prepared_implementation(provenance.profile()["legacy_prepare"]["implementation_sha256"], "new", root)
+if __name__ == "__main__":
+    unittest.main()

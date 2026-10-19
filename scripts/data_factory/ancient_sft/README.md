@@ -20,7 +20,7 @@ python -m pip install -r scripts/data_factory/ancient_sft/requirements.txt
 
 Python 的 SQLite 需支持 FTS5 trigram（用于原文子串检索，检索后仍验证完整包含）；不需要额外模型服务。
 
-`finalize` 必须在已安装用户 ms-swift fork 的环境执行；当前锁定提交 `1516d78d627381c2072be80037a7a64c3811480d`。支持完整 Git checkout 或不带 `.git` 的源码副本：两者均校验 `swift/` 下全部 540 个 Python 文件的路径与内容聚合 SHA256，基准记录在 `provenance_profile.json`，不依赖网络。完整 checkout 还需 commit 一致且 `swift/` 无未提交变动；其他目录的训练脚本变动不影响检查。无 Git 时记录实际 commit 为 null、校验依据为源码指纹和参考 commit，不伪造已读取的 Git 版本。不下载模型权重，仅加载 tokenizer/processor。
+`finalize` 使用当前环境已安装的 ms-swift，仅记录软件及依赖版本，不校验 Git commit、工作区或源码指纹。旧 manifest 中的 swift_commit 已废弃，不参与数据配置比较。不会因为普通安装或升级依赖阻断流程；接口不兼容或实际编码异常仍会正常报错。不下载模型权重，仅加载 tokenizer/processor。
 
 编码契约：现有 Char tokenizer、`template=qwen3`、`enable_thinking=false`、`template_backend=swift`、`loss_scale=default`、`use_chat_template=true`、最大长度 2048。**不是**无空 think 前缀的 `qwen3_nothinking` 模板，也不是 CPT 的 `loss_scale=all`。按官方模板生成完整 `input_ids/labels` 后统计，assistant loss 含模板实际参与 loss 的结束符等 token。超长完整样本剔除，不切断问答。
 
@@ -48,7 +48,7 @@ python -m scripts.data_factory.ancient_sft.run prepare \
 
 目录迁移不改变数据版本。当前统一布局是 `raw/` 原始数据、`benchmark/` 测试数据、`train/prepared/` 候选和 `train/final/` 最终数据。本地可以只保留部分文件，服务器 prepared 无须为目录调整而重建。
 
-已完成 v2 prepare 的数据仅迁移目录后，可继续执行新入口的 finalize：程序识别已知旧实现和固定旧→新路径映射，仍核验完整配置语义、输入文件 SHA256/大小和数据库哈希，不修改旧 manifest 或历史 metadata ID。新 final manifest 额外记录 effective_config/effective_inventory。已有 final 不会被覆盖。
+已完成 v2 prepare 的数据可以继续 finalize：核验 v2 篇章划分标记、数据配置语义、输入文件 SHA256/大小和数据库哈希；识别固定旧→新路径映射，不修改旧 manifest 或历史 metadata ID。不再以整个 Python 模块的实现指纹判断是否必须重跑 prepare。新 final manifest 额外记录 effective_config/effective_inventory。已有 final 不会被覆盖。
 
 v1→v2 的分组变化仍需 repartition；如需重建划分，必须指定不同的空输出目录，不能读写同一个 prepared：
 
@@ -93,7 +93,7 @@ Dev 独立目标为 c2m/m2c/punctuate 各 600 条，合计 1,800；每任务至�
 - `dev_by_task/{c2m,m2c,punctuate}.jsonl`：用于分任务评估。训练端可计算预先约定的 `(loss_c2m + loss_m2c + loss_punctuate) / 3`，不要仅按合并 eval_loss 选择 checkpoint；数据管线不自动修改 Trainer 的评估逻辑。
 - `train.metadata.jsonl`、`dev.metadata.jsonl`：按行一一对应，包含稳定 ID、row_number、messages 哈希、来源/分组、审核、实际长度和 assistant loss token 数。
 - `report.json`：合格候选数、实际数量/缺额、来源/作品/时代/简繁启发式分布、分组数量、token 长度均值/P95/P99及 loss token 比例。
-- `manifest.json`：完整配置、所有原始文件 SHA256、来源版本/许可证（配置 provenance 提供，未提供明确标 unknown）、ms-swift commit、依赖版本和输出哈希。
+- `manifest.json`：完整配置、所有原始文件 SHA256、来源版本/许可证（配置 provenance 提供，未提供明确标 unknown）、当前 ms-swift/依赖版本和输出哈希。
 
 `execution_passed` 只代表流程完成，`quotas_passed/core_quotas_passed` 分别记录完整/核心配额。`ready_for_training` 还要求核心 Train 配额、三项 Dev 的数量/作品/独立组/集中度验收，以及标点 token 占比均通过；`dev_checks`、`dev_coverage_passed`、`punctuation_budget` 给出明细。没有满足条件的输出不能作为正式验收通过的数据集，程序退出成功也不等于验收成功。
 
@@ -107,9 +107,9 @@ Dev 独立目标为 c2m/m2c/punctuate 各 600 条，合计 1,800；每任务至�
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q tests/test_ancient_sft.py
 ```
 
-普通测试以临时文件与可控编码器验证数据逻辑，不冒充真实 ms-swift 编码验收；真实 finalize 使用框架自身模板，且严格校验版本。
+普通测试以临时文件与可控编码器验证数据逻辑，不冒充真实 ms-swift 编码验收；真实 finalize 使用当前框架自身模板，检查实际 labels 和长度，不做软件指纹准入。
 
-在已安装锁定 ms-swift 的环境中，启用实际 Char tokenizer / 模板及临时全链路集成测试：
+在已安装 ms-swift 的环境中，启用实际 Char tokenizer / 模板及临时全链路集成测试：
 
 ```bash
 ANCIENT_SWIFT_INTEGRATION=1 PYTHONDONTWRITEBYTECODE=1 \

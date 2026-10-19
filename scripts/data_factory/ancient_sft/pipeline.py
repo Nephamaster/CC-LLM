@@ -177,7 +177,6 @@ def distribution(values):
 
 
 def finalize(config, encoder=None):
-    from .provenance import verify_prepared_implementation
     from .relocation import canonical_config, canonical_inventory
 
     root = resolve(config["output_dir"])
@@ -185,9 +184,10 @@ def finalize(config, encoder=None):
     manifest = json.loads((prepared / "manifest.json").read_text(encoding="utf-8"))
     if manifest["diagnostic"] or manifest["inventory"]["missing"]:
         raise RuntimeError("diagnostic/incomplete preparation cannot produce training data")
+    if manifest.get("partition", {}).get("strategy") != "chapter_stratified_holdout_v2":
+        raise RuntimeError("finalize requires v2 chapter partitions; run repartition first")
     if canonical_config(manifest["config"]) != canonical_config(config):
-        raise RuntimeError("configuration or implementation changed; prepare in a new output directory")
-    implementation_check = verify_prepared_implementation(manifest["implementation_sha256"], implementation_hash())
+        raise RuntimeError("data configuration changed; prepare or repartition with the current settings")
     inventory = input_inventory(config)
     if canonical_inventory(manifest["inventory"]) != canonical_inventory(inventory):
         raise RuntimeError("input files changed since preparation")
@@ -234,7 +234,8 @@ def finalize(config, encoder=None):
             "train_dev_group_overlap": 0, "train_dev_ancient_overlap": 0, "evahan_included": False,
             "encoding": encoder.info, "statistics": dict(stats), "output_sha256": hashes,
             "prepared_manifest_sha256": file_hash(prepared / "manifest.json"),
-            "prepared_implementation_check": implementation_check,
+            "prepared_implementation_check": "not_enforced",
+            "prepared_strategy": manifest["partition"]["strategy"],
             "finalization_implementation_sha256": implementation_hash(),
             "cpt_contamination_audited": False,
         }
