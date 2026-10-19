@@ -1,8 +1,10 @@
 # 古汉语 SFT 构建实现与验收边界
 
+操作路径已按 2026-10-19 的统一布局更新：源码在 scripts/data_factory/ancient_sft，原始数据在 ancient/raw，训练产物在 ancient/train；下文历史验证结果不变。
+
 ## 2026-10-18 决策
 
-- 以 `agent/blueprint/data_build/ancient_sft.md` 为准，旧 Dashboard 的来源 60/25/15 比例已撤销。独立入口 `scripts/ancient_sft`，不修改 CPT V1/V2 行为。
+- 以 `agent/blueprint/data_build/ancient_sft.md` 为准，旧 Dashboard 的来源 60/25/15 比例已撤销。独立入口 `scripts/data_factory/ancient_sft`，不修改 CPT V1/V2 行为。
 - 用户确认输入在 `data/downstream/ancient`，不含 EvaHan；标点 24K 全部使用 Gujilab。Train 上限 80K，核心 72K；可选字书/出处未通过审核不导出。
 - 服务器使用 Nephamaster/ms-swift；本地 `/home/nepham/Lab/ms-swift` 与 GitHub HEAD 均为 `1516d78d627381c2072be80037a7a64c3811480d`。该仓库已有用户训练脚本未跟踪文件，未修改。
 - 编码契约是现有 Char tokenizer + `qwen3/enable_thinking=false/loss_scale=default`，不是 `qwen3_nothinking`，也不是 CPT 全文 loss。直接调用实际框架的 train-mode encode，按 causal shift 后非 -100 labels 计数。模型权重不加载，最大 2048，超长拒绝而非拆分问答。
@@ -26,7 +28,7 @@
 
 ## 当前阻塞与后续
 
-初次实现时缺少 HistoryTrans 官方 validation/test，正式 prepare 因此拒绝运行。现用户已补齐三个分区，统一放在 `data/downstream/ancient/HistoryTrans/HistoryTrans-{train,validation,test}.jsonl`；配置和说明已同步，无须修改 JSONL 读取逻辑。
+初次实现时缺少 HistoryTrans 官方 validation/test，正式 prepare 因此拒绝运行。现用户已补齐三个分区，统一放在 `data/downstream/ancient/raw/HistoryTrans/HistoryTrans-{train,validation,test}.jsonl`；配置和说明已同步，无须修改 JSONL 读取逻辑。
 
 已完整读取并检查 inputs/truth 字段：train 749,988 条，validation/test 各 7,653 条。预检 `ready=true`、无缺失输入；两个保留分区均成功加入排除索引。嵌套目录测试及实际 ms-swift 集成回归共 27 项通过。此验证不代表已完成全量 prepare/finalize。
 
@@ -39,5 +41,5 @@
 - 服务器的 ms-swift 目录没有可识别的 `.git`，旧 SwiftEncoder 在 `git rev-parse HEAD` 阶段失败，尚未创建 final。不是数据损坏，不应通过 git init、修改 manifest 或重跑全量 prepare 解决。
 - 新增 `provenance.py` 和 `provenance_profile.json`，从锁定 commit 的 Git 对象归档计算全部 540 个 `swift/**/*.py` 路径/内容聚合指纹。有 Git 时仍检查 commit、工作区和源码；无 Git 时直接校验源码，记录实际 Git commit=null、参考 commit 和验证方式。若目录只是位于另一个 Git 仓库之内，不误用父仓库的 commit。
 - 旧 prepare 实现指纹 `a26014c8a6984f426ff9457f69527e9d5979238043126d460bda405f620b5c91` 支持本次有界兼容：核对原始准备模块及 pipeline 准备代码片段未变；仍检查配置、输入、数据库，不改写旧 manifest。未知版本、额外代码模块或准备逻辑变化继续拒绝。
-- 服务器需同步整个 `scripts/ancient_sft/`（含新增 Python/JSON 文件），保持原配置和产物，然后直接重试 finalize，无需 overwrite。源码指纹不符时明确报错，不默默降级为“版本已验证”。
+- 服务器需同步整个 `scripts/data_factory/ancient_sft/`（含新增 Python/JSON 文件），保持原配置和产物，然后直接重试 finalize，无需 overwrite。源码指纹不符时明确报错，不默默降级为“版本已验证”。
 - 验证：46 项测试通过；从锁定 commit 导出无 `.git` 的真实 Swift 副本，在隔离 CPU 环境完成新/旧 prepare 两种临时数据的实际编码及 finalize；覆盖源码修改/缺失/增加、Git 不可用、父仓库误识别、旧产物输入/数据库篡改拒绝等。仅有 PyTorch 弃用警告，未在服务器运行全量 finalize 或训练。

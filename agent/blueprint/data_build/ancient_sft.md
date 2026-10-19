@@ -49,7 +49,7 @@ HistoryTrans 的作用是补充，不是必须采满 13K。 如果跨来源去�
 
 ## 三、数据处理：按这个顺序实施
 
-在 CC-LLM 下建立独立数据版本 `ancient_sft_v2`，保留 v1 产物。处理过程为：
+在 CC-LLM 下使用数据版本标签 `ancient_sft_v2`；统一以 `data/downstream/ancient/raw` 存放原始数据，`benchmark` 存放评测数据，`train/prepared` 和 `train/final` 存放候选及最终产物。不自动覆盖既有版本。处理过程为：
 
 原始数据下载与版本固定
 
@@ -73,7 +73,7 @@ HF revision、Git commit、文件 SHA256、许可证记录
 
 ### 1. 原始数据下载与解析
 
-Gujilab 和 HistoryTrans 的已经放在远程目录中（data/downstream）
+Gujilab 和 HistoryTrans 分别位于 `data/downstream/ancient/raw/chinese-classical-corpus` 与 `data/downstream/ancient/raw/HistoryTrans`，本地和服务器保持相同相对布局。
 
 HistoryTrans 只使用官方 `train` 分区，取 `inputs` 作为古文，`truth` 作为译文。`results` 和 `BLEU` 是数据中存在的额外字段，不应将 `results` 误当成标准译文，也不能把其中 BLEU 直接视作人工质量标注。
 
@@ -144,8 +144,8 @@ Dev 每项核心任务 600 条，每项至少 5 部书、10 个独立组，单�
 
 ## 四、实现约定
 
-- 实现入口为 `python -m scripts.ancient_sft.run inspect|prepare|repartition|finalize`，配置与操作说明见 `scripts/ancient_sft/`。
-- 本轮输入根目录明确为 `data/downstream/ancient`；不含 EvaHan，5K 标点初始配额由 Gujilab 提供。
+- 实现入口为 `python -m scripts.data_factory.ancient_sft.run inspect|prepare|repartition|finalize`，配置与操作说明见 `scripts/data_factory/ancient_sft/`。
+- 原始输入根目录为 `data/downstream/ancient/raw`，默认输出根目录为 `data/downstream/ancient/train`，Benchmark 路径不变；不含 EvaHan，5K 标点初始配额由 Gujilab 提供。
 - 使用现有 Char tokenizer，ms-swift 的 `qwen3 + enable_thinking=false`，长度 2048；直接调用实际框架 labels 统计 assistant loss token，不用裸答案长度代替。
 - Train 核心 53K，可选知识任务另计；Dev 按任务独立留出 1,800 条。知识/出处样本及疑似污染记录未审核不入选。HistoryTrans 官方 validation/test 必须提供作为跨来源排除集。
 - 篇章优先，整书回退，不随机拆句、不跨书传递合并。已校验的 v1 eligible 候选可通过 repartition 复用；不改写旧产物，不恢复隔离或此前已删数据。

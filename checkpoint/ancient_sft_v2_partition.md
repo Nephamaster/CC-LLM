@@ -4,7 +4,7 @@
 
 v1 全量 report 显示核心 Train 72K 达标，但 Dev 只有 197 条，全部来自《笑林广记》，没有标点。完整 metadata 哈希验证后确认：74 部作品通过跨书重复的传递连接被并成一个组，包含 Train 68,718 条（95.4%）。对少数超大组执行 2% 哈希划分无法保证任务覆盖，Dev 再受单书上限压缩。标点 24K 占样本 33.3%，却占 assistant loss token 71.9%。
 
-用户批准改为篇章优先、分任务 Dev、标点 token 预算。默认新版本 `ancient_sft_v2`，不覆盖 v1。
+用户批准改为篇章优先、分任务 Dev、标点 token 预算。版本标签为 `ancient_sft_v2`，不覆盖 v1。本文操作路径已按 2026-10-19 的统一布局更新；历史验证数字不变。
 
 ## 实现边界
 
@@ -26,10 +26,12 @@ v1 全量 report 显示核心 Train 72K 达标，但 Dev 只有 197 条，全部
 ## 服务器执行
 
 ```bash
-python -m pip install -r scripts/ancient_sft/requirements.txt
-python -m scripts.ancient_sft.run repartition \
-  --from-prepared data/downstream/ancient_sft_v1/prepared
-python -m scripts.ancient_sft.run finalize
+python -m pip install -r scripts/data_factory/ancient_sft/requirements.txt
+python -m scripts.data_factory.ancient_sft.run repartition \
+  --from-prepared data/downstream/ancient/train/prepared \
+  --output-dir data/downstream/ancient/train/rebuild
+python -m scripts.data_factory.ancient_sft.run finalize \
+  --output-dir data/downstream/ancient/train/rebuild
 ```
 
-默认输出 `data/downstream/ancient_sft_v2`。若没有完整旧 prepared 或输入/过滤规则已变，使用新目录执行 prepare → finalize。已有部分新阶段输出时换新 output-dir，不自动覆盖。
+默认输出 `data/downstream/ancient/train`。上面的重划分示例使用独立 rebuild 子目录，不能读写同一个 prepared。若没有完整旧 prepared 或输入/过滤规则已变，使用新目录执行 prepare → finalize。已有部分新阶段输出时换新 output-dir，不自动覆盖。

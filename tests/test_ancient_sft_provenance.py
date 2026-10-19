@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 
-from scripts.ancient_sft import provenance
+from scripts.data_factory.ancient_sft import provenance
 
 
 @pytest.fixture

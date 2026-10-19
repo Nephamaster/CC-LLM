@@ -2,17 +2,17 @@ version: ancient_sft_v2
 seed: 42
 max_length: 2048
 tokenizer_path: models/Qwen3-1.7B-Base-Char
-output_dir: data/downstream/ancient_sft_v2
+output_dir: data/downstream/ancient/train
 swift_commit: 1516d78d627381c2072be80037a7a64c3811480d
 template: qwen3
 enable_thinking: false
 sources:
-  corpus: data/downstream/ancient/chinese-classical-corpus/corpus.jsonl
-  translate: data/downstream/ancient/chinese-classical-corpus/translate.jsonl
-  punctuate: data/downstream/ancient/chinese-classical-corpus/punctuate.jsonl
-  history_train: data/downstream/ancient/HistoryTrans/HistoryTrans-train.jsonl
-  history_validation: data/downstream/ancient/HistoryTrans/HistoryTrans-validation.jsonl
-  history_test: data/downstream/ancient/HistoryTrans/HistoryTrans-test.jsonl
+  corpus: data/downstream/ancient/raw/chinese-classical-corpus/corpus.jsonl
+  translate: data/downstream/ancient/raw/chinese-classical-corpus/translate.jsonl
+  punctuate: data/downstream/ancient/raw/chinese-classical-corpus/punctuate.jsonl
+  history_train: data/downstream/ancient/raw/HistoryTrans/HistoryTrans-train.jsonl
+  history_validation: data/downstream/ancient/raw/HistoryTrans/HistoryTrans-validation.jsonl
+  history_test: data/downstream/ancient/raw/HistoryTrans/HistoryTrans-test.jsonl
 benchmarks:
   c3: data/downstream/ancient/benchmark/c3bench/C3_bench.json
   fuxi: data/downstream/ancient/benchmark/FuxiBench/test_data/*.json

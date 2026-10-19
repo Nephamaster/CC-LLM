@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.ancient_sft.common import Groups, Normalizer, clean, load_config, write_json
-from scripts.ancient_sft.overlap import BenchmarkIndex, CorpusLocator, NearIndex
-from scripts.ancient_sft.pipeline import finalize, input_inventory, prepare
-from scripts.ancient_sft.sources import candidate, iter_candidates
+from scripts.data_factory.ancient_sft.common import Groups, Normalizer, clean, load_config, write_json
+from scripts.data_factory.ancient_sft.overlap import BenchmarkIndex, CorpusLocator, NearIndex
+from scripts.data_factory.ancient_sft.pipeline import finalize, input_inventory, prepare
+from scripts.data_factory.ancient_sft.sources import candidate, iter_candidates
 
 
 def jsonl(path, rows):
@@ -21,7 +21,7 @@ def jsonl(path, rows):
 
 @pytest.fixture
 def config(tmp_path):
-    value = load_config("scripts/ancient_sft/config.yaml")
+    value = load_config("scripts/data_factory/ancient_sft/config.yaml")
     value.update(output_dir=str(tmp_path / "output"), max_book_fraction=1.0,
                  history_target=2, quotas={"c2m": 8, "m2c": 3, "punctuate": 3, "dictionary": 1, "provenance": 1})
     value.update(dev_quotas={"c2m": 2, "m2c": 2, "punctuate": 2, "dictionary": 0, "provenance": 0},
@@ -250,9 +250,9 @@ def test_inputs_and_config_cannot_change_between_stages(config):
 
 
 def test_verified_legacy_candidates_can_repartition_without_rewriting_them(config):
-    from scripts.ancient_sft.common import file_hash
-    from scripts.ancient_sft.provenance import profile
-    from scripts.ancient_sft.repartition import repartition
+    from scripts.data_factory.ancient_sft.common import file_hash
+    from scripts.data_factory.ancient_sft.provenance import profile
+    from scripts.data_factory.ancient_sft.repartition import repartition
 
     jsonl(Path(config["sources"]["translate"]), [translation(i) for i in range(40)])
     manifest = prepare(config)
@@ -269,8 +269,8 @@ def test_verified_legacy_candidates_can_repartition_without_rewriting_them(confi
 
 @pytest.mark.parametrize("changed", ["input", "database"])
 def test_legacy_prepare_keeps_data_integrity_guards(config, changed):
-    from scripts.ancient_sft.provenance import profile
-    from scripts.ancient_sft.repartition import repartition
+    from scripts.data_factory.ancient_sft.provenance import profile
+    from scripts.data_factory.ancient_sft.repartition import repartition
 
     manifest = prepare(config)
     root = Path(config["output_dir"]) / "prepared"
@@ -374,8 +374,8 @@ def test_short_punctuation_samples_can_top_up_to_token_floor(config):
 
 
 def test_one_book_dev_does_not_pass_readiness(config):
-    from scripts.ancient_sft.selection import acceptance
-    from scripts.ancient_sft.common import TASKS
+    from scripts.data_factory.ancient_sft.selection import acceptance
+    from scripts.data_factory.ancient_sft.common import TASKS
     selected = {split: {t: [] for t in TASKS} for split in ("train", "dev")}
     for task in TASKS[:3]:
         row = {"book_key": "笑林广记", "document_group": "one", "assistant_loss_tokens": 10}
@@ -386,7 +386,7 @@ def test_one_book_dev_does_not_pass_readiness(config):
 
 
 def test_cross_book_quote_does_not_merge_whole_books(config):
-    from scripts.ancient_sft.partition import ChapterResolver, BoundaryIndex
+    from scripts.data_factory.ancient_sft.partition import ChapterResolver, BoundaryIndex
     norm = Normalizer()
     shared = "".join(chr(0x6500 + i) for i in range(32))
     first, second = "".join(chr(0x6800 + i) for i in range(35)), "".join(chr(0x6900 + i) for i in range(35))
@@ -433,7 +433,7 @@ def test_partition_is_deterministic_for_identical_seed_and_inputs(config):
 
 
 def test_partial_and_inverse_containment_removed_at_boundary():
-    from scripts.ancient_sft.partition import BoundaryIndex
+    from scripts.data_factory.ancient_sft.partition import BoundaryIndex
     norm = Normalizer()
     text = "".join(chr(0x5500 + i) for i in range(100))
     def record(ancient, group):
@@ -447,7 +447,7 @@ def test_partial_and_inverse_containment_removed_at_boundary():
 
 
 def test_repartition_rejects_changed_filter_or_benchmark(config):
-    from scripts.ancient_sft.repartition import repartition
+    from scripts.data_factory.ancient_sft.repartition import repartition
     prepare(config)
     parent = Path(config["output_dir"]) / "prepared"
     config["output_dir"] += "_next"
@@ -458,7 +458,7 @@ def test_repartition_rejects_changed_filter_or_benchmark(config):
 
 @pytest.mark.skipif(os.getenv("ANCIENT_SWIFT_INTEGRATION") != "1", reason="requires pinned ms-swift environment")
 def test_real_swift_encoding_and_finalize(config):
-    from scripts.ancient_sft.encoding import SwiftEncoder
+    from scripts.data_factory.ancient_sft.encoding import SwiftEncoder
 
     config["tokenizer_path"] = "models/Qwen3-1.7B-Base-Char"
     encoder = SwiftEncoder(config)

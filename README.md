@@ -8,6 +8,8 @@
 
 ```text
 scripts/
+  data_factory/
+    ancient_sft/                 # 古汉语 SFT 数据构建与验收
   train/
     ms_swift/
       env/                       # 该训练后端的环境，不提交
@@ -61,6 +63,7 @@ PGCA 已包含字符级 tokenizer 与完整音形分支，不再使用 `B-Char-P
 ## 入口
 
 - 模型构建：`scripts/build_vocab.sh`、`scripts/build_embedding.sh`、`scripts/build_pgca.sh`。完整 PGCA 构建入口启用上下文编码器、辅助头和零输出初始化；手工调用低层构建 CLI 时仍需显式指定相应开关。
+- 古汉语 SFT 数据：[scripts/data_factory/ancient_sft/README.md](scripts/data_factory/ancient_sft/README.md)。原始数据、评测数据和训练产物分别位于 `data/downstream/ancient/{raw,benchmark,train}`；入口为 `python -m scripts.data_factory.ancient_sft.run`。
 - 训练：[scripts/train/ms_swift/cpt/README.md](scripts/train/ms_swift/cpt/README.md)。当前入口实现完整 PGCA 方案的 Phase1/Phase2；命名规范并不代表 Base/Char 对照组和全部下游训练脚本已经齐备。
 - 下游评估：[scripts/evaluation/README.md](scripts/evaluation/README.md)。`MODEL` 是真实 checkpoint 路径，`MODEL_NAME` 是用于结果目录的完整模型名；LoRA 评估填 adapter 对应的模型名，而非基座名。
 - 通用 benchmark：[scripts/evaluation/lmeh/README.md](scripts/evaluation/lmeh/README.md)。六类任务已提供 HF 入口，MMLU/CMMLU/GSM8K 5-shot，其余 0-shot；默认使用 lmeh/env。

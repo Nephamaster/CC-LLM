@@ -7,8 +7,6 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from scripts.evaluation.cgec.prepare import PROMPT
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -50,7 +48,7 @@ def benchmark_sources(root):
 
 
 def messages(source, target):
-    return {"messages": [{"role": "user", "content": PROMPT + source},
+    return {"messages": [{"role": "user", "content": source},
                          {"role": "assistant", "content": target}]}
 
 
@@ -95,7 +93,7 @@ def prepare(root):
               "reference_policy": "first nonempty target; first occurrence of each source",
               "source_matching": "exact text after stripping outer whitespace; no other normalization",
               "training_source_order": ["train_CGED.txt", "train_FCGEC.txt"],
-              "prompt": PROMPT}
+              "prompt": "", "input_format": "source_only_messages"}
     output.mkdir(parents=True, exist_ok=True)
     for path, pairs in zip(paths[:2], (train, validation)):
         with path.open("x", encoding="utf-8") as handle:

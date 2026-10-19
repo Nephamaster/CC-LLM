@@ -8,6 +8,7 @@ import sqlite3
 from .common import digest, file_hash, input_inventory, resolve, write_json
 from .partition import partition_candidates
 from .provenance import MODULE_DIR, profile
+from .relocation import canonical_config, canonical_inventory
 
 
 def filter_fingerprint():
@@ -43,11 +44,12 @@ def repartition(config, from_prepared):
     selectable = {"version", "output_dir", "seed", "quotas", "history_target", "max_book_fraction",
                   "dev_fraction", "dev_quotas", "dev_min_books", "dev_min_groups", "dev_max_book_fraction",
                   "dev_pool_factor", "punctuation_loss_fraction", "punctuation_max_samples"}
-    for key in set(manifest["config"]) | set(config):
-        if key not in selectable and manifest["config"].get(key) != config.get(key):
+    old_config, current_config = canonical_config(manifest["config"]), canonical_config(config)
+    for key in set(old_config) | set(current_config):
+        if key not in selectable and old_config.get(key) != current_config.get(key):
             raise RuntimeError(f"non-selection configuration changed: {key}")
     inventory = input_inventory(config)
-    if inventory != manifest["inventory"]:
+    if canonical_inventory(inventory) != canonical_inventory(manifest["inventory"]):
         raise RuntimeError("inputs or exclusion sets changed; run a fresh prepare")
     if manifest["build_dependencies"]["opencc-python-reimplemented"] != importlib.metadata.version("opencc-python-reimplemented"):
         raise RuntimeError("OpenCC normalization version changed; run a fresh prepare")
@@ -71,6 +73,7 @@ def repartition(config, from_prepared):
         db.commit()
         partition = partition_candidates(db, config, destination)
         result = {**manifest, "stage": "prepare", "config": config,
+                  "inventory": inventory,
                   "config_sha256": digest(json.dumps(config, sort_keys=True)),
                   "implementation_sha256": implementation_hash(), "partition": partition,
                   "grouping": "chapter-stratified Dev; cross-boundary samples excluded",

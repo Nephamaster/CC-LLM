@@ -8,7 +8,7 @@ import json
 import unicodedata
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 TASKS = ("c2m", "m2c", "punctuate", "dictionary", "provenance")
 PUNCTUATION = frozenset('，。！？；：、,.!?;:「」『』“”‘’（）()《》〈〉【】〔〕[]—…·‧')
 

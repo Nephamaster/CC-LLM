@@ -73,6 +73,10 @@ def preparation_fingerprint(root: Path) -> str:
 def verify_prepared_implementation(recorded: str, current: str, root: Path = MODULE_DIR) -> str:
     if recorded == current:
         return "exact"
+    from .relocation import is_verified_relocation
+
+    if is_verified_relocation(recorded, root, profile()["relocation"]):
+        return "verified_directory_relocation"
     legacy = profile()["legacy_prepare"]
     allowed_files = {"__init__.py", "common.py", "encoding.py", "overlap.py", "pipeline.py",
                      "run.py", "sources.py", "provenance.py"}

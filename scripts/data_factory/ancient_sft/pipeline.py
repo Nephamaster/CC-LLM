@@ -178,16 +178,18 @@ def distribution(values):
 
 def finalize(config, encoder=None):
     from .provenance import verify_prepared_implementation
+    from .relocation import canonical_config, canonical_inventory
 
     root = resolve(config["output_dir"])
     prepared = root / "prepared"
     manifest = json.loads((prepared / "manifest.json").read_text(encoding="utf-8"))
     if manifest["diagnostic"] or manifest["inventory"]["missing"]:
         raise RuntimeError("diagnostic/incomplete preparation cannot produce training data")
-    if manifest["config"] != config:
+    if canonical_config(manifest["config"]) != canonical_config(config):
         raise RuntimeError("configuration or implementation changed; prepare in a new output directory")
     implementation_check = verify_prepared_implementation(manifest["implementation_sha256"], implementation_hash())
-    if manifest["inventory"] != input_inventory(config):
+    inventory = input_inventory(config)
+    if canonical_inventory(manifest["inventory"]) != canonical_inventory(inventory):
         raise RuntimeError("input files changed since preparation")
     if file_hash(prepared / "candidates.sqlite") != manifest["database_sha256"]:
         raise RuntimeError("prepared database changed")
@@ -242,7 +244,8 @@ def finalize(config, encoder=None):
                 if key.startswith(split + "/"):
                     value["assistant_loss_fraction"] = value["assistant_loss_tokens"] / total if total else 0
         write_json(final / "report.json", report)
-        write_json(final / "manifest.json", {"preparation": manifest, "finalization": report})
+        write_json(final / "manifest.json", {"preparation": manifest, "finalization": report,
+                                            "effective_config": config, "effective_inventory": inventory})
         return report
     finally:
         db.close()

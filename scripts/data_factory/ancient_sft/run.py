@@ -1,4 +1,4 @@
-"""python -m scripts.ancient_sft.run inspect|prepare|repartition|finalize"""
+"""python -m scripts.data_factory.ancient_sft.run inspect|prepare|repartition|finalize"""
 
 import argparse
 import json
@@ -11,7 +11,7 @@ from .repartition import repartition
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", choices=("inspect", "prepare", "repartition", "finalize"))
-    parser.add_argument("--config", default="scripts/ancient_sft/config.yaml")
+    parser.add_argument("--config", default="scripts/data_factory/ancient_sft/config.yaml")
     parser.add_argument("--output-dir", help="use a new output directory; existing stages are never overwritten")
     parser.add_argument("--limit", type=int, help="per-source diagnostic row limit; cannot finalize")
     parser.add_argument("--diagnostic", action="store_true", help="allow missing HistoryTrans holdouts for diagnosis only")

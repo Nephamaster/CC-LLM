@@ -1,13 +1,13 @@
 # 古汉语 SFT 数据构建
 
-实现依据：[ancient_sft.md](../../agent/blueprint/data_build/ancient_sft.md)。与 CPT Data Factory 隔离，不修改 V1，不生成教师模型答案，不启动训练。
+实现依据：[ancient_sft.md](../../../agent/blueprint/data_build/ancient_sft.md)。与 CPT Data Factory 隔离，不修改 V1，不生成教师模型答案，不启动训练。
 
 ## 输入与依赖
 
 从项目根目录执行。默认输入根为 `data/downstream/ancient`，本地/服务器保持相同相对路径。配置见 `config.yaml`。
 
-- Gujilab：`chinese-classical-corpus/{corpus,translate,punctuate}.jsonl`。
-- HistoryTrans：`HistoryTrans/HistoryTrans-{train,validation,test}.jsonl`。仅 train 入候选；validation/test 作为所有来源的排除集，不混作本实验 Dev。
+- Gujilab：`raw/chinese-classical-corpus/{corpus,translate,punctuate}.jsonl`。
+- HistoryTrans：`raw/HistoryTrans/HistoryTrans-{train,validation,test}.jsonl`。仅 train 入候选；validation/test 作为所有来源的排除集，不混作本实验 Dev。
 - C³Bench：`benchmark/c3bench/C3_bench.json`，读取 **classical_Chinese/modern_Chinese**，不是通用 question/answer 字段。
 - Fùxì：`benchmark/FuxiBench/test_data/*.json`，并排除 `dev_fewshot.json` 的示例。
 - 不含 EvaHan。标点初始目标 5,000 条全部来自 Gujilab，并控制实际监督 token 占比，报告明确标识专家数据未纳入。
@@ -15,7 +15,7 @@
 安装轻量构建依赖：
 
 ```bash
-python -m pip install -r scripts/ancient_sft/requirements.txt
+python -m pip install -r scripts/data_factory/ancient_sft/requirements.txt
 ```
 
 Python 的 SQLite 需支持 FTS5 trigram（用于原文子串检索，检索后仍验证完整包含）；不需要额外模型服务。
@@ -27,9 +27,9 @@ Python 的 SQLite 需支持 FTS5 trigram（用于原文子串检索，检索后�
 ## 执行
 
 ```bash
-python -m scripts.ancient_sft.run inspect
-python -m scripts.ancient_sft.run prepare
-python -m scripts.ancient_sft.run finalize
+python -m scripts.data_factory.ancient_sft.run inspect
+python -m scripts.data_factory.ancient_sft.run prepare
+python -m scripts.data_factory.ancient_sft.run finalize
 ```
 
 `inspect` 输出路径、哈希、首条记录 Schema 和缺失项。缺少 HistoryTrans 保留分区、任一 Benchmark 或 tokenizer 时，正式 `prepare` 拒绝运行。
@@ -37,24 +37,30 @@ python -m scripts.ancient_sft.run finalize
 仅验证少量真实数据可用：
 
 ```bash
-python -m scripts.ancient_sft.run prepare \
+python -m scripts.data_factory.ancient_sft.run prepare \
   --diagnostic --limit 300 \
-  --output-dir data/downstream/ancient_sft_smoke
+  --output-dir data/downstream/ancient/train/smoke
 ```
 
 `--limit` 是每个训练来源的原始记录窗口，不缩小 Benchmark 排除集。诊断模式只允许缺少 HistoryTrans 保留分区，**无法 finalize**；不要将诊断候选用于训练。
 
 输出阶段目录已有内容时直接拒绝，不自动删除、不复用部分任务。失败、修改配置/源文件/审核文件/实现后，换新 `--output-dir` 从 prepare 开始；同一轮 finalize 使用相同目录。不存在隐含 overwrite。
 
-v2 改变了分组和采样，旧 prepare 不能直接 finalize。已有 v1 的完整 prepared 目录时，可安全复用已准入候选，避免重复 Benchmark 去污染和 MinHash：
+目录迁移不改变数据版本。当前统一布局是 `raw/` 原始数据、`benchmark/` 测试数据、`train/prepared/` 候选和 `train/final/` 最终数据。本地可以只保留部分文件，服务器 prepared 无须为目录调整而重建。
+
+已完成 v2 prepare 的数据仅迁移目录后，可继续执行新入口的 finalize：程序识别已知旧实现和固定旧→新路径映射，仍核验完整配置语义、输入文件 SHA256/大小和数据库哈希，不修改旧 manifest 或历史 metadata ID。新 final manifest 额外记录 effective_config/effective_inventory。已有 final 不会被覆盖。
+
+v1→v2 的分组变化仍需 repartition；如需重建划分，必须指定不同的空输出目录，不能读写同一个 prepared：
 
 ```bash
-python -m scripts.ancient_sft.run repartition \
-  --from-prepared data/downstream/ancient_sft_v1/prepared
-python -m scripts.ancient_sft.run finalize
+python -m scripts.data_factory.ancient_sft.run repartition \
+  --from-prepared data/downstream/ancient/train/prepared \
+  --output-dir data/downstream/ancient/train/rebuild
+python -m scripts.data_factory.ancient_sft.run finalize \
+  --output-dir data/downstream/ancient/train/rebuild
 ```
 
-默认写入新目录 `data/downstream/ancient_sft_v2`，不覆盖 v1。必须同步整个模块和新版 config；只有 final metadata、没有 prepared/candidates.sqlite 时不能执行此复用，需要完整 prepare。复用前核验已知旧实现、过滤规则、OpenCC 版本、所有输入/排除集与数据库哈希；仅允许修改划分/采样配置。只读取旧 eligible 表，不从 raw candidates 或审核隔离区恢复记录。历史已删记录不恢复，旧 manifest 保持不变。
+默认输出为 `data/downstream/ancient/train`，上述重划分示例另外写入其 `rebuild/`，原始产物不覆盖、不自动替换。必须同步整个模块和新版 config；只有 final metadata、没有 prepared/candidates.sqlite 时不能执行此复用，需要完整 prepare。复用前核验已知旧实现、过滤规则、OpenCC 版本、所有输入/排除集与数据库哈希；除本次明确的路径迁移外，仅允许修改划分/采样配置。只读取旧 eligible 表，不从 raw candidates 或审核隔离区恢复记录。历史已删记录不恢复，旧 manifest 保持不变。
 
 ## 分组、去重与审核
 
@@ -81,7 +87,7 @@ Dev 独立目标为 c2m/m2c/punctuate 各 600 条，合计 1,800；每任务至�
 
 标点在其他任务选完后编码入选，累计 assistant loss token 不允许超过全部监督 token 的 40%，完整样本超过剩余预算就跳过，绝不截断答案。达到初始 5K 后若占比仍低于 30%，可继续补采至最多 6K（`punctuation_max_samples`）；仍不足则验收失败。最终占比须在 30%–40%，条数缺额也明确报告，不冒充达标。该范围是实验起点，不等同于真实梯度权重。
 
-最终目录 `data/downstream/ancient_sft_v2/final/`：
+默认最终目录 `data/downstream/ancient/train/final/`：
 
 - `train.jsonl`、`dev.jsonl`：仅标准 messages。
 - `dev_by_task/{c2m,m2c,punctuate}.jsonl`：用于分任务评估。训练端可计算预先约定的 `(loss_c2m + loss_m2c + loss_punctuate) / 3`，不要仅按合并 eval_loss 选择 checkpoint；数据管线不自动修改 Trainer 的评估逻辑。
