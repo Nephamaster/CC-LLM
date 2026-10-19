@@ -1,6 +1,6 @@
 # 下游评估
 
-入口位于 `scripts/evaluation/{csc,cgec,ancient}/run.sh`。通用 benchmark 统一归入 `scripts/evaluation/lmeh/`，PPL 归入 `scripts/evaluation/ppl/`；本轮只统一布局，不补齐它们尚缺的脚本。训练入口位于 `scripts/train/ms_swift/`。
+下游入口位于 `scripts/evaluation/{csc,cgec,ancient}/run.sh`。原始文本 PPL 已提供独立入口 [`scripts/evaluation/ppl/run.sh`](ppl/README.md)，默认读取 `data/ppl/`，不走 SFT 模板推理；通用 benchmark 归入 `scripts/evaluation/lmeh/`，其任务脚本尚待补齐。训练入口位于 `scripts/train/ms_swift/`。
 
 原始 `data/downstream/` 只读。prepare 只在 OUT 下生成评估输入，不重采样、不重新划分、不删除 rSIGHAN/ECSpell 或任何其他数据。
 

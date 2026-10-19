@@ -8,6 +8,12 @@
 - 原 `src/cllm/inference.py` SHA256：`e393c03abbcc381bfc6a0c8cb86f34eb31ae342c1c52deae218451ed4d66ad47`。
 - 迁移评分与清理函数、回归测试；改包路径和 Python 子进程解释器。原始裸 prompt 推理不迁移，改为训练时的 ms-swift 模板。评分公式保持原样。
 
+## PPL / CLLM
+
+来源同上，原 `src/cllm/ppl.py` SHA256：`9b9179727d09d7ef89482f754fb7c55958277b1685520425cadf50b268cc2adb`。
+
+沿用逐文档滑窗、无额外 BOS/EOS 的设计；修正字符分母和边界计数，改为直接从语言模型 logits 计算 NLL，增加全语料加权汇总、字节指标和身份记录。不是逐字迁移或旧报告数值完全等价实现。滑窗方法参考 [Transformers 官方 PPL 文档](https://huggingface.co/docs/transformers/perplexity)。
+
 ## ChERRANT
 
 来源：[HillZhang1999/MuCGEC](https://github.com/HillZhang1999/MuCGEC)，revision `39221934ee4ccf07801879136a75dd7e11319977`。
