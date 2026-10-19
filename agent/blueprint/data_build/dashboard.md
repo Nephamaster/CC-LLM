@@ -58,11 +58,15 @@ Phase2增强池内部来源配比：CCI3-HQ 20%、FineWeb-Edu-Chinese 20%、WanJ
 
 下游评估入口见 `scripts/evaluation/`：CSC 默认仅 CSCD-NS 与 LEMON，不删除本地其他数据；FCGEC valid 可本地评分，公开 test 无标签，仅导出预测；NaCGEC 使用字级 ChERRANT 与词级 THULAC/MaxMatch。古汉语使用 C³Bench 与 Fùxì，后者裁判未配置时保留待评分状态。
 
+CSC/CGEC 当前训练、验证与评估统一使用 source-only user 消息：只放待纠错原句，assistant 为正确句，保留训练聊天模板和 assistant-only 监督。两类任务分别微调专用模型，不将去任务提示词等同于去除 chat template。迁移入口为 `scripts/data_factory/strip_correction_prompts.py`，旧提示词版本的模型/缓存/评估产物不自动转换。
+
 通用 benchmark（MMLU、ARC、SQuAD v2、GSM8K、CMMLU、CLUE）归入 `scripts/evaluation/lmeh/`，Base/Char/语义对齐模型的 PPL 归入 `scripts/evaluation/ppl/`。PPL 直接使用运行前激活环境的 `python`，可复用已有训练环境；其他入口仍按各自环境说明普通安装框架，不再依赖外部框架仓库启动。训练产物为 `outputs/train/<模型名>/`，评估产物为 `outputs/evaluation/<评估项>/<模型名>/`；命名统一使用根 README 的 `B`、`B-Char`、`B-PGCA` 及 `-ALIGN/-CPT/-CSC/-CGEC/-ACT` 规则。
 
 lmeh 当前协议：MMLU（57 学科）、CMMLU（67 学科）、GSM8K 为 5-shot；ARC-Easy/Challenge、SQuAD v2、CLUE 九项为 0-shot，所有对照模型相同。入口绑定 `lmeh/env`，采用 HF 后端和任务原始提示词。除 CMMLU 读取本附录的服务器 CSV 根目录（需同时有 dev/test）外，其他任务自动从 HF 固定 revision 下载/缓存；CLUE 与 SQuAD v2 在公开 validation 评分。详见 `scripts/evaluation/lmeh/README.md`，不沿用旧 mmlu_all、旧 0/5-shot 混用脚本。
 
 其中古汉语训练数据以 [ancient_sft.md](ancient_sft.md) 为准，不再固定按来源 60%/25%/15% 混合：
+
+构建入口为 `scripts/data_factory/ancient_sft/`；数据统一位于 `data/downstream/ancient/{raw,benchmark,train}`，训练文件为 `train/final/{train,dev}.jsonl`，prepared 候选位于 `train/prepared/`。
 
 - v2 核心任务：古译今 38K、今译古 10K、断句标点初始 5K；标点实际监督 token 占比验收 30%–40%。
 - Dev 三项各 600 条，每项至少 5 部作品、10 个独立组；篇章优先、跨分区重复剔除，不跨书合并整书。

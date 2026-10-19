@@ -17,9 +17,22 @@ scripts/evaluation/csc/env/bin/python -m pip check
 
 这里的推理仍使用普通安装的 ms-swift 的 TransformersEngine 和实际 get_template，保留自定义 PGCA AutoClass 加载路径，支持完整 SFT 模型和基座＋LoRA。该依赖与 lmeh 的通用 benchmark 环境相互独立。
 
-模板只来自 SFT checkpoint 的 `args.json`（也允许其直接父目录）；LoRA 优先使用 adapter 的训练参数。继承 template、system、use_chat_template、enable_thinking、response_prefix 等，不提供 `--template` 覆盖或旧裸文本模式。不猜测训练设置：缺失 args.json、插件文件或 use_chat_template=false 的 CPT checkpoint 会报错。导出合并模型时应保留正确的 SFT args.json，不能复制无关的 CPT 参数。
+模板只来自 SFT checkpoint 的 `args.json`（也允许其直接父目录）；LoRA 优先使用 adapter 的训练参数。继承 template、system、use_chat_template、enable_thinking、response_prefix 等，不提供 `--template` 覆盖，也不绕过聊天模板直接拼接文本。不猜测训练设置：缺失 args.json、插件文件或 use_chat_template=false 的 CPT checkpoint 会报错。导出合并模型时应保留正确的 SFT args.json，不能复制无关的 CPT 参数。
 
-任务指令和 chat template 是两层：CSC 指令保持 CLLM 原句式及尾部空格；C³Bench 用论文中文任务指令；Fùxì 用原数据 instruction/input。这些 user 消息再由训练模板编码。参考答案不会传入待测模型；Fùxì 明确启用的官方 few-shot 示例除外。
+任务指令和 chat template 是两层：CSC/CGEC 现统一为 source-only，user 消息只放原句，不附加任务说明或“输入/输出”包装；C³Bench 用论文中文任务指令；Fùxì 用原数据 instruction/input。这些 user 消息仍由训练聊天模板编码。参考答案不会传入待测模型；Fùxì 明确启用的官方 few-shot 示例除外。
+
+CSC/CGEC 训练和验证也使用同一 source-only 格式，assistant 只放正确句子。适用于两个任务分别微调的专用模型；若将 CSC 和 CGEC 混成同一个多任务模型，需重新设计任务区分，不能直接靠相同裸句判断允许哪些改动。SFT 应继续使用 `use_chat_template=true` 和 assistant-only 的 `loss_scale=default`，不要照搬 CPT 的裸文本/全 token 监督参数。
+
+迁移脚本（只删除已知 user 包装，保留目标、顺序与角色）：
+
+```bash
+python -m scripts.data_factory.strip_correction_prompts          # 预览
+python -m scripts.data_factory.strip_correction_prompts --apply  # 备份并替换
+```
+
+它覆盖 CSC 的 `sft/*.jsonl`（当前训练/验证文件就在此处）及 `sft/final/`，以及 CGEC 的 `sft/final/`，不改 raw/test 原始数据。原文件保存在同目录 `*.jsonl.with-prompts.bak`，不匹配训练常用的 `*.jsonl`；不可把这些备份作为训练输入。CGEC 生成器也已改为直接输出 source-only，重新构建不会加回提示词。
+
+CSC/CGEC 评估输入协议已升至 v2，旧 prepare/prediction 产物不可复用：请设置新的 RUN_NAME/OUT。现有 checkpoint 不会因为数据文件修改而改变行为，需使用新数据重新或继续微调后再评估；训练时重新编码数据，不复用旧 tokenized/cache 文件。去提示词是输入协议调整，不保证自动消除所有额外输出。
 
 评估不沿用训练时的截断策略：限制在模型位置容量减去生成预算内，超长请求报错而不是切掉题目。默认 greedy，参数和训练模板写入推理 Manifest；需要与其他论文推理设置比较时另行说明。
 

@@ -7,8 +7,6 @@ from pathlib import Path
 
 from ..common import ROOT, prepare_file
 
-PROMPT = "纠正下列句子的语法错误，保留原意；如果没有错误则原样返回。只输出纠正后的句子：\n"
-
 
 def fcgec_references(sentence, operation):
     operations = json.loads(operation) if isinstance(operation, str) else operation
@@ -85,7 +83,7 @@ def fcgec_rows(path, split):
             references = [source] if item["error_flag"] == 0 else fcgec_references(source, item["operation"])
         yield {"id": f"fcgec/{split}/{uid}", "original_id": uid, "dataset": "fcgec", "task": "cgec",
                "split": split, "src": source, "references": references, "error_flag": item.get("error_flag"),
-               "messages": [{"role": "user", "content": PROMPT + source}]}
+               "messages": [{"role": "user", "content": source}]}
 
 
 def nacgec_rows(path, split):
@@ -97,14 +95,14 @@ def nacgec_rows(path, split):
             uid, source, *references = fields
             yield {"id": f"nacgec/{split}/{uid}", "original_id": uid, "dataset": "nacgec", "task": "cgec",
                    "split": split, "src": source, "references": references,
-                   "messages": [{"role": "user", "content": PROMPT + source}]}
+                   "messages": [{"role": "user", "content": source}]}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=("fcgec", "nacgec"), required=True)
     parser.add_argument("--split", choices=("valid", "test"), default="test")
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/downstream/cgec")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/downstream/cgec/test")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.dataset == "fcgec":
@@ -114,7 +112,7 @@ def main():
         suffix = "dev" if args.split == "valid" else "test"
         path = args.data_dir / "NaCGEC/data" / f"nacgec.{suffix}.ref.para"
         rows = nacgec_rows(path, args.split)
-    print(prepare_file(rows, args.output, [path], f"{args.dataset}-{args.split}-multireference-v1"))
+    print(prepare_file(rows, args.output, [path], f"{args.dataset}-{args.split}-source-only-multireference-v2"))
 
 
 if __name__ == "__main__":

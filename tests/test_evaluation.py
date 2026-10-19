@@ -21,7 +21,7 @@ def jsonl(path, rows):
 
 def sample(uid="1", text="原句"):
     return {"id": uid, "dataset": "cscd_ns", "subset": "all", "task": "csc", "src": text, "tgt": "正确句",
-            "messages": [{"role": "user", "content": "任务: 纠错文本\n输入: " + text + "\n输出: "}]}
+            "messages": [{"role": "user", "content": text}]}
 
 
 @pytest.fixture

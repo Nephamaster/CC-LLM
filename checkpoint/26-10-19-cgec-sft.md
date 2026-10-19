@@ -16,8 +16,8 @@
 
 训练原始 57,803 行，去重 21 条、过滤重合原句 4,023 条。CGED 修复 402 个空 TAB 行、1 个夹带 ID 行。各 benchmark 重合计数可能互相重叠，不可直接求和。
 
-格式与 CSC 相同：每行仅含 `messages`，一条 user、一条 assistant；user 使用现有 `scripts/evaluation/cgec/prepare.py` 的 CGEC 指令，assistant 仅为纠正后文本。保留原本无错的 source=target 样本。
+格式与 CSC 相同：每行仅含 `messages`，一条 user、一条 assistant。初版 user 使用 CGEC 指令；按后续约定，现已改为 source-only，user 仅原句、assistant 仅纠正后文本。原条数、去重/防泄漏规则不变，保留原本无错的 source=target 样本。提示词迁移细节见 `26-10-19-correction-source-only.md`。
 
 简单检查已通过：两份 JSONL 格式正确、各自原句唯一、训练与验证及四个评估 split 均无完全相同的原句。未做模糊近重复检查。原始文件未修改。
 
-转换入口：`python -m scripts.data_factory.prepare_cgec`。默认拒绝覆盖已有三个产物；没有新增复杂验证流程或更改评估代码。`data/` 被 gitignore 忽略，实际训练文件需单独同步到服务器。
+转换入口：`python -m scripts.data_factory.prepare_cgec`，已同步直接生成 source-only 数据。默认拒绝覆盖已有三个产物；`data/` 被 gitignore 忽略，实际训练文件需单独同步到服务器。
