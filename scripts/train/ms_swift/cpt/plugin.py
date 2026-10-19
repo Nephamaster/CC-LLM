@@ -228,7 +228,15 @@ class CCLLMCallback(TrainerCallback):
         selected = selected or last
         if selected is None:
             raise RuntimeError("training ended without a saved checkpoint")
-        (Path(args.output_dir) / "next_stage_model.txt").write_text(str(Path(selected).resolve()) + "\n")
+        checkpoint = str(Path(selected).resolve()) + "\n"
+        (Path(args.output_dir) / "next_stage_model.txt").write_text(checkpoint)
+        output_root = os.environ.get("CC_LLM_OUTPUT_ROOT")
+        if output_root:
+            # 只发布已完成训练的结果，不按最大版本号猜测可能尚未完成的 run。
+            pointer = Path(output_root) / "next_stage_model.txt"
+            temporary = pointer.with_name(f".next_stage_model.{os.getpid()}.tmp")
+            temporary.write_text(checkpoint)
+            temporary.replace(pointer)
 
     def on_save(self, args, state, control, model=None, **kwargs):
         if state.is_world_process_zero:

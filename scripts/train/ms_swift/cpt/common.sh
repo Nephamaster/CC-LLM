@@ -93,6 +93,7 @@ prepare_cache() {
 run_training() {
     local model="$1" train="$2" validation="$3" output="$4"
     local max_length="$5" learning_rate="$6" load_best="$7"
+    local output_root="$output" add_version=true
     local resume="${CC_RESUME_FROM_CHECKPOINT:-}"
     local -a resume_args=()
     shift 7
@@ -103,9 +104,9 @@ run_training() {
             *) echo "Resume checkpoint must belong to this stage output directory" >&2; return 1 ;;
         esac
         model="$resume"
+        output="$(dirname -- "$(realpath -- "$resume")")"
+        add_version=false
         resume_args=(--resume_from_checkpoint "$resume")
-    else
-        [[ ! -e "$output" ]] || { echo "Refusing to overwrite training directory: $output" >&2; return 1; }
     fi
     local -a training_args=(
         # 模型与数据。
@@ -144,7 +145,9 @@ run_training() {
         --save_strategy steps --save_steps "$SAVE_STEPS" --save_total_limit "$SAVE_TOTAL_LIMIT"
         --save_only_model false --load_best_model_at_end "$load_best"
         --metric_for_best_model eval_clm_loss --greater_is_better false
-        --add_version false --output_dir "$output" --logging_dir "$output/logs"
+        --add_version "$add_version" --output_dir "$output"
     )
+    # Swift 分配版本目录及日志目录；完成后插件向稳定根目录发布 checkpoint 指针。
+    CC_LLM_OUTPUT_ROOT="$output_root" \
     "$PYTHON_CMD" -B -m swift.cli.main pt "${training_args[@]}" "${resume_args[@]}" "$@"
 }

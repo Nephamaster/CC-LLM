@@ -129,7 +129,8 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
     }
     for args in training:
         assert option(args, "--external_plugins") == str(CPT / "plugin.py")
-        assert option(args, "--logging_dir") == str(Path(option(args, "--output_dir")) / "logs")
+        assert option(args, "--add_version") == "true"
+        assert "--logging_dir" not in args  # Swift 将日志放进本次版本目录。
         for key, (flag, default) in shared_options.items():
             assert option(args, flag) == overrides.get(key, default)
         assert option(args, "--num_train_epochs") == "1"

@@ -5,7 +5,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 # ==================== Phase2 参数：通常只改这里 ====================
 # GPU、batch、日志间隔、优化器等共享参数在 common.sh 顶部；环境变量覆盖优先。
 
-# 输入、输出与缓存。MODEL 留空时，自动读取 Phase1 选出的 checkpoint。
+# MODEL 优先；留空时，读取 ALIGN_OUT 根目录发布的最近完成的 Phase1 checkpoint。
 MODEL="${MODEL:-}"
 ALIGN_OUT="${ALIGN_OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/corpus/runs/phase2/phase2-10b-default-6d14a3c4e453/final/ms_swift}"

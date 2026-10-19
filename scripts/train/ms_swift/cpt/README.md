@@ -61,7 +61,7 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 
 Phase2 的 `PHASE2_A_LR` 控制 A 的新增分支；`PHASE2_B_LR` 控制 B 的主干；`PHASE2_B_BRANCH_LR` 控制 B 的新增分支，已接入插件，不再需要编辑插件里的常量。`WARMUP_RATIO` 是学习率 warmup；辅助任务权重及其 warmup 仍来自模型 config 的 `pgca_aux_phonetic_weight`、`pgca_aux_glyph_weight`、`pgca_aux_warmup_tokens`。
 
-改变 `MAX_LENGTH` 后，未显式指定的缓存路径会相应改变；改变卡数、训练 batch、`DATA_SEED` 或预算时，应使用新的 `CACHE_DIR`，旧缓存不匹配会被拒绝。新实验使用新的 `OUT`，不要覆盖旧结果。单轮训练、冻结规则、`packing=false`、loss 插件和选优指标等固定约束在执行区单列，不作为常规调参入口。
+改变 `MAX_LENGTH` 后，未显式指定的缓存路径会相应改变；改变卡数、训练 batch、`DATA_SEED` 或预算时，应使用新的 `CACHE_DIR`，旧缓存不匹配会被拒绝。新训练可重复使用同一个 `OUT` 根目录，由 ms-swift 自动创建 `v0-时间戳`、`v1-时间戳` 等版本目录，不覆盖旧 run。单轮训练、冻结规则、`packing=false`、loss 插件和选优指标等固定约束在执行区单列，不作为常规调参入口。
 
 ### 启动训练
 
@@ -78,9 +78,9 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 - `PYTHON_CMD`：默认 `scripts/train/ms_swift/env/bin/python`；数据准备与 Swift 分发使用同一解释器，不依赖 PATH 中的 `swift`。
 - `BASE_MODEL_NAME`：Base 原名，默认 `Qwen3-1.7B-Base`；`MODEL_NAME` 表示本轮基础模型 M，默认 `${BASE_MODEL_NAME}-PGCA`，不是 checkpoint 路径。
 - `TRAIN_ROOT`：默认 `outputs/train`；Phase1 输出 `M-ALIGN`，Phase2 输出 `M-CPT`，不形成 `M-ALIGN-CPT`。
-- `MODEL`：Phase1 初始模型，或 Phase2 的 Phase1 checkpoint。Phase2 未设置时读取 ALIGN 输出的 `next_stage_model.txt`，不猜测 `best/` 路径。
+- `MODEL`：Phase1 初始模型，或 Phase2 的 Phase1 checkpoint。Phase2 显式传入时优先采用；未设置时读取 `ALIGN_OUT/next_stage_model.txt`，默认指向 Phase1 最近完成训练选出的 checkpoint，不猜测 `best/` 或最大版本号。
 - `DATA_DIR`：含 `train/*.jsonl` 和 `validation/*.jsonl` 的目录，自动读取所有分片。
-- `OUT`、`CACHE_DIR`：独立实验输出/缓存目录。默认拒绝覆盖已有训练目录。
+- `OUT`：训练输出根目录，新训练自动创建版本子目录；`CACHE_DIR`：独立的数据准备目录，复用规则不变。
 - `LOAD_FROM_CACHE_FILE`：当前默认 `true`，控制 ms-swift 原生的 `--load_from_cache_file`，同时传给导出和训练命令。设为 `true` 允许复用框架的数据预处理缓存；设为 `false` 不复用该缓存，但不禁止框架写入新缓存，也不会删除已有数据。它不是模型的 KV cache 开关。
 
 - `CUDA_VISIBLE_DEVICES`：默认 8 卡；`NPROC_PER_NODE` 默认按可见卡列表推导。脚本按单机 DDP 编写。
@@ -94,7 +94,18 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 - `SEED`、`DATA_SEED`：默认均为 42；后者同时用于导出、缓存分段前打乱和训练数据采样，复用缓存时会核对。
 - `RUN_STAGE=all|a|b`：Phase2 默认依次跑 A/B，可单独跑某阶段。
 
-默认例子：初始化权重 `models/Qwen3-1.7B-Base-PGCA/`；Phase1 为 `outputs/train/Qwen3-1.7B-Base-PGCA-ALIGN/`；Phase2 为 `outputs/train/Qwen3-1.7B-Base-PGCA-CPT/`，其 `adaptation/`、`joint/` 下分别保存两个阶段的 checkpoint 和 `logs/`。阶段结束的 `next_stage_model.txt` 指向实际模型，Phase2 根目录也发布此指针。
+默认例子：初始化权重 `models/Qwen3-1.7B-Base-PGCA/`；Phase1 保存到 `outputs/train/Qwen3-1.7B-Base-PGCA-ALIGN/vN-时间戳/`；Phase2 的 A/B 分别保存到 `outputs/train/Qwen3-1.7B-Base-PGCA-CPT/adaptation/vN-时间戳/` 和 `joint/vN-时间戳/`，各自独立编号。日志由 ms-swift 放到对应版本目录的 `runs/` 下。
+
+每个版本保留自己的 `next_stage_model.txt`；训练结束后，插件还向该阶段的稳定根目录发布同名指针。Phase2 默认读取 Phase1 根目录指针，A→B 读取 A 根目录指针，B 完成后继续向 CPT 根目录发布结果。失败或未完成的训练不会因为版本号更大就被自动选中；需要固定某一轮时显式指定 `MODEL`，并发实验使用不同 `OUT` 根目录，避免共享阶段指针。
+
+```bash
+# 自动衔接默认 Phase1 根目录最近完成的结果。
+bash scripts/train/ms_swift/cpt/phase2.sh
+
+# 显式选择某一轮 Phase1 checkpoint，优先于自动指针。
+MODEL=/实际路径/Qwen3-1.7B-Base-PGCA-ALIGN/v0-时间戳/checkpoint-N \
+bash scripts/train/ms_swift/cpt/phase2.sh
+```
 
 例如较小 Phase2 筛选实验（仍需在前面完成 Phase1）：
 
@@ -162,7 +173,7 @@ RUN_STAGE=b RESUME_B=/本轮CPT输出/joint/checkpoint-N \
 bash scripts/train/ms_swift/cpt/phase2.sh
 ```
 
-恢复时保持原 `OUT`、`CACHE_DIR`、模型/数据版本、卡数、batch、累积步数、预算、随机种子、学习率及优化器配置。缓存不完整时脚本会停止，不会自动删掉重建。每个 checkpoint 的 `cc_llm_state.json` 记录阶段、step 和累计辅助训练 tokens；模型 buffer 同时保存该计数，恢复后不会重新开始辅助权重 warmup。
+恢复时保持原 `OUT` 根目录、`CACHE_DIR`、模型/数据版本、卡数、batch、累积步数、预算、随机种子、学习率及优化器配置。脚本从恢复 checkpoint 定位其原版本目录，关闭自动加版本，在原 run 内继续写入；恢复的 checkpoint 必须属于该阶段的输出根目录。缓存不完整时脚本会停止，不会自动删掉重建。每个 checkpoint 的 `cc_llm_state.json` 记录阶段、step 和累计辅助训练 tokens；模型 buffer 同时保存该计数，恢复后不会重新开始辅助权重 warmup。
 
 ## 5. 验证指标与工程边界
 
