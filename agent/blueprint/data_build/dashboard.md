@@ -50,8 +50,8 @@ Phase2增强池内部来源配比：CCI3-HQ 20%、FineWeb-Edu-Chinese 20%、WanJ
 
 | 下游能力 | 训练集 | 测试集 |
 |---|---|---|
-| 中文拼写纠错 CSC | twnlp_csc_data | LEMON、CSCD-NS |
-| 中文语法纠错 CGEC | twnlp_cgc_data| FCGEC、NaCGEC |
+| 中文拼写纠错 CSC | `data/downstream/csc/sft/csc_mix_dedup.jsonl`；Dev 为同目录 `cscd_dev.jsonl` | LEMON、CSCD-NS |
+| 中文语法纠错 CGEC | `data/downstream/cgec/sft/final/train.jsonl`；Dev 为同目录 `validation.jsonl`，沿用已完成的去重/排除处理 | FCGEC、NaCGEC |
 | 古汉语理解 | 以 ancient_sft.md 的任务配额为准；Gujilab + HistoryTrans，本轮不含 EvaHan | C³Bench + Fùxì |
 | 中文基础表示 | OntoNotes/Weibo NER、MSRA/PKU CWS | 对应官方 test |
 | 中文阅读/语义 | LCQMC、CMRC2018 等 | 对应官方 test |
@@ -59,6 +59,8 @@ Phase2增强池内部来源配比：CCI3-HQ 20%、FineWeb-Edu-Chinese 20%、WanJ
 下游评估入口见 `scripts/evaluation/`：CSC 默认仅 CSCD-NS 与 LEMON，不删除本地其他数据；FCGEC valid 可本地评分，公开 test 无标签，仅导出预测；NaCGEC 使用字级 ChERRANT 与词级 THULAC/MaxMatch。古汉语使用 C³Bench 与 Fùxì，后者裁判未配置时保留待评分状态。
 
 CSC/CGEC 当前训练、验证与评估统一使用 source-only user 消息：只放待纠错原句，assistant 为正确句，保留训练聊天模板和 assistant-only 监督。两类任务分别微调专用模型，不将去任务提示词等同于去除 chat template。迁移入口为 `scripts/data_factory/strip_correction_prompts.py`，旧提示词版本的模型/缓存/评估产物不自动转换。
+
+训练入口为 `scripts/train/ms_swift/finetune/csc.sh` 和 `cgec.sh`：主干及 PGCA 采用 all-linear LoRA，关闭字音/字形辅助损失，保留完整 PGCA 前向。古汉语最终数据目录为 `data/downstream/ancient/train/final`，服务器生成完成前暂不接入其训练脚本。
 
 通用 benchmark（MMLU、ARC、SQuAD v2、GSM8K、CMMLU、CLUE）归入 `scripts/evaluation/lmeh/`，Base/Char/语义对齐模型的 PPL 归入 `scripts/evaluation/ppl/`。PPL 直接使用运行前激活环境的 `python`，可复用已有训练环境；其他入口仍按各自环境说明普通安装框架，不再依赖外部框架仓库启动。训练产物为 `outputs/train/<模型名>/`，评估产物为 `outputs/evaluation/<评估项>/<模型名>/`；命名统一使用根 README 的 `B`、`B-Char`、`B-PGCA` 及 `-ALIGN/-CPT/-CSC/-CGEC/-ACT` 规则。
 
