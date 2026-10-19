@@ -1,0 +1,1 @@
+modelscope download --dataset opencsg/Fineweb-Edu-Chinese-V2.2 --include '4_5/*.parquet' --local_dir /share/project/wuhaiming/data/dataset/fineweb-edu-chinese-v2.2/4_5

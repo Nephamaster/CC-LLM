@@ -114,6 +114,40 @@ class SwiftMultitaskTest(unittest.TestCase):
             model.auxiliary_trained_tokens.zero_()
             actual = loss_fn(output, labels, num_items_in_batch=7)
             torch.testing.assert_close(actual, sums["clm_sum"] / 7)
+            self.assertNotIn("loss", trainer.custom_metrics["train"])
+
+    def test_eval_loss_is_token_weighted_and_resets(self):
+        for run_stage in ("phase1", "phase2a", "phase2b"):
+            with self.subTest(stage=run_stage), patch.dict(os.environ, CC_LLM_STAGE=run_stage):
+                model = context_model().eval()
+                model.config.pgca_enabled = run_stage != "phase1"
+                trainer = SimpleNamespace(
+                    model=model, custom_metrics={"train": {}, "eval": {}},
+                    accelerator=SimpleNamespace(unwrap_model=lambda value: value,
+                                                gather_for_metrics=lambda value: value),
+                )
+                loss_fn = self.plugin["CCLLMLoss"](SimpleNamespace(), trainer)
+                expected_sum, expected_count = 0.0, 0
+                for tokens in ([2, 3, 4, 2], [4, 5]):
+                    ids = torch.tensor([tokens])
+                    labels = ids.clone()
+                    labels[:, 0] = -100
+                    with torch.no_grad():
+                        output = model(ids, return_aux_logits=run_stage != "phase1")
+                        sums = model.multitask_loss_sums(output, labels)
+                        total = sums["clm_sum"]
+                        if run_stage != "phase1":
+                            total = total + 0.05 * sums["phon_sum"] + 0.02 / 3 * sum(
+                                sums[f"{name}_sum"] for name in self.plugin["GLYPH_NAMES"])
+                        expected_sum += total.item()
+                        expected_count += sums["token_count"].item()
+                        loss_fn(output, labels, num_items_in_batch=99)
+                metrics = trainer.custom_metrics["eval"]
+                self.assertAlmostEqual(metrics["loss"].compute(), expected_sum / expected_count, places=6)
+                self.assertEqual(metrics["loss"].compute(), metrics["total_loss"].compute())
+                self.assertFalse(hasattr(trainer, "cc_llm_pending_tokens"))
+                metrics["loss"].reset()
+                self.assertIsNone(metrics["loss"].compute())
 
     def test_real_swift_cpu_train_eval_save(self):
         self._run_swift_smoke(1)
@@ -126,7 +160,9 @@ class SwiftMultitaskTest(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("CC_LLM_TEST_DDP") == "1", "requires local Gloo sockets")
     def test_real_swift_ddp_train_eval_save(self):
-        self._run_swift_smoke(2)
+        for run_stage in ("phase1", "phase2a", "phase2b"):
+            with self.subTest(stage=run_stage):
+                self._run_swift_smoke(2, run_stage)
 
     def _run_swift_smoke(self, world_size, run_stage="phase2b"):
         torch.manual_seed(42)
@@ -210,8 +246,11 @@ class SwiftMultitaskTest(unittest.TestCase):
             self.assertTrue(evaluations, result.stdout[-6000:])
             self.assertTrue(math.isfinite(evaluations[-1]["eval_clm_loss"]))
             self.assertEqual(evaluations[-1]["eval_clm_tokens"], 8)
+            self.assertAlmostEqual(evaluations[-1]["eval_loss"], evaluations[-1]["eval_total_loss"], places=6)
             if run_stage != "phase1":
                 self.assertGreater(evaluations[-1]["eval_total_loss"], evaluations[-1]["eval_clm_loss"])
+            else:
+                self.assertAlmostEqual(evaluations[-1]["eval_loss"], evaluations[-1]["eval_clm_loss"], places=6)
             self.assertTrue((root / "output/next_stage_model.txt").is_file())
             self.assertTrue((root / "output/checkpoint-1/cc_llm_state.json").is_file())
 

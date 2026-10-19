@@ -129,6 +129,7 @@ bash scripts/train/ms_swift/cpt/phase2.sh
 ## 5. 验证指标与工程边界
 
 - 以 `eval_clm_loss` 选优，PPL 只能用 `exp(eval_clm_loss)`。`eval_total_loss` 是含辅助任务的联合指标。
+- `eval_loss` 使用与 `eval_total_loss` 相同的全局有效 token 加权统计，在框架记录日志和返回验证指标前覆盖默认聚合值；不随卡数缩放，也不对不同长度 batch 的均值再做简单平均。Phase1 三项 loss 相等；Phase2 的 `eval_loss` 包含辅助损失，不能用于 PPL。此修正不改变训练 loss/梯度或已有 checkpoint，旧日志不会自动修正。
 - `eval_phon_loss`、`eval_glyph_loss` 使用 CLM token 分母；`*_supervised_loss`、`*_accuracy` 使用各自有效监督分母；同时记录 `*_tokens`。
 - 验证指标先通过 Accelerate 去掉 DDP 尾部重复样本，再按 token 累计。优化损失只由 Swift 乘一次 world size，不在插件里重复放大。
 - 训练记录 `weighted_aux_to_clm_ratio`、主干和分支梯度范数。PGCA 零输出初始化后，第一步内部 Q/K/V/上下文梯度为零是预期现象。

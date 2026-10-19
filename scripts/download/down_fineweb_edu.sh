@@ -1,0 +1,1 @@
+modelscope download --dataset HuggingFaceFW/fineweb-edu --include 'sample/10BT/*.parquet' --local_dir /share/project/wuhaiming/data/dataset/fineweb-edu

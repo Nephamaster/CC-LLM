@@ -23,7 +23,7 @@
 
 ## 全量产物结果
 
-`data/feature_vocab_repair_v2/features/feature_validation_report.json`：passed=true、154,019 行、28,134 汉字、原标签/ID/JSONL/PT 无不一致。`data/feature_vocab_repair_v2/vocab_validation_report.json` 的七项检查全部通过，包含真实 AutoTokenizer、全汉字单 token、映射元数据及 wrapper 对齐。
+现存报告 `models/feature_vocab/features/feature_validation_report.json`：passed=true、154,019 行、28,134 汉字、原标签/ID/JSONL/PT 无不一致。`models/feature_vocab/vocab_validation_report.json` 的七项检查全部通过，包含真实 AutoTokenizer、全汉字单 token、映射元数据及 wrapper 对齐。
 
 | 有效拼音候选数 | 原审计 | v2 全量重建 |
 | --- | ---: | ---: |
@@ -37,6 +37,16 @@
 新 PT SHA256：`8ba2b71c55c1b6c67f30042fdd654b1f4688ede618698895dc6f6eed0885d5fb`。独立 bundle 同时保存语义 vocab 副本和匹配的 embedding_config（16 拼音槽＋1 字形槽）；它不是包含模型权重的可训练 checkpoint。本地 Char 目录没有 safetensors/pytorch_model 权重，正式 1.7B 重建需在服务器执行。
 
 回归验证：71 项测试及 6 个子测试通过，包含古汉语 SFT/Benchmark reader 回归；有一项上游 PyTorch 弃用提示，不影响通过结果。
+
+## 2026-10-19：构建包迁移
+
+用户将原 `data/feature_vocab_repair_v2/` 移至 `models/feature_vocab/`。这是模型构建产物归类调整，不是数据版本或特征 ID 变更。
+
+- 代码不存在旧目录硬编码。加载以传入根目录和文件相对路径为准；`EmbeddingFeatureConfig.from_artifacts("models/feature_vocab")` 可校验新位置的文件及绑定关系。
+- `feature_index_manifest.json` 的 features_dir/output_jsonl/output_pt 和原 vocab_validation_report 的 features_dir 记录的是原构建/验收位置，保留原值。它们不是加载定位依据，不能将修改历史路径当作重新完成语义验收。
+- 移动后重新调用实际配置加载代码，核验所有 Manifest 引用的文件 SHA256、语义 vocab 与特征索引绑定，并与现存 embedding_config 比较；目录移动不要求重建词表、索引或模型。原全量语义验收记录仍保留。
+- 此包不含模型权重。构建 PGCA 时仍需将其 features 和匹配配置部署到新 Char 模型目录，并确认语义 vocab 相同；不能把 `models/feature_vocab` 当作 PGCA 的 `--model-path` 或训练的 `--dataset`。
+- 包位于 Git 忽略的 models 下，应单独同步/归档；发布正式模型前保留，模型独立加载验收后可移到长期归档，但应保留可解释数字 ID 的词表与来源信息。
 
 ## 服务器重建步骤（保留旧实验）
 

@@ -152,6 +152,9 @@ class CCLLMLoss(BaseLoss):
                 pending = getattr(trainer, "cc_llm_pending_tokens", None)
                 trainer.cc_llm_pending_tokens = count.detach() if pending is None else pending + count.detach()
         record(trainer, mode, "total_loss", total, count)
+        if mode == "eval":
+            # Swift.log merges this token-weighted metric into eval_loss before logging/selection.
+            record(trainer, mode, "loss", total, count)
         # Swift alone applies world_size; its Trainer supplies the accumulation-window denominator.
         return total / denominator
 

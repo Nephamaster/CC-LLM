@@ -1,0 +1,1 @@
+modelscope download --dataset bigcode/the-stack-v2-train-full-ids --include 'data/*.parquet' --local_dir /share/project/wuhaiming/data/dataset/the-stack-v2-train-full-ids
