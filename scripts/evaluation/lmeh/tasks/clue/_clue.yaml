@@ -1,0 +1,14 @@
+group: clue
+group_alias: CLUE
+task:
+  - clue_afqmc
+  - clue_tnews
+  - clue_iflytek
+  - clue_cmnli
+  - clue_wsc2020
+  - clue_csl
+  - clue_cmrc2018
+  - clue_chid
+  - clue_c3
+metadata:
+  version: 1.0

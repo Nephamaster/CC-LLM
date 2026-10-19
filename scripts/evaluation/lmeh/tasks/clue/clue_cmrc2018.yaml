@@ -1,0 +1,5 @@
+include: _qa_template_yaml
+task: clue_cmrc2018
+task_alias: CMRC2018
+dataset_name: cmrc2018
+doc_to_text: !function utils.cmrc_doc_to_text

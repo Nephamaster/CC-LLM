@@ -63,14 +63,14 @@ PGCA 已包含字符级 tokenizer 与完整音形分支，不再使用 `B-Char-P
 - 模型构建：`scripts/build_vocab.sh`、`scripts/build_embedding.sh`、`scripts/build_pgca.sh`。完整 PGCA 构建入口启用上下文编码器、辅助头和零输出初始化；手工调用低层构建 CLI 时仍需显式指定相应开关。
 - 训练：[scripts/train/ms_swift/cpt/README.md](scripts/train/ms_swift/cpt/README.md)。当前入口实现完整 PGCA 方案的 Phase1/Phase2；命名规范并不代表 Base/Char 对照组和全部下游训练脚本已经齐备。
 - 下游评估：[scripts/evaluation/README.md](scripts/evaluation/README.md)。`MODEL` 是真实 checkpoint 路径，`MODEL_NAME` 是用于结果目录的完整模型名；LoRA 评估填 adapter 对应的模型名，而非基座名。
-- 通用 benchmark：[scripts/evaluation/lmeh/README.md](scripts/evaluation/lmeh/README.md)。六类任务归入 lmeh；本轮不补齐任务 YAML/脚本。
+- 通用 benchmark：[scripts/evaluation/lmeh/README.md](scripts/evaluation/lmeh/README.md)。六类任务已提供 HF 入口，MMLU/CMMLU/GSM8K 5-shot，其余 0-shot；默认使用 lmeh/env。
 - PPL：[scripts/evaluation/ppl/README.md](scripts/evaluation/ppl/README.md)。归入评估，不把 Phase0 forward 诊断当作完整 PPL 实现。
 
 训练和下游评估脚本自行定位仓库根目录，默认调用所属子目录的 `env/bin/python`。训练用同一个 Python 执行 `swift.cli.main` 和数据准备，保留框架的 torchrun 分发，不再依赖 PATH 中另一个环境的 `swift`。可显式使用 `PYTHON_CMD`（训练）或 `PYTHON`（CSC/CGEC/古汉语评估）指定另一个已配置环境。PPL 入口独立于评估 common.sh，直接使用运行前激活环境的 `python`，不要求单独建立 env，也不读取 `PYTHON` 变量。
 
 ## 本轮审查后仍需注意
 
-- 普通安装不等于版本随意替换。现有训练插件针对已验证的 ms-swift 4.7 开发快照，requirements 固定普通安装来源；lmeh 的正式版本、任务 revision、few-shot 和评分配置还需在任务迁入时锁定。
+- 普通安装不等于版本随意替换。现有训练插件针对已验证的 ms-swift 4.7 开发快照，requirements 固定普通安装来源；lmeh 的 harness 源码、数据 revision、few-shot 和评分器已由其 requirements/protocol.lock.json 固定。
 - 当前 CSC/CGEC/古汉语推理仍使用 ms-swift 的训练模板接口，因此各自评估环境也需要安装 ms-swift；不能只安装评分依赖。通用 benchmark/PPL 不走这个要求 SFT args.json 的入口。
 - 旧 checkpoint 的 `args.json` 可能保存旧插件绝对路径。代码移动后，先核对依赖，再使用正确 checkpoint；本轮不修改已有 checkpoint 元数据来伪装兼容。
 - 当前推理缓存没有把所有框架版本纳入复用身份；切换环境/升级依赖时用新的 `RUN_NAME/OUT`，不能把旧预测当作新环境重跑结果。

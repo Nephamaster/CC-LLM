@@ -1,0 +1,18 @@
+dataset_path: clue/clue
+dataset_kwargs:
+  revision: 28178267a609dd08bdc703dd6c931dfc2c2f4431
+output_type: multiple_choice
+training_split: train
+validation_split: validation
+test_split: null
+fewshot_split: train
+metric_list:
+  - metric: acc
+    aggregation: mean
+    higher_is_better: true
+  - metric: acc_norm
+    aggregation: mean
+    higher_is_better: true
+metadata:
+  version: 1.0
+  dataset_revision: 28178267a609dd08bdc703dd6c931dfc2c2f4431

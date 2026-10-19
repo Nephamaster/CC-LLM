@@ -1,0 +1,7 @@
+include: _classification_template_yaml
+task: clue_wsc2020
+task_alias: CLUEWSC2020
+dataset_name: cluewsc2020
+doc_to_text: !function utils.wsc_doc_to_text
+doc_to_target: label
+doc_to_choice: !function utils.wsc_doc_to_choice

@@ -1,0 +1,7 @@
+include: _classification_template_yaml
+task: clue_cmnli
+task_alias: CMNLI
+dataset_name: cmnli
+doc_to_text: !function utils.nli_doc_to_text
+doc_to_target: label
+doc_to_choice: !function utils.nli_doc_to_choice

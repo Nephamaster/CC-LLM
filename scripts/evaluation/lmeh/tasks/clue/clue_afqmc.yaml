@@ -1,0 +1,7 @@
+include: _classification_template_yaml
+task: clue_afqmc
+task_alias: AFQMC
+dataset_name: afqmc
+doc_to_text: !function utils.afqmc_doc_to_text
+doc_to_target: label
+doc_to_choice: !function utils.afqmc_doc_to_choice

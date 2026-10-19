@@ -1,0 +1,7 @@
+include: _classification_template_yaml
+task: clue_csl
+task_alias: CSL
+dataset_name: csl
+doc_to_text: !function utils.csl_doc_to_text
+doc_to_target: label
+doc_to_choice: !function utils.yes_no_doc_to_choice

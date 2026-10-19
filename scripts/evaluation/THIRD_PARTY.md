@@ -14,6 +14,14 @@
 
 沿用逐文档滑窗、无额外 BOS/EOS 的设计；修正字符分母和边界计数，改为直接从语言模型 logits 计算 NLL，增加全语料加权汇总、字节指标和身份记录。不是逐字迁移或旧报告数值完全等价实现。滑窗方法参考 [Transformers 官方 PPL 文档](https://huggingface.co/docs/transformers/perplexity)。
 
+## 通用 benchmark / lm-evaluation-harness
+
+框架使用普通安装的 [EleutherAI/lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness)，固定 upstream `d6de81643928d653435c431bae19945d41d32520`，MIT 授权随包保留。用户本地 Nepham 仓库 HEAD `0d3003be83db889d9ddbe4f8bf0fb2d09c3f32ba` 相对此 upstream 只改了 gitignore，任务配置另在被忽略的 Nepham/tasks 中。
+
+MMLU/ARC/GSM8K/CMMLU 以固定包的内置任务为准，运行时展开任务快照；CMMLU 将数据加载替换为 dashboard 路径的字符串 CSV 读取，保留内置中文 prompt、description 和汇总。SQuAD v2 继承内置 Python task，仅固定数据和官方 evaluate scorer revision，不改双请求及评分算法。数据、评分器 commit 和 150 个相关源码/任务文件 SHA256 见 `lmeh/protocol.lock.json`。
+
+CLUE 的九项 YAML、两个模板、组配置和 utils.py 从 Nepham/tasks/clue 迁移，提示词/标签/CHID 展开/QA 指标保持原样；utils.py SHA256 `788ee2089769c35cb083d9d67fc022c59f1984f49378f8455be1e354a70e7216`。不迁移旧数据加载脚本 clue.py、未选中的额外任务或原始数据；OCNLI/DRCD 不默认加入，不删除源仓库任何文件。CLUE 是该本地协议在公开 validation 上的 LLM 测评，不声称等同官方隐藏测试榜。
+
 ## ChERRANT
 
 来源：[HillZhang1999/MuCGEC](https://github.com/HillZhang1999/MuCGEC)，revision `39221934ee4ccf07801879136a75dd7e11319977`。

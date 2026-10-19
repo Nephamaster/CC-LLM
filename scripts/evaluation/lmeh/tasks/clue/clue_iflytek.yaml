@@ -1,0 +1,7 @@
+include: _classification_template_yaml
+task: clue_iflytek
+task_alias: IFLYTEK
+dataset_name: iflytek
+doc_to_text: !function utils.iflytek_doc_to_text
+doc_to_target: label
+doc_to_choice: !function utils.iflytek_doc_to_choice

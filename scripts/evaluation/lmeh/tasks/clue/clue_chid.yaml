@@ -1,0 +1,8 @@
+include: _classification_template_yaml
+task: clue_chid
+task_alias: CHID
+dataset_name: chid
+process_docs: !function utils.process_chid
+doc_to_text: !function utils.chid_doc_to_text
+doc_to_target: label
+doc_to_choice: candidates

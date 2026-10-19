@@ -1,0 +1,7 @@
+include: _classification_template_yaml
+task: clue_c3
+task_alias: C3
+dataset_name: c3
+doc_to_text: !function utils.c3_doc_to_text
+doc_to_target: !function utils.c3_doc_to_target
+doc_to_choice: !function utils.c3_doc_to_choice

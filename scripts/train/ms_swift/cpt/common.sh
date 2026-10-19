@@ -25,7 +25,7 @@ TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
 
 # ms-swift 原生数据预处理缓存复用；不是模型 KV cache，也不清理已准备的 CACHE_DIR。
-LOAD_FROM_CACHE_FILE="${LOAD_FROM_CACHE_FILE:-false}"
+LOAD_FROM_CACHE_FILE="${LOAD_FROM_CACHE_FILE:-true}"
 
 # 优化器；各阶段的学习率在对应 phase 脚本顶部。
 OPTIM="${OPTIM:-adamw_torch_fused}"
