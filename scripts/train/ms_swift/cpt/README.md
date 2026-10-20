@@ -31,93 +31,68 @@ scripts/train/ms_swift/env/bin/python -B -m src.pgca.validate_pgca \
 
 核对构建报告的 `context_parameter_count`、`auxiliary_parameter_count`、`pgca_initialization.passed`，以及验证报告 `passed=true`。实际候选宽度来自 manifest，修复后的默认值为 16＋1 slots；辅助类别从合法 ID 3 开始映射，排除 pad/none/unknown。模型保存类别名称、资源哈希和 token 类型索引指纹。
 
-## 2. 训练日程与完整脚本
+## 2. 一个阶段一个脚本
 
-| 入口/阶段 | 可训练参数 | 分支/损失 | 学习率 | 长度 |
+三个脚本完全独立：各自顶部包含该阶段的全部参数，下面直接准备数据并启动训练，不再 source 公共脚本。旧 `common.sh`、合并入口 `phase2.sh` 已移除；`plugin.py` 和 `prepare_data.py` 仍负责原有模型插件及数据处理，不存放脚本超参数。
+
+| 脚本 | 可训练参数 | 目标与默认学习率 | 长度 | 默认输入 |
 | --- | --- | --- | --- | --- |
-| `phase1.sh` / Phase1 | 主干及语义输入输出层 | PGCA 完全旁路，纯 CLM | `1e-5` | 2048 |
-| `phase2.sh` / A | Feature Embedding、Context Encoder、PGCA、辅助头 | 全音形路径，三任务 | `5e-5` | 4096 |
-| `phase2.sh` / B | 全参数 | 三任务 | 主干 `1e-5`，新增分支 `3e-5` | 4096 |
+| [phase1.sh](phase1.sh) | 主干及语义输入输出层；PGCA 旁路冻结 | 纯 CLM，`PHASE1_LR=1e-5` | 2048 | 初始 PGCA 模型 |
+| [phase2_a.sh](phase2_a.sh) | 音形 embedding、上下文编码器、PGCA、辅助头 | 三任务，`PHASE2_A_LR=5e-5` | 4096 | Phase1 完成指针 |
+| [phase2_b.sh](phase2_b.sh) | 全参数 | 三任务，主干 `PHASE2_B_LR=1e-5`，分支 `PHASE2_B_BRANCH_LR=3e-5` | 4096 | Phase2-A 完成指针 |
 
-Phase2 默认按有效 next-token 监督目标划分为 100M＋9.9B。字音/字形权重在 A 的前 10M 有效目标内，按优化步从 0 升至 0.05/0.02。A/B 重新创建优化器和调度器。A 的最后 checkpoint 进入 B；Phase1/B 按 `eval_clm_loss` 选优。三个阶段使用同一套模型源码，不通过修改源码切换行为。
+阶段切换新建优化器和调度器，不是 resume。A 选择最后 checkpoint，Phase1/B 按 `eval_clm_loss` 选优。A/B 默认共用 10B 上限，A 使用前 100M 有效目标，B 使用其余部分；辅助权重在前 10M 有效目标内升至 0.05/0.02，模型源码和辅助 loss 不变。
 
-### 参数在哪里改
+### 修改参数
 
-三个脚本顶部都有明确的“参数区”，默认数值与原方案一致，不需要去底部的启动命令里找参数。
+直接打开要运行的脚本，修改顶部相应参数。GPU、batch、梯度累积、缓存开关、优化器、保存间隔等都在同一个文件，不需要找另一个 common。环境变量仍优先于文件默认值。
 
-| 文件 | 参数区负责什么 |
-| --- | --- |
-| [common.sh](common.sh) | GPU、每卡 batch、梯度累积、dtype、梯度检查点、优化器、学习率调度、日志/保存间隔和随机种子 |
-| [phase1.sh](phase1.sh) | 输入模型、语料/输出/缓存路径、`MAX_LENGTH`、`PHASE1_TOKENS`、`PHASE1_LR`、断点路径 |
-| [phase2.sh](phase2.sh) | Phase1 checkpoint、语料/输出/缓存路径、`MAX_LENGTH`、A/B token 预算、三组学习率和 A/B 断点路径 |
+当前工作区配置原样迁入三个脚本：**每卡训练 batch=1、验证 batch=1、梯度累积=32、数据处理进程=4**。以后修改某个脚本只影响该阶段。
 
-改默认值时，只修改 `${变量名:-默认值}` 中 `:-` 后的值。例如把 `PHASE1_LR="${PHASE1_LR:-1e-5}"` 改成 `PHASE1_LR="${PHASE1_LR:-2e-5}"`。
-临时实验也可通过同名环境变量覆盖，不必改文件；优先级为 **环境变量 > 脚本默认值**：
+例如，在 `phase1.sh` 中把 `PHASE1_LR="${PHASE1_LR:-1e-5}"` 改为 `PHASE1_LR="${PHASE1_LR:-2e-5}"`，或者只对一次运行覆盖：
 
 ```bash
-PHASE2_A_LR=5e-5 PHASE2_B_LR=8e-6 PHASE2_B_BRANCH_LR=2e-5 \
-bash scripts/train/ms_swift/cpt/phase2.sh
+PHASE1_LR=2e-5 bash scripts/train/ms_swift/cpt/phase1.sh
 ```
 
-Phase2 的 `PHASE2_A_LR` 控制 A 的新增分支；`PHASE2_B_LR` 控制 B 的主干；`PHASE2_B_BRANCH_LR` 控制 B 的新增分支，已接入插件，不再需要编辑插件里的常量。`WARMUP_RATIO` 是学习率 warmup；辅助任务权重及其 warmup 仍来自模型 config 的 `pgca_aux_phonetic_weight`、`pgca_aux_glyph_weight`、`pgca_aux_warmup_tokens`。
+关键参数：
 
-改变 `MAX_LENGTH` 后，未显式指定的缓存路径会相应改变；改变卡数、训练 batch、`DATA_SEED` 或预算时，应使用新的 `CACHE_DIR`，旧缓存不匹配会被拒绝。新训练可重复使用同一个 `OUT` 根目录，由 ms-swift 自动创建 `v0-时间戳`、`v1-时间戳` 等版本目录，不覆盖旧 run。单轮训练、冻结规则、`packing=false`、loss 插件和选优指标等固定约束在执行区单列，不作为常规调参入口。
+- `PYTHON_CMD`：默认 `scripts/train/ms_swift/env/bin/python`；同一解释器负责导出、数据准备和 Swift 启动。
+- `MODEL_NAME`：基础模型 M，默认 `Qwen3-1.7B-Base-PGCA`；`MODEL` 是本阶段的输入模型路径，显式值优先。
+- `ALIGN_OUT`：仅 A 使用，默认读取 `outputs/train/M-ALIGN/next_stage_model.txt`。
+- `CPT_ROOT`：A/B 的产物根目录，默认 `outputs/train/M-CPT`。A 的 `OUT` 默认是其 `adaptation/`，B 的 `OUT` 默认是其 `joint/`；B 完成后向 `CPT_ROOT` 发布最终指针。
+- `ADAPTATION_OUT`：仅 B 使用，默认 `$CPT_ROOT/adaptation`，从该目录的完成指针选择 A 的 checkpoint。
+- `OUT`：当前阶段的输出根目录。新训练由 ms-swift 自动创建版本子目录；断点恢复继续原版本。
+- `DATA_DIR`：包含 `train/*.jsonl` 和 `validation/*.jsonl` 的目录；`CACHE_DIR` 是数据准备目录。
+- `PHASE1_TOKENS`：上限 1B；`PHASE2_TOKENS`：A+B 总上限 10B。数据不足时按实际可用量继续，0 表示全部；`ADAPTATION_TOKENS` 默认 100M，必须小于 Phase2 实际总量。
+- `MAX_LENGTH`、卡数、batch、种子和预算都参与缓存适配检查；`LOAD_FROM_CACHE_FILE` 默认 true，仅控制原生预处理缓存复用，不是模型 KV cache，也不强制重建已有准备产物。
+- `WARMUP_RATIO` 是学习率 warmup；字音/字形权重和辅助 warmup 仍来自模型 config 的 `pgca_aux_*`。
+- 三个脚本统一使用 `RESUME_FROM_CHECKPOINT` 指定本阶段断点，不再使用 `RUN_STAGE`、`RESUME_A`、`RESUME_B`。
 
-### 启动训练
+**A/B 必须保持相同的语料、tokenizer、MAX_LENGTH、DATA_SEED、PHASE2_TOKENS 和 ADAPTATION_TOKENS**，以维持监督区间不重叠。默认共用同一 `CACHE_DIR`；若需要不同卡数或训练 batch，应分别准备匹配的数据视图并设置不同 `CACHE_DIR`，可复用同一份 `.raw`，不修改原始数据。
 
-在 CC-LLM 根目录执行：
+### 启动与自动衔接
+
+在仓库根目录按顺序执行；每个命令只运行一个阶段：
 
 ```bash
 bash scripts/train/ms_swift/cpt/phase1.sh
-bash scripts/train/ms_swift/cpt/phase2.sh
+bash scripts/train/ms_swift/cpt/phase2_a.sh
+bash scripts/train/ms_swift/cpt/phase2_b.sh
 ```
 
-脚本自动定位本仓库，不要求在外部框架目录运行。模型命名采用根 README 的规范，可通过环境变量覆盖：
-
-- `CC_ROOT`：默认从脚本位置定位的 CC-LLM 根目录。
-- `PYTHON_CMD`：默认 `scripts/train/ms_swift/env/bin/python`；数据准备与 Swift 分发使用同一解释器，不依赖 PATH 中的 `swift`。
-- `BASE_MODEL_NAME`：Base 原名，默认 `Qwen3-1.7B-Base`；`MODEL_NAME` 表示本轮基础模型 M，默认 `${BASE_MODEL_NAME}-PGCA`，不是 checkpoint 路径。
-- `TRAIN_ROOT`：默认 `outputs/train`；Phase1 输出 `M-ALIGN`，Phase2 输出 `M-CPT`，不形成 `M-ALIGN-CPT`。
-- `MODEL`：Phase1 初始模型，或 Phase2 的 Phase1 checkpoint。Phase2 显式传入时优先采用；未设置时读取 `ALIGN_OUT/next_stage_model.txt`，默认指向 Phase1 最近完成训练选出的 checkpoint，不猜测 `best/` 或最大版本号。
-- `DATA_DIR`：含 `train/*.jsonl` 和 `validation/*.jsonl` 的目录，自动读取所有分片。
-- `OUT`：训练输出根目录，新训练自动创建版本子目录；`CACHE_DIR`：独立的数据准备目录，复用规则不变。
-- `LOAD_FROM_CACHE_FILE`：当前默认 `true`，控制 ms-swift 原生的 `--load_from_cache_file`，同时传给导出和训练命令。设为 `true` 允许复用框架的数据预处理缓存；设为 `false` 不复用该缓存，但不禁止框架写入新缓存，也不会删除已有数据。它不是模型的 KV cache 开关。
-
-- `CUDA_VISIBLE_DEVICES`：默认 8 卡；`NPROC_PER_NODE` 默认按可见卡列表推导。脚本按单机 DDP 编写。
-- `TRAIN_BATCH_SIZE`、`EVAL_BATCH_SIZE`、`GRAD_ACCUMULATION`：当前默认 2、1、8。
-- `DATASET_NUM_PROC`：当前默认 32。
-- `PHASE1_TOKENS`：默认上限 1B；语料不足时直接使用全部可用目标，不因短缺而停止。设为 0 表示不设上限、使用全部语料，报告按实际目标数记录。
-- `PHASE2_TOKENS`、`ADAPTATION_TOKENS`：默认总上限 10B、A 段 100M。总量不足时按可用量继续，B 使用实际总量减去 A 后的剩余目标；仍需保证 A 小于实际总量，避免 B 成为空集。
-- `MAX_LENGTH`：Phase1 默认 2048，Phase2 默认 4096；同时用于准备缓存和训练。
-- `PHASE1_LR`、`PHASE2_A_LR`、`PHASE2_B_LR`、`PHASE2_B_BRANCH_LR`：默认分别为 `1e-5`、`5e-5`、`1e-5`、`3e-5`。
-- `EVAL_STEPS`、`SAVE_STEPS`、`LOGGING_STEPS`：默认 500、500、10；短冒烟可都设为 1。保存步数必须符合 HF 的最佳模型加载约束。
-- `SEED`、`DATA_SEED`：默认均为 42；后者同时用于导出、缓存分段前打乱和训练数据采样，复用缓存时会核对。
-- `RUN_STAGE=all|a|b`：Phase2 默认依次跑 A/B，可单独跑某阶段。
-
-默认例子：初始化权重 `models/Qwen3-1.7B-Base-PGCA/`；Phase1 保存到 `outputs/train/Qwen3-1.7B-Base-PGCA-ALIGN/vN-时间戳/`；Phase2 的 A/B 分别保存到 `outputs/train/Qwen3-1.7B-Base-PGCA-CPT/adaptation/vN-时间戳/` 和 `joint/vN-时间戳/`，各自独立编号。日志由 ms-swift 放到对应版本目录的 `runs/` 下。
-
-每个版本保留自己的 `next_stage_model.txt`；训练结束后，插件还向该阶段的稳定根目录发布同名指针。Phase2 默认读取 Phase1 根目录指针，A→B 读取 A 根目录指针，B 完成后继续向 CPT 根目录发布结果。失败或未完成的训练不会因为版本号更大就被自动选中；需要固定某一轮时显式指定 `MODEL`，并发实验使用不同 `OUT` 根目录，避免共享阶段指针。
+也可以显式固定输入 checkpoint：
 
 ```bash
-# 自动衔接默认 Phase1 根目录最近完成的结果。
-bash scripts/train/ms_swift/cpt/phase2.sh
-
-# 显式选择某一轮 Phase1 checkpoint，优先于自动指针。
-MODEL=/实际路径/Qwen3-1.7B-Base-PGCA-ALIGN/v0-时间戳/checkpoint-N \
-bash scripts/train/ms_swift/cpt/phase2.sh
+MODEL=/实际路径/Phase1/checkpoint-N bash scripts/train/ms_swift/cpt/phase2_a.sh
+MODEL=/实际路径/Phase2-A/checkpoint-N bash scripts/train/ms_swift/cpt/phase2_b.sh
 ```
 
-例如较小 Phase2 筛选实验（仍需在前面完成 Phase1）：
+输出保持原布局：Phase1 为 `outputs/train/M-ALIGN/vN-时间戳/`；A/B 分别为 `outputs/train/M-CPT/adaptation/vN-时间戳/`、`joint/vN-时间戳/`，日志在对应版本的 `runs/` 下。已有 checkpoint 和默认目录下的完成指针可继续使用，不需要迁移。
 
-```bash
-PHASE2_TOKENS=500000000 ADAPTATION_TOKENS=100000000 \
-CACHE_DIR=/实际路径/cache/phase2_500m \
-OUT=/实际仓库/outputs/train/Qwen3-1.7B-Base-PGCA-CPT/experiment-500m \
-bash scripts/train/ms_swift/cpt/phase2.sh
-```
+每个版本及阶段根目录都保留 `next_stage_model.txt`。只读取最近完成训练发布的指针，不按最大版本号猜测未完成的 run。B 完成后继续发布 `outputs/train/M-CPT/next_stage_model.txt`，下游微调默认入口不变。并发实验使用不同 `CPT_ROOT`/`OUT`，避免共享完成指针。
 
-默认脚本交付完整方案 E；正式跑五组消融、下游 SFT 和 benchmark 仍需另行安排，不能把单个完整方案的结果当作机制验证。
-
+默认脚本仍是完整 PGCA 方案；消融方案应显式安排，不能把单个完整方案当作机制验证。
 ## 3. 数据准备与 token 预算
 
 首次运行脚本会调用官方 `swift export`，用本插件的模板执行无 chat template 的预训练编码，再调用 `prepare_data.py`。不重采语料，不执行逐文 G2P，不改原始 JSONL。
@@ -157,24 +132,20 @@ scripts/train/ms_swift/env/bin/python -B scripts/train/ms_swift/cpt/prepare_data
 
 ## 4. 断点恢复
 
-同一阶段恢复使用 checkpoint 的模型、优化器、调度器和数据游标；不能把阶段切换写成 resume。
+三个阶段各自在自己的脚本中配置 `RESUME_FROM_CHECKPOINT`，或通过环境变量传入：
 
 ```bash
-# Phase1
-RESUME_FROM_CHECKPOINT=/本轮ALIGN输出/checkpoint-N \
+RESUME_FROM_CHECKPOINT=/本轮ALIGN/v0-时间戳/checkpoint-N \
 bash scripts/train/ms_swift/cpt/phase1.sh
 
-# Phase2-A 恢复；完成后自动进入 B
-RESUME_A=/本轮CPT输出/adaptation/checkpoint-N \
-bash scripts/train/ms_swift/cpt/phase2.sh
+RESUME_FROM_CHECKPOINT=/本轮CPT/adaptation/v0-时间戳/checkpoint-N \
+bash scripts/train/ms_swift/cpt/phase2_a.sh
 
-# A 已完成，只恢复 B
-RUN_STAGE=b RESUME_B=/本轮CPT输出/joint/checkpoint-N \
-bash scripts/train/ms_swift/cpt/phase2.sh
+RESUME_FROM_CHECKPOINT=/本轮CPT/joint/v0-时间戳/checkpoint-N \
+bash scripts/train/ms_swift/cpt/phase2_b.sh
 ```
 
-恢复时保持原 `OUT` 根目录、`CACHE_DIR`、模型/数据版本、卡数、batch、累积步数、预算、随机种子、学习率及优化器配置。脚本从恢复 checkpoint 定位其原版本目录，关闭自动加版本，在原 run 内继续写入；恢复的 checkpoint 必须属于该阶段的输出根目录。缓存不完整时脚本会停止，不会自动删掉重建。每个 checkpoint 的 `cc_llm_state.json` 记录阶段、step 和累计辅助训练 tokens；模型 buffer 同时保存该计数，恢复后不会重新开始辅助权重 warmup。
-
+恢复时保持该阶段原 `OUT` 根目录、缓存、模型/数据版本、卡数、batch、累积步数、预算、种子和优化器配置。脚本定位断点所在的版本目录，关闭自动加版本并继续写入。A 恢复完成后不会自行启动 B；需要运行 B 脚本。`cc_llm_state.json` 和模型 buffer 继续保存辅助训练进度，不重置辅助权重 warmup。
 ## 5. 验证指标与工程边界
 
 - 以 `eval_clm_loss` 选优，PPL 只能用 `exp(eval_clm_loss)`。`eval_total_loss` 是含辅助任务的联合指标。

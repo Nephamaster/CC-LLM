@@ -86,19 +86,31 @@ RESUME_FROM_CHECKPOINT="" \
 bash scripts/train/ms_swift/cpt/phase1.sh \
   2>&1 | tee "$SMOKE_ROOT/phase1.console.log"
 
-# Phase2：自动读取刚完成的 Phase1 checkpoint，依次运行 A/B
+# Phase2-A：自动读取刚完成的 Phase1 checkpoint。
 MODEL="" \
 ALIGN_OUT="$SMOKE_ALIGN" \
 DATA_DIR="$SMOKE_ROOT/dataset" \
-OUT="$SMOKE_CPT" \
+CPT_ROOT="$SMOKE_CPT" \
+OUT="$SMOKE_CPT/adaptation" \
 CACHE_DIR="$SMOKE_ROOT/cache_phase2" \
 PHASE2_TOKENS=131072 \
 ADAPTATION_TOKENS=65536 \
-RUN_STAGE=all \
-RESUME_A="" \
-RESUME_B="" \
-bash scripts/train/ms_swift/cpt/phase2.sh \
+RESUME_FROM_CHECKPOINT="" \
+bash scripts/train/ms_swift/cpt/phase2_a.sh \
   2>&1 | tee "$SMOKE_ROOT/phase2.console.log"
+
+# Phase2-B：自动读取刚完成的 A checkpoint，校验并复用同一份分段数据。
+MODEL="" \
+DATA_DIR="$SMOKE_ROOT/dataset" \
+CPT_ROOT="$SMOKE_CPT" \
+ADAPTATION_OUT="$SMOKE_CPT/adaptation" \
+OUT="$SMOKE_CPT/joint" \
+CACHE_DIR="$SMOKE_ROOT/cache_phase2" \
+PHASE2_TOKENS=131072 \
+ADAPTATION_TOKENS=65536 \
+RESUME_FROM_CHECKPOINT="" \
+bash scripts/train/ms_swift/cpt/phase2_b.sh \
+  2>&1 | tee -a "$SMOKE_ROOT/phase2.console.log"
 
 "$PYTHON_CMD" -B - <<'PY'
 import json
@@ -115,9 +127,10 @@ stages = {
 for name, folder in stages.items():
     pointer = folder / "next_stage_model.txt"
     assert pointer.is_file(), f"{name}: 未生成阶段完成指针"
-    assert Path(pointer.read_text().strip()).is_dir()
+    selected = Path(pointer.read_text().strip())
+    assert selected.is_dir()
 
-    checkpoints = list(folder.glob("checkpoint-*"))
+    checkpoints = list(selected.parent.glob("checkpoint-*"))
     assert checkpoints, f"{name}: 没有 checkpoint"
     latest = max(checkpoints, key=lambda p: int(p.name.rsplit("-", 1)[1]))
     state = json.loads((latest / "trainer_state.json").read_text())

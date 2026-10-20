@@ -24,6 +24,10 @@ from pathlib import Path
 args = sys.argv[1:]
 with open(os.environ["CAPTURE"], "a") as handle:
     handle.write(json.dumps(args) + "\\n")
+if len(args) > 1 and args[1].endswith("/prepare_data.py") and "--verify" not in args:
+    prepared = Path(args[args.index("--output") + 1])
+    prepared.mkdir(parents=True)
+    (prepared / "preparation_report.json").write_text("{}")
 if args[:4] == ["-B", "-m", "swift.cli.main", "pt"]:
     if os.environ.get("CAPTURE_ENV"):
         with open(os.environ["CAPTURE_ENV"], "a") as handle:
@@ -34,6 +38,8 @@ if args[:4] == ["-B", "-m", "swift.cli.main", "pt"]:
     checkpoint.mkdir(parents=True)
     (checkpoint / "config.json").write_text("{}")
     (output / "next_stage_model.txt").write_text(str(checkpoint) + "\\n")
+    if os.environ.get("CC_LLM_OUTPUT_ROOT"):
+        (Path(os.environ["CC_LLM_OUTPUT_ROOT"]) / "next_stage_model.txt").write_text(str(checkpoint) + "\\n")
 ''', encoding="utf-8")
     program.chmod(0o755)
     capture = tmp_path / "calls.jsonl"
@@ -43,7 +49,7 @@ if args[:4] == ["-B", "-m", "swift.cli.main", "pt"]:
 def environment(**overrides):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     for key in ("MODEL", "MODEL_NAME", "BASE_MODEL_NAME", "CC_ROOT", "PYTHON", "PYTHON_CMD", "OUT", "ALIGN_OUT",
-                "TRAIN_ROOT", "DATA_DIR", "CACHE_DIR", "RUN_STAGE", "RUN_NAME", "LORA", "RESUME_A", "RESUME_B",
+                "TRAIN_ROOT", "DATA_DIR", "CACHE_DIR", "CPT_ROOT", "ADAPTATION_OUT", "RUN_NAME", "LORA",
                 "RESUME_FROM_CHECKPOINT", "DATASET", "SPLIT", "FEWSHOT", "STAGE",
                 "CUDA_VISIBLE_DEVICES", "NPROC_PER_NODE", "TRAIN_BATCH_SIZE", "EVAL_BATCH_SIZE",
                 "GRAD_ACCUMULATION", "DATASET_NUM_PROC", "TORCH_DTYPE", "GRADIENT_CHECKPOINTING",
@@ -65,11 +71,13 @@ def option(args, name):
     return args[args.index(name) + 1]
 
 
-def test_training_root_and_env_are_resolved_without_cwd(tmp_path):
-    result = subprocess.run(["bash", "-c", 'source "$1"; printf "%s\\n" "$CC_ROOT" "$PYTHON_CMD" "$MODEL_NAME" "$TRAIN_ROOT"',
-                             "_", str(CPT / "common.sh")], cwd=tmp_path, env=environment(), text=True, capture_output=True, check=True)
-    assert result.stdout.splitlines() == [str(ROOT), str(ROOT / "scripts/train/ms_swift/env/bin/python"),
-                                        "Qwen3-1.7B-Base-PGCA", str(ROOT / "outputs/train")]
+@pytest.mark.parametrize("entry", ["phase1.sh", "phase2_a.sh", "phase2_b.sh"])
+def test_training_stages_are_self_contained(entry):
+    source = (CPT / entry).read_text()
+    assert "source " not in source
+    assert "prepare_cache()" not in source and "run_training()" not in source
+    assert '"$PYTHON_CMD" -B -m swift.cli.main pt' in source
+    assert "TRAIN_BATCH_SIZE=" in source and "LOAD_FROM_CACHE_FILE=" in source
 
 
 @pytest.mark.parametrize("overrides", [{}, {"LOAD_FROM_CACHE_FILE": "false"}, {
@@ -96,7 +104,7 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
     env = environment(CC_ROOT=project, BASE_MODEL_NAME="ExampleBase", PYTHON_CMD=program,
                       DATA_DIR=data, CAPTURE=capture, CUDA_VISIBLE_DEVICES="0,1",
                       CAPTURE_ENV=tmp_path / "env.jsonl", **overrides)
-    for phase in ("phase1.sh", "phase2.sh"):
+    for phase in ("phase1.sh", "phase2_a.sh", "phase2_b.sh"):
         subprocess.run(["bash", str(CPT / phase)], cwd=tmp_path, env=env, check=True)
     calls = captured(capture)
     training = [args for args in calls if args[:4] == ["-B", "-m", "swift.cli.main", "pt"]]
@@ -113,9 +121,9 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
     assert [option(args, "--max_length") for args in training] == [
         overrides.get("MAX_LENGTH", default) for default in ("2048", "4096", "4096")]
     shared_options = {
-        "TRAIN_BATCH_SIZE": ("--per_device_train_batch_size", "2"),
+        "TRAIN_BATCH_SIZE": ("--per_device_train_batch_size", "1"),
         "EVAL_BATCH_SIZE": ("--per_device_eval_batch_size", "1"),
-        "GRAD_ACCUMULATION": ("--gradient_accumulation_steps", "8"),
+        "GRAD_ACCUMULATION": ("--gradient_accumulation_steps", "32"),
         "TORCH_DTYPE": ("--torch_dtype", "bfloat16"),
         "GRADIENT_CHECKPOINTING": ("--gradient_checkpointing", "true"),
         "OPTIM": ("--optim", "adamw_torch_fused"), "ADAM_BETA1": ("--adam_beta1", "0.9"),
@@ -137,12 +145,13 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
         assert option(args, "--average_tokens_across_devices") == "true"
     exports = [args for args in calls if args[:4] == ["-B", "-m", "swift.cli.main", "export"]]
     for args in exports:
-        assert option(args, "--dataset_num_proc") == overrides.get("DATASET_NUM_PROC", "32")
+        assert option(args, "--dataset_num_proc") == overrides.get("DATASET_NUM_PROC", "4")
         assert option(args, "--data_seed") == overrides.get("DATA_SEED", "42")
         assert option(args, "--load_from_cache_file") == overrides.get("LOAD_FROM_CACHE_FILE", "true")
     prepared = [args for args in calls if args[1] == str(CPT / "prepare_data.py")]
-    for i, args in enumerate(prepared, start=1):
-        assert option(args, "--batch-size") == overrides.get("TRAIN_BATCH_SIZE", "2")
+    assert len(prepared) == 3 and "--verify" in prepared[2]
+    for i, args in zip((1, 2, 2), prepared):
+        assert option(args, "--batch-size") == overrides.get("TRAIN_BATCH_SIZE", "1")
         assert option(args, "--world-size") == "2"
         assert option(args, "--seed") == overrides.get("DATA_SEED", "42")
         assert option(args, "--total-tokens") == overrides.get(f"PHASE{i}_TOKENS", "1000000000" if i == 1 else "10000000000")
@@ -152,8 +161,42 @@ def test_phase1_and_phase2_use_canonical_names_and_same_python(tmp_path, recorde
     stages = captured(tmp_path / "env.jsonl")
     assert [item["CC_LLM_STAGE"] for item in stages] == ["phase1", "phase2a", "phase2b"]
     assert [item["PGCA_ENABLED"] for item in stages] == ["false", "true", "true"]
-    assert all(item["PHASE2_B_BRANCH_LR"] == overrides.get("PHASE2_B_BRANCH_LR", "3e-5") for item in stages[1:])
+    assert stages[2]["PHASE2_B_BRANCH_LR"] == overrides.get("PHASE2_B_BRANCH_LR", "3e-5")
     assert all(args[:2] == ["-B", "-m"] or args[1] == str(CPT / "prepare_data.py") for args in calls)
+
+
+@pytest.mark.parametrize("entry,stage", [("phase1.sh", "phase1"), ("phase2_a.sh", "phase2a"), ("phase2_b.sh", "phase2b")])
+@pytest.mark.parametrize("resume", [False, True])
+def test_independent_stage_model_override_and_resume(tmp_path, recorder, entry, stage, resume):
+    program, capture = recorder
+    model, data, cache, output = (tmp_path / name for name in ("model", "data", "cache", "output"))
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    for split in ("train", "validation"):
+        (data / split).mkdir(parents=True)
+        (data / split / "part.jsonl").write_text("{}\n")
+    cache.mkdir()
+    (cache / "preparation_report.json").write_text("{}")
+    checkpoint = output / "v0-test/checkpoint-9"
+    if resume:
+        checkpoint.mkdir(parents=True)
+        (checkpoint / "trainer_state.json").write_text("{}")
+    env = environment(PYTHON_CMD=program, CAPTURE=capture, CAPTURE_ENV=tmp_path / "env.jsonl",
+                      MODEL=model, DATA_DIR=data, CACHE_DIR=cache, OUT=output, CPT_ROOT=tmp_path / "cpt",
+                      ALIGN_OUT=tmp_path / "missing-align", ADAPTATION_OUT=tmp_path / "missing-adaptation",
+                      RESUME_FROM_CHECKPOINT=checkpoint if resume else "")
+    subprocess.run(["bash", str(CPT / entry)], cwd=tmp_path, env=env, check=True)
+    calls = captured(capture)
+    assert len(calls) == 2 and "--verify" in calls[0]
+    args = calls[1]
+    assert option(args, "--model") == str(checkpoint if resume else model)
+    assert option(args, "--output_dir") == str(checkpoint.parent if resume else output)
+    assert option(args, "--add_version") == ("false" if resume else "true")
+    if resume:
+        assert option(args, "--resume_from_checkpoint") == str(checkpoint)
+    assert captured(tmp_path / "env.jsonl")[0]["CC_LLM_STAGE"] == stage
+    if stage == "phase2b":
+        assert (tmp_path / "cpt/next_stage_model.txt").read_text() == (output / "next_stage_model.txt").read_text()
 
 
 @pytest.mark.parametrize("load_from_cache_file", ["true", "false"])
@@ -168,11 +211,11 @@ def test_native_cache_switch_preserves_prepared_data_validation(tmp_path, record
     cache.mkdir()
     report = cache / "preparation_report.json"
     report.write_text("{}")
-    command = 'source "$1"; prepare_cache "$2" "$3" "$4" 2048 0 1000'
-    subprocess.run(["bash", "-c", command, "_", str(CPT / "common.sh"), str(model), str(data), str(cache)],
-                   env=environment(PYTHON_CMD=program, CAPTURE=capture, LOAD_FROM_CACHE_FILE=load_from_cache_file), check=True)
+    subprocess.run(["bash", str(CPT / "phase1.sh")], env=environment(
+        PYTHON_CMD=program, CAPTURE=capture, LOAD_FROM_CACHE_FILE=load_from_cache_file,
+        MODEL=model, DATA_DIR=data, CACHE_DIR=cache, OUT=tmp_path / "output", PHASE1_TOKENS="1000"), check=True)
     calls = captured(capture)
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0][1] == str(CPT / "prepare_data.py")
     assert "--verify" in calls[0]
     assert report.read_text() == "{}"
