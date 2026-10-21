@@ -17,6 +17,9 @@ from scripts.diagnostics.pgca_probe import (
     rank_readings, run, tokenizer_digest, validate_output_location,
 )
 from scripts.diagnostics.probe_metrics import METRICS, paired_summary, tensor_digest
+from scripts.diagnostics.uniform_pgca_probe import (
+    UniformAttention, load_reference, run as run_uniform, summarize as summarize_uniform,
+)
 from src.configuration_qwen3_pgca import FEATURE_VOCAB_KEYS, Qwen3PGCAConfig
 from src.embedding.feature_memory import empty_feature_index
 from src.modeling_qwen3_pgca import Qwen3PGCAForCausalLM
@@ -202,6 +205,103 @@ class ProbeTest(unittest.TestCase):
             self.assertEqual(set(result), {"model.safetensors", "config.json"})
             self.assertEqual({call.args[0].name for call in digest.call_args_list}, set(result))
 
+    def test_uniform_preserves_values_masks_and_output_projection(self):
+        for dtype in (torch.float32, torch.bfloat16):
+            for slots in (1, 4, 17):
+                with self.subTest(dtype=dtype, slots=slots), torch.no_grad():
+                    model = tiny_model().to(dtype)
+                    attention = model.model.layers[0].pgca_attn
+                    attention.o_proj.bias = torch.nn.Parameter(torch.ones(8, dtype=dtype))
+                    hidden = torch.randn(1, 3, 8, dtype=dtype)
+                    memory = torch.randn(1, 3, slots, 8, dtype=dtype)
+                    mask = torch.zeros(1, 3, slots, dtype=torch.bool)
+                    mask[:, 1, 0] = True
+                    mask[:, 2] = True
+                    old_memory, old_mask = memory.clone(), mask.clone()
+                    before = tensor_digest(model.state_dict().items())
+                    uniform = mask.float() / mask.sum(-1, keepdim=True).clamp_min(1)
+                    weights = uniform.unsqueeze(2).expand(1, 3, attention.num_heads, slots).to(dtype)
+                    values = attention._repeat_kv(attention.v_proj(memory).view(
+                        1, 3, slots, attention.num_key_value_heads, attention.head_dim))
+                    expected = attention.o_proj(
+                        torch.einsum("bshm,bsmhd->bshd", weights, values).reshape(1, 3, 8))
+                    expected = expected.masked_fill(~mask.any(-1, keepdim=True), 0)
+                    seen = []
+                    with UniformAttention(model, [0]) as intervention:
+                        handle = attention.dropout.register_forward_hook(
+                            lambda module, inputs, output: seen.append(output.clone()))
+                        try:
+                            actual = attention(hidden, feature_memory=memory, feature_mask=mask)
+                        finally:
+                            handle.remove()
+                    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                    torch.testing.assert_close(seen[0], weights, rtol=0, atol=0)
+                    self.assertEqual(intervention.calls, {0: 1})
+                    self.assertEqual(actual[:, 0].abs().sum(), 0)
+                    self.assertTrue(torch.equal(memory, old_memory))
+                    self.assertTrue(torch.equal(mask, old_mask))
+                    self.assertEqual(before, tensor_digest(model.state_dict().items()))
+
+    def test_uniform_handles_absent_mask_and_ignores_qk_scores(self):
+        model = tiny_model()
+        attention = model.model.layers[0].pgca_attn
+        memory, hidden = torch.randn(1, 2, 3, 8), torch.randn(1, 2, 8)
+        seen = []
+        with torch.no_grad(), UniformAttention(model, [0]):
+            handle = attention.dropout.register_forward_hook(lambda m, i, o: seen.append(o.clone()))
+            try:
+                first = attention(hidden, memory, None)
+                attention.q_proj.weight.fill_(2)
+                attention.k_proj.weight.fill_(-3)
+                second = attention(hidden * 4, memory, None)
+            finally:
+                handle.remove()
+        torch.testing.assert_close(first, second, rtol=0, atol=0)
+        torch.testing.assert_close(seen[0], torch.full_like(seen[0], 1 / 3))
+
+    def test_uniform_restores_hooks_after_exception_and_rejects_training(self):
+        model = tiny_model()
+        before = model(torch.tensor([[3, 2, 3, 2]])).logits
+        with self.assertRaisesRegex(RuntimeError, "intentional"):
+            with UniformAttention(model, [0, 1]):
+                model(torch.tensor([[3, 2, 3, 2]]))
+                raise RuntimeError("intentional")
+        after = model(torch.tensor([[3, 2, 3, 2]])).logits
+        torch.testing.assert_close(before, after, rtol=0, atol=0)
+        self.assertTrue(all(not m._forward_hooks and not m._forward_pre_hooks for m in model.modules()))
+        with self.assertRaisesRegex(ValueError, "eval-only"):
+            with UniformAttention(model.train(), [0, 1]):
+                pass
+
+    def test_uniform_leaves_padding_and_non_hanzi_without_feature_attention(self):
+        model = tiny_model()
+        seen = []
+        ids = torch.tensor([[0, 3, 2]])
+        with torch.no_grad(), UniformAttention(model, [0, 1]):
+            handle = model.model.layers[0].pgca_attn.dropout.register_forward_hook(
+                lambda m, i, o: seen.append(o.clone()))
+            try:
+                model(ids, attention_mask=torch.tensor([[0, 1, 1]]))
+            finally:
+                handle.remove()
+        self.assertEqual(seen[0][:, :2].abs().sum(), 0)
+        torch.testing.assert_close(seen[0][:, 2].sum(-1), torch.ones(1, 2))
+
+    def test_uniform_summary_recomputes_paired_subset_ratios(self):
+        samples = []
+        for count, loss in ((1, 1.), (9, 4.)):
+            samples.append({name: {"clm_sum": (loss + offset) * count, "token_count": count}
+                            for name, offset in (("normal", 0), ("uniform", 1), ("off", 3))})
+        result = summarize_uniform(samples, seed=42, bootstrap=32)
+        self.assertAlmostEqual(result["normal_nll"], 3.7)
+        self.assertAlmostEqual(result["uniform_nll"], 4.7)
+        self.assertAlmostEqual(result["off_nll"], 6.7)
+        for name, value in (("uniform_minus_normal", 1.), ("off_minus_normal", 3.), ("off_minus_uniform", 2.)):
+            self.assertEqual(result["paired_comparisons"][name]["paired_bootstrap_ci95"], [value, value])
+        samples[0]["uniform"]["token_count"] = 2
+        with self.assertRaisesRegex(ValueError, "target counts differ"):
+            summarize_uniform(samples, seed=42, bootstrap=4)
+
     def test_end_to_end_saved_runtime_and_reproducible_summary(self):
         from datasets import Dataset
         from tokenizers import Tokenizer, models, pre_tokenizers
@@ -219,7 +319,7 @@ class ProbeTest(unittest.TestCase):
             tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw, unk_token="[UNK]", pad_token="[PAD]")
             tokenizer.save_pretrained(checkpoint)
             cache = root / "cache"
-            dataset = Dataset.from_list([fixture_row(), fixture_row((2, 3, 2))])
+            dataset = Dataset.from_list([fixture_row(), fixture_row((2, 3, 2)), fixture_row((3, 5, 7))])
             for split in ("val", "train_b"):
                 dataset.save_to_disk(str(cache / split))
             (cache / "preparation_report.json").write_text(json.dumps({
@@ -228,7 +328,7 @@ class ProbeTest(unittest.TestCase):
             cases = root / "polyphones.tsv"
             cases.write_text("id\tleft_context\ttarget\tpinyin\treviewed\n1\ta\t中\tzhong1\tfalse\n")
             args = argparse.Namespace(model=checkpoint, cache=cache, output=root / "probe1",
-                                      polyphones=cases, samples=2, bootstrap=16, seed=42,
+                                      polyphones=cases, samples=3, bootstrap=16, seed=42,
                                       gradient_row_index=0, layers="0,1", device="cpu", dtype="float32",
                                       attention="eager")
             # The server deploys a source copy without .git: exercise that real layout.
@@ -257,6 +357,39 @@ class ProbeTest(unittest.TestCase):
                              (root / "probe2/probe_samples.jsonl").read_bytes())
             with self.assertRaises(FileExistsError):
                 run(args)
+            p0 = root / "probe1"
+            p0_bytes = {path.name: path.read_bytes() for path in p0.iterdir()}
+            uniform_args = argparse.Namespace(p0=p0, model=None, output=root / "uniform1",
+                                              device="cpu", limit=0)
+            run_uniform(uniform_args)
+            uniform_args.output = root / "uniform2"
+            run_uniform(uniform_args)
+            result = json.loads((root / "uniform1/uniform_summary.json").read_text())
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["validation_sequences"], 2)
+            self.assertEqual(result["effective_targets"], 5)
+            self.assertEqual(result["checks"]["uniform_hook_calls"], {"0": 3, "1": 3})
+            self.assertTrue(result["weights_unchanged"])
+            self.assertTrue(result["checks"]["normal_restored_after_hooks"])
+            for name in ("uniform_summary.json", "uniform_samples.jsonl"):
+                self.assertEqual((root / "uniform1" / name).read_bytes(), (root / "uniform2" / name).read_bytes())
+            self.assertEqual(p0_bytes, {path.name: path.read_bytes() for path in p0.iterdir()})
+            _, selected, eligible = load_reference(p0, limit=1)
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(eligible, 2)
+            with self.assertRaises(FileExistsError):
+                run_uniform(uniform_args)
+            uniform_args.output = root / "mismatch"
+            with patch("scripts.diagnostics.uniform_pgca_probe.tensor_digest", return_value="wrong"):
+                with self.assertRaisesRegex(ValueError, "model state differs from P0"):
+                    run_uniform(uniform_args)
+            self.assertFalse(uniform_args.output.exists())
+            sample_file = p0 / "probe_samples.jsonl"
+            sample_rows = [json.loads(line) for line in sample_file.read_text().splitlines()]
+            sample_rows[0]["input_sha256"] = "changed"
+            sample_file.write_text("".join(json.dumps(row) + "\n" for row in sample_rows))
+            with self.assertRaisesRegex(ValueError, "input/labels changed"):
+                load_reference(p0)
 
 
 if __name__ == "__main__":

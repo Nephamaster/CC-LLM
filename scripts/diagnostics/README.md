@@ -2,6 +2,8 @@
 
 仅诊断第一轮 Phase2-B 的 **checkpoint-11500**，不训练、不更新权重、不改模型源码或训练插件、不改缓存，也不读取会随训练变化的 `next_stage_model.txt`。使用 checkpoint 自带的运行代码，不用当前 `src/` 替换它。P1/P2 尚未实施。
 
+P0 完成后的最小补充对照见 [Uniform-Attention 实验](UNIFORM_ATTENTION.md)：复用已保存的相关输入和 Normal/Off 结果，只新增 Uniform 推理，不需重跑本页完整流程。
+
 ## 先做这两件事
 
 1. 在服务器保留 **完整、已保存完毕的 checkpoint-11500**（权重分片及索引、config、tokenizer、配套 `.py`）。当前训练仍会轮换清理 checkpoint，建议将诊断副本放在训练目录之外，运行时用 `MODEL` 指向副本。无需上传本地，也无需停止 Phase2-B。
