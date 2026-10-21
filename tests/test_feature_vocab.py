@@ -225,7 +225,8 @@ def test_pgca_rebuild_never_deletes_existing_output(tmp_path):
 
 
 @pytest.mark.parametrize("contextual", [False, True])
-def test_v2_pgca_build_and_remote_reload(artifacts, tmp_path, contextual):
+@pytest.mark.parametrize("weights", [None, (0.07, 0.01)])
+def test_v2_pgca_build_and_remote_reload(artifacts, tmp_path, contextual, weights):
     from transformers import AutoModelForCausalLM, Qwen3Config, Qwen3ForCausalLM
     from src.pgca.build_pgca import build_pgca_model, save_pretrained_without_auto_copy
 
@@ -245,10 +246,20 @@ def test_v2_pgca_build_and_remote_reload(artifacts, tmp_path, contextual):
         tokenizer.save_pretrained(root)
     EmbeddingFeatureConfig.from_artifacts(root, d_model=8, d_feat=4).save_pretrained(root / "embedding_config.json")
     destination = tmp_path / "new_pgca"
+    options = {} if weights is None else dict(aux_phonetic_weight=weights[0], aux_glyph_weight=weights[1])
+    source_config = (root / "config.json").read_bytes()
     report = build_pgca_model(root, destination, "0,1", context_encoder=contextual,
-                             auxiliary_heads=contextual, zero_init_output=contextual)
+                             auxiliary_heads=contextual, zero_init_output=contextual, **options)
     assert report["feature_index"]["passed"]
+    expected = weights or (0.03, 0.03)
+    saved = json.loads((destination / "config.json").read_text())
+    for name, value in zip(("pgca_aux_phonetic_weight", "pgca_aux_glyph_weight"), expected):
+        assert saved[name] == value
+        assert report[name] == value
+    assert saved["pgca_aux_warmup_tokens"] == 10_000_000
+    assert (root / "config.json").read_bytes() == source_config
     loaded = AutoModelForCausalLM.from_pretrained(destination, trust_remote_code=True)
+    assert (loaded.config.pgca_aux_phonetic_weight, loaded.config.pgca_aux_glyph_weight) == expected
     assert loaded.config.pgca_feature_schema_version == 2
     assert loaded.config.pgca_context_enabled == contextual
     assert loaded.config.pgca_aux_enabled == contextual
@@ -269,6 +280,28 @@ def test_v2_pgca_build_and_remote_reload(artifacts, tmp_path, contextual):
     save_pretrained_without_auto_copy(loaded, destination)
     with pytest.raises(RuntimeError, match="fingerprint"):
         AutoModelForCausalLM.from_pretrained(destination, trust_remote_code=True)
+
+
+def test_pgca_build_rejects_invalid_auxiliary_weights_before_copying(tmp_path):
+    from src.pgca.build_pgca import build_pgca_model
+
+    for name in ("aux_phonetic_weight", "aux_glyph_weight"):
+        for value in (-1, float("nan"), float("inf")):
+            destination = tmp_path / "invalid"
+            with pytest.raises(ValueError, match="auxiliary weight"):
+                build_pgca_model(tmp_path / "source", destination, None, **{name: value})
+            assert not destination.exists()
+
+
+def test_pgca_build_cli_passes_explicit_auxiliary_weights(tmp_path):
+    from src.pgca.build_pgca import main
+
+    arguments = ["build", "--model-path", str(tmp_path / "char"), "--output-path", str(tmp_path / "pgca"),
+                 "--auxiliary-heads", "--aux-phonetic-weight", "0.04", "--aux-glyph-weight", "0.06"]
+    with patch("sys.argv", arguments), patch("src.pgca.build_pgca.build_pgca_model", return_value={}) as build:
+        main()
+    assert build.call_args.kwargs["aux_phonetic_weight"] == 0.04
+    assert build.call_args.kwargs["aux_glyph_weight"] == 0.06
 
 
 def test_pgca_validation_cli_returns_failure_status(tmp_path):

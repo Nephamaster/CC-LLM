@@ -57,7 +57,8 @@ def environment(**overrides):
                 "LR_SCHEDULER_TYPE", "WARMUP_RATIO", "MAX_GRAD_NORM", "LOGGING_STEPS",
                 "EVAL_STEPS", "SAVE_STEPS", "SAVE_TOTAL_LIMIT", "SEED", "DATA_SEED", "MAX_LENGTH",
                 "PHASE1_TOKENS", "PHASE2_TOKENS", "ADAPTATION_TOKENS", "PHASE1_LR",
-                "PHASE2_A_LR", "PHASE2_B_LR", "PHASE2_B_BRANCH_LR", "CAPTURE_ENV", "LOAD_FROM_CACHE_FILE"):
+                "PHASE2_A_LR", "PHASE2_B_LR", "PHASE2_B_BRANCH_LR", "CAPTURE_ENV", "LOAD_FROM_CACHE_FILE",
+                "CHAR_MODEL", "PGCA_MODEL", "AUX_PHONETIC_WEIGHT", "AUX_GLYPH_WEIGHT"):
         env.pop(key, None)
     env.update({name: str(value) for name, value in overrides.items()})
     return env
@@ -69,6 +70,21 @@ def captured(path):
 
 def option(args, name):
     return args[args.index(name) + 1]
+
+
+@pytest.mark.parametrize("overrides", [{}, {"AUX_PHONETIC_WEIGHT": "0.06", "AUX_GLYPH_WEIGHT": "0.01"}])
+def test_pgca_build_script_exposes_auxiliary_weights(tmp_path, recorder, overrides):
+    program, capture = recorder
+    source, output = tmp_path / "Char source", tmp_path / "new PGCA"
+    env = environment(PYTHON_CMD=program, CAPTURE=capture, CHAR_MODEL=source, PGCA_MODEL=output, **overrides)
+    subprocess.run(["bash", str(ROOT / "scripts/build_pgca.sh")], env=env, cwd=tmp_path, check=True)
+    build, validate = captured(capture)
+    assert build[:3] == ["-B", "-m", "src.pgca.build_pgca"]
+    assert option(build, "--model-path") == str(source)
+    assert option(build, "--output-path") == str(output)
+    assert option(build, "--aux-phonetic-weight") == overrides.get("AUX_PHONETIC_WEIGHT", "0.03")
+    assert option(build, "--aux-glyph-weight") == overrides.get("AUX_GLYPH_WEIGHT", "0.03")
+    assert validate == ["-B", "-m", "src.pgca.validate_pgca", "--model-path", str(output)]
 
 
 @pytest.mark.parametrize("entry", ["phase1.sh", "phase2_a.sh", "phase2_b.sh"])

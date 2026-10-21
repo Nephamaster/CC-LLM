@@ -13,6 +13,7 @@
 # limitations under the License.
 """Configuration for the Qwen3 model with PGCA feature attention."""
 
+import math
 import os
 from transformers.configuration_utils import PreTrainedConfig
 from transformers.modeling_rope_utils import RopeParameters
@@ -29,6 +30,15 @@ FEATURE_VOCAB_KEYS = (
     "radical_stroke",
     "structure",
 )
+
+DEFAULT_AUX_PHONETIC_WEIGHT = 0.03
+DEFAULT_AUX_GLYPH_WEIGHT = 0.03
+
+
+def validate_auxiliary_weights(phonetic_weight: float, glyph_weight: float) -> None:
+    for name, value in (("phonetic", phonetic_weight), ("glyph", glyph_weight)):
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} auxiliary weight must be finite and non-negative")
 
 
 class Qwen3PGCAConfig(PreTrainedConfig):
@@ -108,8 +118,8 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         pgca_context_num_token_types: int = 7,
         pgca_aux_enabled: bool = False,
         pgca_aux_hidden_size: int = 256,
-        pgca_aux_phonetic_weight: float = 0.05,
-        pgca_aux_glyph_weight: float = 0.02,
+        pgca_aux_phonetic_weight: float = DEFAULT_AUX_PHONETIC_WEIGHT,
+        pgca_aux_glyph_weight: float = DEFAULT_AUX_GLYPH_WEIGHT,
         pgca_aux_warmup_tokens: int = 10_000_000,
         pgca_zero_init_output: bool = False,
         **kwargs,
@@ -198,6 +208,7 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         )
 
     def _validate_pgca(self) -> None:
+        validate_auxiliary_weights(self.pgca_aux_phonetic_weight, self.pgca_aux_glyph_weight)
         if self.pgca_context_enabled:
             if not self.use_pgca or self.pgca_context_num_layers < 1 or self.pgca_context_num_heads < 1:
                 raise ValueError("feature context requires PGCA and positive layer/head counts")

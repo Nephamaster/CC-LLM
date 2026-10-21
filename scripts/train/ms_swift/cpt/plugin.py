@@ -20,6 +20,10 @@ from swift.template.register import TEMPLATE_MAPPING
 
 
 GLYPH_NAMES = ("stroke_count", "radical_stroke", "structure")
+BRANCH_GRAD_GROUPS = (
+    "feature_embedding", "context_encoder", "pgca_q_proj", "pgca_k_proj", "pgca_v_proj", "pgca_o_proj",
+    "pgca_norms", "auxiliary_phonetic", "auxiliary_glyph",
+)
 
 
 def stage():
@@ -31,6 +35,21 @@ def stage():
 
 def is_branch_parameter(name):
     return ".pgca_attn." in name or name.startswith(("model.feature_memory_builder.", "auxiliary_heads."))
+
+
+def branch_gradient_group(name):
+    if name.startswith("model.feature_memory_builder.feature_embedding."):
+        return "feature_embedding"
+    if name.startswith("model.feature_memory_builder.context_encoder."):
+        return "context_encoder"
+    if ".pgca_attn." in name:
+        part = name.split(".pgca_attn.", 1)[1].split(".", 1)[0]
+        return f"pgca_{part}" if part in ("q_proj", "k_proj", "v_proj", "o_proj") else "pgca_norms"
+    if name.startswith("auxiliary_heads.phonetic."):
+        return "auxiliary_phonetic"
+    if name.startswith("auxiliary_heads."):
+        return "auxiliary_glyph"
+    return None
 
 
 class RatioMetric:
@@ -145,6 +164,8 @@ class CCLLMLoss(BaseLoss):
             record(trainer, mode, "phon_accuracy", sums["phon_correct"], sums["phon_count"])
             record_count(trainer, mode, "phon_tokens", sums["phon_count"])
             record(trainer, mode, "weighted_aux_to_clm_ratio", weighted_aux, sums["clm_sum"])
+            record(trainer, mode, "weighted_phon_to_clm", ramp * phon_weight * phon, sums["clm_sum"])
+            record(trainer, mode, "weighted_glyph_to_clm", ramp * glyph_weight * glyph, sums["clm_sum"])
             for name in GLYPH_NAMES:
                 record(trainer, mode, f"{name}_supervised_loss", sums[f"{name}_sum"], sums[f"{name}_count"])
                 record(trainer, mode, f"{name}_accuracy", sums[f"{name}_correct"], sums[f"{name}_count"])
@@ -212,12 +233,22 @@ class CCLLMCallback(TrainerCallback):
             self.trainer.cc_llm_pending_tokens = None
 
     def on_pre_optimizer_step(self, args, state, control, model=None, **kwargs):
-        for group in ("backbone", "branch"):
-            gradients = [p.grad.detach().float().square().sum() for name, p in model.named_parameters()
-                         if p.grad is not None and is_branch_parameter(name) == (group == "branch")]
-            if gradients:
-                norm = torch.stack(gradients).sum().sqrt()
-                record(self.trainer, "train", f"{group}_grad_norm", norm, 1)
+        model = self.trainer.accelerator.unwrap_model(model)
+        gradients = {group: [] for group in ("backbone", "branch", *BRANCH_GRAD_GROUPS)}
+        for name, parameter in model.named_parameters():
+            if parameter.grad is None:
+                continue
+            # Read each gradient once; aggregate and detailed groups share the scalar norm square.
+            squared = parameter.grad.detach().float().square().sum()
+            gradients["branch" if is_branch_parameter(name) else "backbone"].append(squared)
+            group = branch_gradient_group(name)
+            if group is not None:
+                gradients[group].append(squared)
+        zero = next(model.parameters()).new_zeros((), dtype=torch.float32)
+        for group, values in gradients.items():
+            # This callback sees accumulated, synchronized gradients after clipping, before the update.
+            norm = torch.stack(values).sum().sqrt() if values else zero
+            record(self.trainer, "train", f"{group}_grad_norm", norm, 1)
 
     def on_train_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:

@@ -13,7 +13,9 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer
 
-from src.configuration_qwen3_pgca import Qwen3PGCAConfig
+from src.configuration_qwen3_pgca import (
+    DEFAULT_AUX_GLYPH_WEIGHT, DEFAULT_AUX_PHONETIC_WEIGHT, Qwen3PGCAConfig, validate_auxiliary_weights,
+)
 from src.embedding.config import EmbeddingFeatureConfig
 from src.embedding.feature_memory import feature_index_fingerprint, load_feature_index, validate_feature_index
 from src.modeling_qwen3_pgca import Qwen3PGCAForCausalLM
@@ -356,7 +358,10 @@ def build_token_type_index(model_path: Path, builder) -> None:
 
 
 def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str | None,
-                     *, context_encoder=False, auxiliary_heads=False, zero_init_output=False) -> dict:
+                     *, context_encoder=False, auxiliary_heads=False, zero_init_output=False,
+                     aux_phonetic_weight=DEFAULT_AUX_PHONETIC_WEIGHT,
+                     aux_glyph_weight=DEFAULT_AUX_GLYPH_WEIGHT) -> dict:
+    validate_auxiliary_weights(aux_phonetic_weight, aux_glyph_weight)
     model_path = model_path.resolve()
     output_path = output_path.resolve()
     if model_path == output_path:
@@ -394,7 +399,9 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         feature_index_sha256,
     )
     updated_config.update(pgca_context_enabled=context_encoder, pgca_aux_enabled=auxiliary_heads,
-                          pgca_zero_init_output=zero_init_output)
+                          pgca_zero_init_output=zero_init_output,
+                          pgca_aux_phonetic_weight=aux_phonetic_weight,
+                          pgca_aux_glyph_weight=aux_glyph_weight)
     if (context_encoder or auxiliary_heads) and updated_config["pgca_feature_schema_version"] < 2:
         raise ValueError("context/auxiliary experiments require repaired feature schema v2")
     if auxiliary_heads:
@@ -466,6 +473,9 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         "pgca_initialization": parameter_checks,
         "context_parameter_count": sum(p.numel() for p in builder.context_encoder.parameters()) if context_encoder else 0,
         "auxiliary_parameter_count": sum(p.numel() for p in model.auxiliary_heads.parameters()) if auxiliary_heads else 0,
+        "pgca_aux_phonetic_weight": saved_config["pgca_aux_phonetic_weight"],
+        "pgca_aux_glyph_weight": saved_config["pgca_aux_glyph_weight"],
+        "pgca_aux_warmup_tokens": saved_config["pgca_aux_warmup_tokens"],
         "token_type_schema": ["other", "hanzi", "latin", "digit", "punctuation", "special", "whitespace"] if context_encoder else None,
     }
 
@@ -482,11 +492,15 @@ def main() -> None:
     parser.add_argument("--context-encoder", action="store_true")
     parser.add_argument("--auxiliary-heads", action="store_true")
     parser.add_argument("--zero-init-output", action="store_true")
+    parser.add_argument("--aux-phonetic-weight", type=float, default=DEFAULT_AUX_PHONETIC_WEIGHT)
+    parser.add_argument("--aux-glyph-weight", type=float, default=DEFAULT_AUX_GLYPH_WEIGHT)
     args = parser.parse_args()
 
     report = build_pgca_model(args.model_path, args.output_path, args.pgca_layers,
                              context_encoder=args.context_encoder, auxiliary_heads=args.auxiliary_heads,
-                             zero_init_output=args.zero_init_output)
+                             zero_init_output=args.zero_init_output,
+                             aux_phonetic_weight=args.aux_phonetic_weight,
+                             aux_glyph_weight=args.aux_glyph_weight)
     print(json.dumps(to_jsonable(report), ensure_ascii=False, indent=2))
 
 

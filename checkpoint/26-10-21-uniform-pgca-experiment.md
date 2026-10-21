@@ -27,3 +27,10 @@
 - 40 项相关本地 CPU 测试通过，包含 BF16、1/4/17 slots、无效 mask、padding、空 mask、Q/K 改动不影响 Uniform、V/O 数学参考、异常清理、统计分母与 CI、完整保存模型加载和重复运行。
 - Shell 语法及参数透传检查通过；现有 P0 数据选集和基线只读核验通过。
 - 尚未运行真实 1.7B GPU Uniform 条件，因此没有 Normal/Uniform/Off 的新实验结论。先由用户在空闲 GPU 上运行，再分析结果，不自动启动第二轮训练。
+
+## 后续结果与第二轮方案更新
+
+- 用户已提供真实 Uniform 结果及 agent/observation/refactor-p0-uniform.md。原 314 条、540,315 个目标上，Normal / Uniform / Off NLL 为 1.97647 / 2.05444 / 2.23860；Uniform−Normal 的 95% CI 为 [0.06684, 0.09222]，验收完整。以上“尚未运行”为工具交付时的历史状态。
+- 已微调 agent/observation/refactor-trial-rnd2.md：P0＋Uniform 完成；P1 仍待实施 0.03/0.03；P2 改为保留架构与回归观测，不增加候选校正、缩放或新层。Modality-Preserving Uniform 是可选项，不阻塞开训。
+- 第一轮停在诊断 checkpoint，建议保留完整续训状态及原配置，作为早期对照；无需先跑满第一轮再开始第二轮。当前累计 Phase2 约 1.219B，不应与第二轮最终 10B 直接作等预算优劣比较。
+- 第二轮从独立的未训练初始 PGCA 出发，保持词表/tokenizer/语料；合规缓存可复用。Phase1/A/B 使用独立轮次目录及正确指针，不能接入第一轮已训练权重。本轮只改文档，未实施 P1、重建模型或启动训练。

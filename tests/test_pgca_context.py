@@ -45,6 +45,24 @@ class ContextPGCATest(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(42)
 
+    def test_round2_auxiliary_defaults_and_legacy_config_round_trip(self):
+        model = context_model()
+        self.assertEqual(model.config.pgca_aux_phonetic_weight, 0.03)
+        self.assertEqual(model.config.pgca_aux_glyph_weight, 0.03)
+        self.assertEqual(model.config.pgca_aux_warmup_tokens, 10_000_000)
+        model.config.pgca_aux_phonetic_weight = 0.05
+        model.config.pgca_aux_glyph_weight = 0.02
+        with tempfile.TemporaryDirectory() as directory:
+            save_pretrained_without_auto_copy(model, Path(directory))
+            restored = Qwen3PGCAConfig.from_pretrained(directory)
+        self.assertEqual(restored.pgca_aux_phonetic_weight, 0.05)
+        self.assertEqual(restored.pgca_aux_glyph_weight, 0.02)
+        self.assertEqual(restored.pgca_aux_warmup_tokens, 10_000_000)
+        for name in ("pgca_aux_phonetic_weight", "pgca_aux_glyph_weight"):
+            for value in (-0.1, float("nan"), float("inf")):
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, "auxiliary weight"):
+                    Qwen3PGCAConfig(**{name: value})
+
     def test_prefix_invariance_and_candidate_permutation(self):
         encoder = context_model().model.feature_memory_builder.context_encoder.eval()
         memory = torch.randn(2, 5, 3, 8)

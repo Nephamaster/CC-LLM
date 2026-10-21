@@ -23,13 +23,16 @@ scripts/train/ms_swift/env/bin/python -B -m src.pgca.build_pgca \
   --model-path models/Qwen3-1.7B-Base-Char \
   --output-path models/Qwen3-1.7B-Base-PGCA \
   --pgca-layers 11,12,13,14,15,16 \
-  --context-encoder --auxiliary-heads --zero-init-output
+  --context-encoder --auxiliary-heads --zero-init-output \
+  --aux-phonetic-weight 0.03 --aux-glyph-weight 0.03
 
 scripts/train/ms_swift/env/bin/python -B -m src.pgca.validate_pgca \
   --model-path models/Qwen3-1.7B-Base-PGCA
 ```
 
 核对构建报告的 `context_parameter_count`、`auxiliary_parameter_count`、`pgca_initialization.passed`，以及验证报告 `passed=true`。实际候选宽度来自 manifest，修复后的默认值为 16＋1 slots；辅助类别从合法 ID 3 开始映射，排除 pad/none/unknown。模型保存类别名称、资源哈希和 token 类型索引指纹。
+
+P1 更新后，新构建模型的辅助权重默认是字音 `0.03`、字形 `0.03`，构建参数会显式写入 `config.json` 和构建报告。使用 `scripts/build_pgca.sh` 时，可在脚本顶部或通过 `AUX_PHONETIC_WEIGHT`、`AUX_GLYPH_WEIGHT` 调整；10M-token 辅助 warm-up 不变。已有 checkpoint 中的显式 `0.05/0.02` 保持原值，加载和 resume 不会自动迁移权重；源码默认值变化也不会更新磁盘上的旧 config。准备第二轮模型请使用独立目录，不就地覆盖第一轮模型。
 
 ## 2. 一个阶段一个脚本
 
@@ -41,7 +44,7 @@ scripts/train/ms_swift/env/bin/python -B -m src.pgca.validate_pgca \
 | [phase2_a.sh](phase2_a.sh) | 音形 embedding、上下文编码器、PGCA、辅助头 | 三任务，`PHASE2_A_LR=5e-5` | 4096 | Phase1 完成指针 |
 | [phase2_b.sh](phase2_b.sh) | 全参数 | 三任务，主干 `PHASE2_B_LR=1e-5`，分支 `PHASE2_B_BRANCH_LR=3e-5` | 4096 | Phase2-A 完成指针 |
 
-阶段切换新建优化器和调度器，不是 resume。A 选择最后 checkpoint，Phase1/B 按 `eval_clm_loss` 选优。A/B 默认共用 10B 上限，A 使用前 100M 有效目标，B 使用其余部分；辅助权重在前 10M 有效目标内升至 0.05/0.02，模型源码和辅助 loss 不变。
+阶段切换新建优化器和调度器，不是 resume。A 选择最后 checkpoint，Phase1/B 按 `eval_clm_loss` 选优。A/B 默认共用 10B 上限，A 使用前 100M 有效目标，B 使用其余部分；辅助权重在前 10M 有效目标内升至模型 config 保存的值（新构建默认 `0.03/0.03`，首轮旧模型为 `0.05/0.02`）。标签、shift、mask、三个优化损失的 CLM 有效 token 分母及字形三项平均均未改变。
 
 ### 修改参数
 
@@ -152,6 +155,8 @@ bash scripts/train/ms_swift/cpt/phase2_b.sh
 - `eval_loss` 使用与 `eval_total_loss` 相同的全局有效 token 加权统计，在框架记录日志和返回验证指标前覆盖默认聚合值；不随卡数缩放，也不对不同长度 batch 的均值再做简单平均。Phase1 三项 loss 相等；Phase2 的 `eval_loss` 包含辅助损失，不能用于 PPL。此修正不改变训练 loss/梯度或已有 checkpoint，旧日志不会自动修正。
 - `eval_phon_loss`、`eval_glyph_loss` 使用 CLM token 分母；`*_supervised_loss`、`*_accuracy` 使用各自有效监督分母；同时记录 `*_tokens`。
 - 验证指标先通过 Accelerate 去掉 DDP 尾部重复样本，再按 token 累计。优化损失只由 Swift 乘一次 world size，不在插件里重复放大。
-- 训练记录 `weighted_aux_to_clm_ratio`、主干和分支梯度范数。PGCA 零输出初始化后，第一步内部 Q/K/V/上下文梯度为零是预期现象。
+- 训练和验证新增 `weighted_phon_to_clm`、`weighted_glyph_to_clm`，保留原 `weighted_aux_to_clm_ratio`。各项比例为日志窗口内实际加权（训练时包含辅助 warm-up ramp）的 loss 总和 / CLM loss 总和，不是逐 batch 比例的平均；验证字段带 `eval_` 前缀。无辅助监督但有 CLM 目标时为 0；整个窗口没有 CLM loss 分母时为 null，不伪造比例。
+- 保留 `backbone_grad_norm`、`branch_grad_norm`，新增 `feature_embedding_grad_norm`、`context_encoder_grad_norm`、`pgca_{q,k,v,o}_proj_grad_norm`、`pgca_norms_grad_norm`、`auxiliary_phonetic_grad_norm`、`auxiliary_glyph_grad_norm`。记录已有联合损失的梯度，每个参数只计算一次梯度平方和，再汇总到总体/细分组；不增加独立任务反向、optimizer step 或梯度修改。
+- 当前 Trainer 在裁剪后、optimizer step 前触发该回调。因此上述范数是累积和同步后的联合梯度范数，按日志窗口对优化步取均值；不同于框架通常记录的裁剪前 `grad_norm`，也不是 Adam 更新量。该口径针对当前单卡/普通 DDP，不宣称是 FSDP/ZeRO 分片的全局梯度范数。冻结或没有梯度的组显式记录 0；PGCA 零输出初始化后，第一步内部 Q/K/V/上下文梯度为零是预期现象。三任务梯度余弦继续由离线诊断提供，不在每步训练中额外计算。
 - 首版仅验证 HF DynamicCache 路径，支持 prefill、增量解码和 beam 重排。不支持 packing、padding-free、sequence parallel、Liger loss、logits-to-keep、StaticCache 或 vLLM；不能把旧 vLLM 后端当作已经支持新编码器。
 - 正式 GPU 训练前应先用少量独立 JSONL 和显式小 token 预算做冒烟，检查真实显存、吞吐、三阶段冻结状态及有效验证指标。本地 CPU 测试不替代该步骤。

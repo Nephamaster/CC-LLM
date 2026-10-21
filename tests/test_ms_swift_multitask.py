@@ -45,7 +45,8 @@ def ddp_gradient_worker(rank, rendezvous):
         denominator = local_labels[:, 1:].ne(-100).sum()
         dist.all_reduce(denominator)
         def combine(sums):
-            return (sums["clm_sum"] + 0.05 * sums["phon_sum"] + 0.02 / 3 *
+            return (sums["clm_sum"] + model.config.pgca_aux_phonetic_weight * sums["phon_sum"] +
+                    model.config.pgca_aux_glyph_weight / 3 *
                     sum(sums[f"{name}_sum"] for name in ("stroke_count", "radical_stroke", "structure"))) / denominator
         sums = model.multitask_loss_sums(wrapped(ids[rank:rank + 1], return_aux_logits=True), local_labels)
         (2 * combine(sums)).backward()
@@ -182,25 +183,34 @@ class SwiftMultitaskTest(unittest.TestCase):
                     callback.create_optimizer()
 
     def test_loss_ramp_and_shared_denominator(self):
-        model = context_model()
-        model.auxiliary_trained_tokens.fill_(10_000_000)
-        trainer = SimpleNamespace(model=model, accelerator=SimpleNamespace(unwrap_model=lambda value: value),
-                                  custom_metrics={"train": {}, "eval": {}})
-        loss_fn = self.plugin["CCLLMLoss"](SimpleNamespace(), trainer)
-        ids = torch.tensor([[2, 3, 4]])
-        labels = torch.tensor([[-100, 3, 4]])
-        with patch.dict(os.environ, CC_LLM_STAGE="phase2b"):
-            output = model(ids, return_aux_logits=True)
-            sums = model.multitask_loss_sums(output, labels)
-            expected = (sums["clm_sum"] + 0.05 * sums["phon_sum"] + 0.02 / 3 *
-                        sum(sums[f"{name}_sum"] for name in ("stroke_count", "radical_stroke", "structure"))) / 7
-            actual = loss_fn(output, labels, num_items_in_batch=7)
-            torch.testing.assert_close(actual, expected)
-            self.assertEqual(trainer.cc_llm_pending_tokens.item(), 2)
-            model.auxiliary_trained_tokens.zero_()
-            actual = loss_fn(output, labels, num_items_in_batch=7)
-            torch.testing.assert_close(actual, sums["clm_sum"] / 7)
-            self.assertNotIn("loss", trainer.custom_metrics["train"])
+        for weights in ((0.03, 0.03), (0.05, 0.02)):
+            for run_stage in ("phase2a", "phase2b"):
+                for completed in (0, 5_000_000, 10_000_000, 20_000_000):
+                    with self.subTest(weights=weights, stage=run_stage, completed=completed):
+                        model = context_model()
+                        model.config.pgca_aux_phonetic_weight, model.config.pgca_aux_glyph_weight = weights
+                        model.auxiliary_trained_tokens.fill_(completed)
+                        trainer = SimpleNamespace(model=model, accelerator=SimpleNamespace(unwrap_model=lambda v: v),
+                                                  custom_metrics={"train": {}, "eval": {}})
+                        loss_fn = self.plugin["CCLLMLoss"](SimpleNamespace(), trainer)
+                        ids, labels = torch.tensor([[2, 3, 4]]), torch.tensor([[-100, 3, 4]])
+                        with patch.dict(os.environ, CC_LLM_STAGE=run_stage):
+                            output = model(ids, return_aux_logits=True)
+                            sums = model.multitask_loss_sums(output, labels)
+                            ramp = min(1, completed / 10_000_000)
+                            phon = ramp * weights[0] * sums["phon_sum"]
+                            glyph = ramp * weights[1] / 3 * sum(sums[f"{n}_sum"] for n in self.plugin["GLYPH_NAMES"])
+                            actual = loss_fn(output, labels, num_items_in_batch=7)
+                        torch.testing.assert_close(actual, (sums["clm_sum"] + phon + glyph) / 7)
+                        metrics = trainer.custom_metrics["train"]
+                        self.assertAlmostEqual(metrics["weighted_phon_to_clm"].compute(),
+                                               (phon / sums["clm_sum"]).item(), places=7)
+                        self.assertAlmostEqual(metrics["weighted_glyph_to_clm"].compute(),
+                                               (glyph / sums["clm_sum"]).item(), places=7)
+                        self.assertAlmostEqual(metrics["weighted_aux_to_clm_ratio"].compute(),
+                                               ((phon + glyph) / sums["clm_sum"]).item(), places=7)
+                        self.assertEqual(trainer.cc_llm_pending_tokens.item(), 2)
+                        self.assertNotIn("loss", metrics)
 
     def test_eval_loss_is_token_weighted_and_resets(self):
         for run_stage in ("phase1", "phase2a", "phase2b"):
@@ -223,7 +233,8 @@ class SwiftMultitaskTest(unittest.TestCase):
                         sums = model.multitask_loss_sums(output, labels)
                         total = sums["clm_sum"]
                         if run_stage != "phase1":
-                            total = total + 0.05 * sums["phon_sum"] + 0.02 / 3 * sum(
+                            total = total + model.config.pgca_aux_phonetic_weight * sums["phon_sum"] + \
+                                model.config.pgca_aux_glyph_weight / 3 * sum(
                                 sums[f"{name}_sum"] for name in self.plugin["GLYPH_NAMES"])
                         expected_sum += total.item()
                         expected_count += sums["token_count"].item()
@@ -234,6 +245,82 @@ class SwiftMultitaskTest(unittest.TestCase):
                 self.assertFalse(hasattr(trainer, "cc_llm_pending_tokens"))
                 metrics["loss"].reset()
                 self.assertIsNone(metrics["loss"].compute())
+
+    def test_ratio_logs_accumulate_sums_and_sync_both_terms(self):
+        trainer = SimpleNamespace(custom_metrics={"train": {}})
+        record = self.plugin["record"]
+        for numerator, denominator in ((1., 2.), (1., 18.)):
+            record(trainer, "train", "weighted_phon_to_clm", torch.tensor(numerator), torch.tensor(denominator))
+        metric = trainer.custom_metrics["train"]["weighted_phon_to_clm"]
+        self.assertAlmostEqual(metric.compute(), 0.1)  # Not the mean of 1/2 and 1/18.
+        with patch.object(self.plugin["dist"], "is_initialized", return_value=True):
+            with patch.object(self.plugin["dist"], "all_reduce", side_effect=lambda v: v.add_(torch.tensor([3., 10.]))):
+                self.assertAlmostEqual(metric.compute(), 5 / 30)
+
+    def test_empty_and_unknown_auxiliary_supervision_remains_finite(self):
+        for case in ("hanzi", "english", "unknown", "dummy"):
+            for run_stage in ("phase2a", "phase2b"):
+                with self.subTest(case=case, stage=run_stage), patch.dict(os.environ, CC_LLM_STAGE=run_stage):
+                    model = context_model()
+                    model.auxiliary_trained_tokens.fill_(10_000_000)
+                    ids = torch.tensor([[3, 2, 4, 2]]) if case != "english" else torch.tensor([[3, 5, 7, 9]])
+                    labels = ids.clone()
+                    labels[:, 0] = -100
+                    if case == "dummy":
+                        labels.fill_(-100)
+                    if case == "unknown":
+                        builder = model.model.feature_memory_builder
+                        builder.pinyin_ids[2] = 2
+                        builder.pinyin_mask[2] = False
+                        builder.structure_ids[2] = 2
+                    trainer = SimpleNamespace(model=model, accelerator=SimpleNamespace(unwrap_model=lambda v: v),
+                                              custom_metrics={"train": {}, "eval": {}})
+                    output = model(ids, return_aux_logits=True)
+                    sums = model.multitask_loss_sums(output, labels)
+                    loss = self.plugin["CCLLMLoss"](SimpleNamespace(), trainer)(output, labels)
+                    self.assertTrue(torch.isfinite(loss))
+                    loss.backward()
+                    self.assertTrue(all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None))
+                    if case in ("english", "dummy"):
+                        self.assertEqual(sums["phon_sum"].item(), 0)
+                        self.assertTrue(all(sums[f"{name}_sum"].item() == 0 for name in self.plugin["GLYPH_NAMES"]))
+                        expected = None if case == "dummy" else 0.
+                        self.assertEqual(trainer.custom_metrics["train"]["weighted_phon_to_clm"].compute(), expected)
+                        self.assertEqual(trainer.custom_metrics["train"]["weighted_glyph_to_clm"].compute(), expected)
+                    elif case == "unknown":
+                        self.assertEqual(sums["phon_count"].item(), 1)
+                        self.assertEqual(sums["structure_count"].item(), 1)
+                        self.assertEqual(sums["stroke_count_count"].item(), 3)
+
+    def test_module_gradients_are_post_clip_joint_norms_without_mutation(self):
+        for run_stage in ("phase1", "phase2a", "phase2b"):
+            with self.subTest(stage=run_stage):
+                model = context_model()
+                model.config.pgca_enabled = run_stage != "phase1"
+                for name, parameter in model.named_parameters():
+                    branch = self.plugin["is_branch_parameter"](name)
+                    trainable = (not branch if run_stage == "phase1" else branch if run_stage == "phase2a" else True)
+                    parameter.requires_grad_(trainable)
+                    if trainable:
+                        parameter.grad = torch.ones_like(parameter)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+                before = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+                trainer = SimpleNamespace(accelerator=SimpleNamespace(unwrap_model=lambda wrapped: model),
+                                          custom_metrics={"train": {}})
+                callback = self.plugin["CCLLMCallback"](SimpleNamespace(), trainer)
+                callback.on_pre_optimizer_step(None, None, None, model=object())
+                metrics = trainer.custom_metrics["train"]
+                branch_squared = 0.
+                for group in self.plugin["BRANCH_GRAD_GROUPS"]:
+                    expected = sum(float(grad.float().square().sum()) for name, grad in before.items()
+                                   if self.plugin["branch_gradient_group"](name) == group) ** 0.5
+                    self.assertAlmostEqual(metrics[f"{group}_grad_norm"].compute(), expected, places=6)
+                    branch_squared += metrics[f"{group}_grad_norm"].compute() ** 2
+                self.assertAlmostEqual(branch_squared, metrics["branch_grad_norm"].compute() ** 2, places=6)
+                self.assertAlmostEqual(metrics["backbone_grad_norm"].compute() ** 2 + branch_squared, 0.25, places=5)
+                for name, parameter in model.named_parameters():
+                    if name in before:
+                        torch.testing.assert_close(parameter.grad, before[name], rtol=0, atol=0)
 
     def test_real_swift_cpu_train_eval_save(self):
         self._run_swift_smoke(1)
@@ -335,10 +422,20 @@ class SwiftMultitaskTest(unittest.TestCase):
             self.assertAlmostEqual(evaluations[-1]["eval_loss"], evaluations[-1]["eval_total_loss"], places=6)
             if run_stage != "phase1":
                 self.assertGreater(evaluations[-1]["eval_total_loss"], evaluations[-1]["eval_clm_loss"])
+                self.assertAlmostEqual(
+                    evaluations[-1]["eval_weighted_phon_to_clm"] + evaluations[-1]["eval_weighted_glyph_to_clm"],
+                    evaluations[-1]["eval_weighted_aux_to_clm_ratio"], places=6)
             else:
                 self.assertAlmostEqual(evaluations[-1]["eval_loss"], evaluations[-1]["eval_clm_loss"], places=6)
             self.assertTrue((root / "output/next_stage_model.txt").is_file())
             self.assertTrue((root / "output/checkpoint-1/cc_llm_state.json").is_file())
+            training = [item for item in state["log_history"] if "feature_embedding_grad_norm" in item]
+            self.assertTrue(training)
+            for name in self.plugin["BRANCH_GRAD_GROUPS"]:
+                value = training[-1][f"{name}_grad_norm"]
+                self.assertTrue(math.isfinite(value))
+                if run_stage == "phase1":
+                    self.assertEqual(value, 0)
 
 
 if __name__ == "__main__":
