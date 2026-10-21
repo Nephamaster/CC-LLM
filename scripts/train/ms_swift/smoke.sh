@@ -1,154 +1,93 @@
-cd /share/project/wuhaiming/spaces/CC-LLM
+#!/usr/bin/env bash
 set -euo pipefail
 
+CC_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$CC_ROOT"
+
+# 第二轮小规模验收；仅选择空闲 GPU。所有产物自动放入本次独立目录。
+: "${CUDA_VISIBLE_DEVICES:?Set CUDA_VISIBLE_DEVICES to idle GPUs, preferably two for DDP}"
+PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/scripts/train/ms_swift/env/bin/python}"
+MODEL_NAME="${MODEL_NAME:-Qwen3-1.7B-Base-PGCA}"
+PGCA_MODEL="${PGCA_MODEL:-$CC_ROOT/models/rnd2/$MODEL_NAME}"
+SMOKE_PARENT="${SMOKE_PARENT:-$CC_ROOT/outputs/experiments/rnd2/smoke}"
+IFS=, read -r -a smoke_devices <<< "$CUDA_VISIBLE_DEVICES"
+NPROC_PER_NODE="${NPROC_PER_NODE:-${#smoke_devices[@]}}"
+TRAIN_BATCH_SIZE=1
+EVAL_BATCH_SIZE=1
+GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-2}"
+SMOKE_STEPS="${SMOKE_STEPS:-4}" # 按满长序列估算预算，实际优化步数可能略多。
+DATASET_NUM_PROC="${DATASET_NUM_PROC:-2}"
+LOGGING_STEPS=1
+EVAL_STEPS=2
+SAVE_STEPS=2
+SAVE_TOTAL_LIMIT=1
+TORCH_DTYPE=bfloat16
+WEIGHT_DECAY=0.01
+GRADIENT_CHECKPOINTING=true
+LOAD_FROM_CACHE_FILE=true
+MAX_GRAD_NORM=1.0
+SEED=42
+DATA_SEED=42
+
+[[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
+    echo "MODEL_NAME must be a single directory component" >&2; exit 2;
+}
+for name in NPROC_PER_NODE GRAD_ACCUMULATION SMOKE_STEPS; do
+    [[ "${!name}" =~ ^[1-9][0-9]*$ ]] || { echo "$name must be a positive integer" >&2; exit 2; }
+done
+(( SMOKE_STEPS >= 4 && NPROC_PER_NODE == ${#smoke_devices[@]} )) || {
+    echo "Need at least four budgeted steps and NPROC_PER_NODE equal to the visible GPU count" >&2; exit 2;
+}
+[[ -f "$PGCA_MODEL/config.json" ]] || { echo "Round-two initial model missing: $PGCA_MODEL" >&2; exit 1; }
+
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHON_CMD="$PWD/scripts/train/ms_swift/env/bin/python"
-export CUDA_VISIBLE_DEVICES=0,1
-export NPROC_PER_NODE=2
+export PYTHON_CMD CUDA_VISIBLE_DEVICES NPROC_PER_NODE MODEL_NAME PGCA_MODEL
+export TRAIN_BATCH_SIZE EVAL_BATCH_SIZE GRAD_ACCUMULATION DATASET_NUM_PROC
+export LOGGING_STEPS EVAL_STEPS SAVE_STEPS SAVE_TOTAL_LIMIT TORCH_DTYPE WEIGHT_DECAY
+export GRADIENT_CHECKPOINTING LOAD_FROM_CACHE_FILE MAX_GRAD_NORM SEED DATA_SEED
 
-export MODEL_NAME=Qwen3-1.7B-Base-PGCA
-export PGCA_MODEL="$PWD/models/$MODEL_NAME"
+mkdir -p -- "$SMOKE_PARENT"
+SMOKE_ROOT="$(mktemp -d "$SMOKE_PARENT/pgca-smoke.XXXXXX")"
+SMOKE_ALIGN="$SMOKE_ROOT/training/${MODEL_NAME}-ALIGN"
+SMOKE_CPT="$SMOKE_ROOT/training/${MODEL_NAME}-CPT"
+phase1_targets=$((NPROC_PER_NODE * TRAIN_BATCH_SIZE * GRAD_ACCUMULATION * SMOKE_STEPS * 2048))
+adaptation_targets=$((NPROC_PER_NODE * TRAIN_BATCH_SIZE * GRAD_ACCUMULATION * SMOKE_STEPS * 4096))
+phase2_targets=$((2 * adaptation_targets))
+echo "本次冒烟目录：$SMOKE_ROOT"
+echo "只检查训练链路；合成训练/验证内容有重叠，不能用于效果评估。"
+echo "需预留完整模型/优化器 checkpoint 空间；冒烟 checkpoint 不用于正式第二轮训练。"
 
-export TRAIN_BATCH_SIZE=1
-export EVAL_BATCH_SIZE=1
-export GRAD_ACCUMULATION=1
-export DATASET_NUM_PROC=2
-export LOGGING_STEPS=1
-export EVAL_STEPS=4
-export SAVE_STEPS=4
+"$PYTHON_CMD" -m pip check 2>&1 | tee "$SMOKE_ROOT/environment.log"
+env -u PGCA_ENABLED -u CC_LLM_STAGE "$PYTHON_CMD" -B -m scripts.train.ms_swift.smoke_check prepare \
+    --model "$PGCA_MODEL" --root "$SMOKE_ROOT" --world-size "$NPROC_PER_NODE" \
+    --batch-size "$TRAIN_BATCH_SIZE" --accumulation "$GRAD_ACCUMULATION" --steps "$SMOKE_STEPS" \
+    2>&1 | tee "$SMOKE_ROOT/preflight.console.log"
 
-# 每次执行创建新目录，不复用正式缓存。
-export SMOKE_ROOT="$(mktemp -d "$PWD/outputs/pgca-smoke.XXXXXX")"
-export SMOKE_ALIGN="$PWD/outputs/cpt/${MODEL_NAME}-ALIGN/smoke/"
-export SMOKE_CPT="$PWD/outputs/cpt/${MODEL_NAME}-CPT/smoke/"
-
-"$PYTHON_CMD" -m pip check
-
-"$PYTHON_CMD" -B - <<'PY'
-import json
-import os
-from pathlib import Path
-
-import torch
-from transformers import AutoTokenizer
-
-assert torch.cuda.device_count() == int(os.environ["NPROC_PER_NODE"])
-print("Torch:", torch.__version__, "CUDA:", torch.version.cuda)
-
-for i in range(torch.cuda.device_count()):
-    with torch.cuda.device(i):
-        assert torch.cuda.is_bf16_supported(), f"GPU {i} 不支持 BF16"
-        x = torch.randn(
-            128, 128, device=f"cuda:{i}",
-            dtype=torch.bfloat16, requires_grad=True,
-        )
-        (x @ x).float().square().mean().backward()
-        torch.cuda.synchronize()
-        assert torch.isfinite(x.grad).all()
-        print(f"GPU {i}: {torch.cuda.get_device_name(i)}，BF16 前反向通过")
-        del x
-        torch.cuda.empty_cache()
-
-tokenizer = AutoTokenizer.from_pretrained(
-    os.environ["PGCA_MODEL"], trust_remote_code=True,
-)
-unit = (
-    "这是音形上下文模型的训练链路测试。"
-    "银行行长正在检查账目，学生重新阅读文章，重庆的音乐令人快乐。"
-    "汉字具有不同的读音、笔画、部首和结构。\n"
-    "This is a small training smoke test. Calculate 12 + 35 = 47.\n"
-)
-text = unit
-while len(tokenizer.encode(text, add_special_tokens=False)) < 8192:
-    text *= 2
-
-root = Path(os.environ["SMOKE_ROOT"]) / "dataset"
-for split, count in (("train", 32), ("validation", 2)):
-    folder = root / split
-    folder.mkdir(parents=True)
-    with (folder / "smoke.jsonl").open("x", encoding="utf-8") as f:
-        for i in range(count):
-            body = text if split == "train" else unit * 8
-            row = {"text": f"{split} sample {i}\n{body}"}
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-print("冒烟数据：", root)
-print("注意：合成训练/验证内容有重叠，仅用于链路验证，不能用于效果评估。")
-PY
-
-# Phase1：主干训练，音形分支旁路并冻结
 MODEL="$PGCA_MODEL" \
 DATA_DIR="$SMOKE_ROOT/dataset" \
 OUT="$SMOKE_ALIGN" \
 CACHE_DIR="$SMOKE_ROOT/cache_phase1" \
-PHASE1_TOKENS=32768 \
+MAX_LENGTH=2048 PHASE1_TOKENS="$phase1_targets" PHASE1_LR=1e-5 WARMUP_RATIO=0.03 \
 RESUME_FROM_CHECKPOINT="" \
-bash scripts/train/ms_swift/cpt/phase1.sh \
-  2>&1 | tee "$SMOKE_ROOT/phase1.console.log"
+bash scripts/train/ms_swift/cpt/phase1.sh 2>&1 | tee "$SMOKE_ROOT/phase1.console.log"
 
-# Phase2-A：自动读取刚完成的 Phase1 checkpoint。
-MODEL="" \
-ALIGN_OUT="$SMOKE_ALIGN" \
+MODEL="" ALIGN_OUT="$SMOKE_ALIGN" \
 DATA_DIR="$SMOKE_ROOT/dataset" \
-CPT_ROOT="$SMOKE_CPT" \
-OUT="$SMOKE_CPT/adaptation" \
+CPT_ROOT="$SMOKE_CPT" OUT="$SMOKE_CPT/adaptation" \
 CACHE_DIR="$SMOKE_ROOT/cache_phase2" \
-PHASE2_TOKENS=131072 \
-ADAPTATION_TOKENS=65536 \
+MAX_LENGTH=4096 PHASE2_TOKENS="$phase2_targets" ADAPTATION_TOKENS="$adaptation_targets" \
+PHASE2_A_LR=5e-5 WARMUP_RATIO=0.03 \
 RESUME_FROM_CHECKPOINT="" \
-bash scripts/train/ms_swift/cpt/phase2_a.sh \
-  2>&1 | tee "$SMOKE_ROOT/phase2.console.log"
+bash scripts/train/ms_swift/cpt/phase2_a.sh 2>&1 | tee "$SMOKE_ROOT/phase2a.console.log"
 
-# Phase2-B：自动读取刚完成的 A checkpoint，校验并复用同一份分段数据。
-MODEL="" \
-DATA_DIR="$SMOKE_ROOT/dataset" \
-CPT_ROOT="$SMOKE_CPT" \
-ADAPTATION_OUT="$SMOKE_CPT/adaptation" \
-OUT="$SMOKE_CPT/joint" \
+MODEL="" DATA_DIR="$SMOKE_ROOT/dataset" \
+CPT_ROOT="$SMOKE_CPT" ADAPTATION_OUT="$SMOKE_CPT/adaptation" OUT="$SMOKE_CPT/joint" \
 CACHE_DIR="$SMOKE_ROOT/cache_phase2" \
-PHASE2_TOKENS=131072 \
-ADAPTATION_TOKENS=65536 \
+MAX_LENGTH=4096 PHASE2_TOKENS="$phase2_targets" ADAPTATION_TOKENS="$adaptation_targets" \
+PHASE2_B_LR=1e-5 PHASE2_B_BRANCH_LR=3e-5 WARMUP_RATIO=0.01 \
 RESUME_FROM_CHECKPOINT="" \
-bash scripts/train/ms_swift/cpt/phase2_b.sh \
-  2>&1 | tee -a "$SMOKE_ROOT/phase2.console.log"
+bash scripts/train/ms_swift/cpt/phase2_b.sh 2>&1 | tee "$SMOKE_ROOT/phase2b.console.log"
 
-"$PYTHON_CMD" -B - <<'PY'
-import json
-import math
-import os
-from pathlib import Path
-
-stages = {
-    "Phase1": Path(os.environ["SMOKE_ALIGN"]),
-    "Phase2-A": Path(os.environ["SMOKE_CPT"]) / "adaptation",
-    "Phase2-B": Path(os.environ["SMOKE_CPT"]) / "joint",
-}
-
-for name, folder in stages.items():
-    pointer = folder / "next_stage_model.txt"
-    assert pointer.is_file(), f"{name}: 未生成阶段完成指针"
-    selected = Path(pointer.read_text().strip())
-    assert selected.is_dir()
-
-    checkpoints = list(selected.parent.glob("checkpoint-*"))
-    assert checkpoints, f"{name}: 没有 checkpoint"
-    latest = max(checkpoints, key=lambda p: int(p.name.rsplit("-", 1)[1]))
-    state = json.loads((latest / "trainer_state.json").read_text())
-    history = state["log_history"]
-
-    losses = [r["eval_clm_loss"] for r in history if "eval_clm_loss" in r]
-    assert losses and all(math.isfinite(v) for v in losses), (
-        f"{name}: eval_clm_loss 缺失或出现 NaN/Inf"
-    )
-
-    gradients = {
-        k: v
-        for row in history for k, v in row.items()
-        if k.endswith("grad_norm")
-    }
-    print(name, "step =", state["global_step"],
-          "eval_clm_loss =", losses[-1], "梯度记录 =", gradients)
-
-print("三个阶段均已保存 checkpoint，且已记录的 eval_clm_loss 全部有限。")
-print("日志和缓存：", os.environ["SMOKE_ROOT"])
-PY
+"$PYTHON_CMD" -B -m scripts.train.ms_swift.smoke_check summarize \
+    --root "$SMOKE_ROOT" --model-name "$MODEL_NAME" 2>&1 | tee "$SMOKE_ROOT/summary.console.log"
+echo "冒烟完成，验收报告：$SMOKE_ROOT/smoke_report.json"

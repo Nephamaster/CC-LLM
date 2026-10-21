@@ -160,3 +160,5 @@ bash scripts/train/ms_swift/cpt/phase2_b.sh
 - 当前 Trainer 在裁剪后、optimizer step 前触发该回调。因此上述范数是累积和同步后的联合梯度范数，按日志窗口对优化步取均值；不同于框架通常记录的裁剪前 `grad_norm`，也不是 Adam 更新量。该口径针对当前单卡/普通 DDP，不宣称是 FSDP/ZeRO 分片的全局梯度范数。冻结或没有梯度的组显式记录 0；PGCA 零输出初始化后，第一步内部 Q/K/V/上下文梯度为零是预期现象。三任务梯度余弦继续由离线诊断提供，不在每步训练中额外计算。
 - 首版仅验证 HF DynamicCache 路径，支持 prefill、增量解码和 beam 重排。不支持 packing、padding-free、sequence parallel、Liger loss、logits-to-keep、StaticCache 或 vLLM；不能把旧 vLLM 后端当作已经支持新编码器。
 - 正式 GPU 训练前应先用少量独立 JSONL 和显式小 token 预算做冒烟，检查真实显存、吞吐、三阶段冻结状态及有效验证指标。本地 CPU 测试不替代该步骤。
+
+第二轮的独立实卡入口为 `scripts/train/ms_swift/smoke.sh`，默认读取 `models/rnd2/Qwen3-1.7B-Base-PGCA`，每次创建新的冒烟目录；命令、验收条件和回传清单见 [冒烟说明](../SMOKE.md)。不要将冒烟 checkpoint 用作正式第二轮起点。
