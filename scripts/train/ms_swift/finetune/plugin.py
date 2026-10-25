@@ -1,7 +1,8 @@
-"""Source-only correction SFT: native assistant loss and all-linear LoRA."""
+"""Downstream SFT templates, PGCA LoRA checks, and checkpoint publication."""
 from __future__ import annotations
 
 import json
+import math
 import os
 from copy import deepcopy
 from pathlib import Path
@@ -11,7 +12,8 @@ from swift.template import register_template
 from swift.template.register import TEMPLATE_MAPPING
 
 
-BASE_META = TEMPLATE_MAPPING["qwen3_nothinking"]
+CORRECTION_META = TEMPLATE_MAPPING["qwen3_nothinking"]
+ANCIENT_META = TEMPLATE_MAPPING["qwen3"]
 
 
 def enable_pgca(model):
@@ -24,7 +26,7 @@ def enable_pgca(model):
     return False
 
 
-class CorrectionTemplate(BASE_META.template_cls):
+class PGCASFTTemplateMixin:
     def compute_sft_loss(self, model, inputs, num_items_in_batch=None, trainer=None):
         pgca = enable_pgca(model)
         inputs = dict(inputs, use_cache=False)
@@ -39,7 +41,34 @@ class CorrectionTemplate(BASE_META.template_cls):
         return super().generate(model, *args, **kwargs)
 
 
+class CorrectionTemplate(PGCASFTTemplateMixin, CORRECTION_META.template_cls):
+    pass
+
+
+class AncientTemplate(PGCASFTTemplateMixin, ANCIENT_META.template_cls):
+    pass
+
+
 class CorrectionCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        channels = tuple(filter(None, os.environ.get("CC_LLM_MACRO_CHANNELS", "").split(",")))
+        if not channels or logs is None:
+            return
+        keys = [f"eval_loss_{channel}" for channel in channels]
+        present = [key for key in keys if key in logs]
+        if not present:
+            return
+        if len(present) != len(keys):
+            raise RuntimeError(f"incomplete task validation losses: expected {keys}, found {present}")
+        values = [float(logs[key]) for key in keys]
+        if not all(math.isfinite(value) for value in values):
+            raise RuntimeError(f"non-finite task validation losses: {dict(zip(keys, values))}")
+        macro = sum(values) / len(values)
+        logs["eval_macro_task_loss"] = macro
+        # Transformers appends log_history immediately before invoking callbacks.
+        if state.log_history:
+            state.log_history[-1]["eval_macro_task_loss"] = macro
+
     def on_init_end(self, args, state, control, model=None, **kwargs):
         enable_pgca(model)
         # all-linear also wraps auxiliary-head linears. Freeze them before optimizer/DDP setup.
@@ -51,7 +80,7 @@ class CorrectionCallback(TrainerCallback):
         model = self.trainer.accelerator.unwrap_model(model)
         trainable = {name: parameter for name, parameter in model.named_parameters() if parameter.requires_grad}
         if not trainable or any("lora_" not in name or "auxiliary_heads" in name.split(".") for name in trainable):
-            raise ValueError("correction SFT requires LoRA-only trainable parameters with auxiliary heads frozen")
+            raise ValueError("downstream SFT requires LoRA-only trainable parameters with auxiliary heads frozen")
         pgca = getattr(model.config, "model_type", None) == "qwen3_pgca"
         if pgca:
             if not model.config.pgca_enabled or not any(".pgca_attn." in name for name in trainable):
@@ -61,7 +90,9 @@ class CorrectionCallback(TrainerCallback):
         if state.is_world_process_zero:
             report = {"loss": "assistant_only", "auxiliary_loss_enabled": False, "pgca_enabled": pgca,
                       "target_modules": "all-linear", "trainable_parameters": sum(p.numel() for p in trainable.values()),
-                      "trainable_names": sorted(trainable)}
+                      "trainable_names": sorted(trainable),
+                      "macro_channels": list(filter(None, os.environ.get("CC_LLM_MACRO_CHANNELS", "").split(","))),
+                      "metric_for_best_model": args.metric_for_best_model}
             (Path(args.output_dir) / "finetune_report.json").write_text(json.dumps(report, indent=2) + "\n")
 
     def on_train_end(self, args, state, control, **kwargs):
@@ -82,8 +113,11 @@ class CorrectionCallback(TrainerCallback):
             temporary.replace(pointer)
 
 
-meta = deepcopy(BASE_META)
-meta.template_type = "cc_llm_correction"
-meta.template_cls = CorrectionTemplate
-register_template(meta, exist_ok=True)
+for base_meta, template_type, template_cls in (
+        (CORRECTION_META, "cc_llm_correction", CorrectionTemplate),
+        (ANCIENT_META, "cc_llm_ancient", AncientTemplate)):
+    meta = deepcopy(base_meta)
+    meta.template_type = template_type
+    meta.template_cls = template_cls
+    register_template(meta, exist_ok=True)
 callbacks_map["cc_llm_correction"] = CorrectionCallback

@@ -4,7 +4,7 @@ set -euo pipefail
 FINETUNE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CC_ROOT="${CC_ROOT:-$(cd -- "$FINETUNE_DIR/../../../.." && pwd)}"
 
-# ==================== CSC / CGEC 共享参数 ====================
+# ==================== 下游 LoRA 共享参数 ====================
 # 修改 :- 后的默认值；命令行同名环境变量优先。任务路径、长度、学习率在任务脚本顶部。
 PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/scripts/train/ms_swift/env/bin/python}"
 BASE_MODEL_NAME="${BASE_MODEL_NAME:-Qwen3-1.7B-Base}"
@@ -22,6 +22,11 @@ LOAD_FROM_CACHE_FILE="${LOAD_FROM_CACHE_FILE:-true}"
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
 DDP_FIND_UNUSED_PARAMETERS="${DDP_FIND_UNUSED_PARAMETERS:-true}"
+ADD_NON_THINKING_PREFIX="${ADD_NON_THINKING_PREFIX:-false}"
+DISABLE_IGNORE_EMPTY_THINK="${DISABLE_IGNORE_EMPTY_THINK:-true}"
+TRUNCATION_STRATEGY="${TRUNCATION_STRATEGY:-delete}"
+ENABLE_CHANNEL_LOSS="${ENABLE_CHANNEL_LOSS:-false}"
+TEMPLATE_TYPE="${TEMPLATE_TYPE:-cc_llm_correction}"
 
 # 主干与 PGCA 都走框架的 all-linear LoRA；不用 CPT 的辅助 loss/优化器插件。
 LORA_RANK="${LORA_RANK:-16}"
@@ -42,6 +47,7 @@ SAVE_STEPS="${SAVE_STEPS:-500}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-5}"
 MAX_STEPS="${MAX_STEPS:--1}"                    # 正数用于短跑；默认按任务脚本的 epoch 数
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
+METRIC_FOR_BEST_MODEL="${METRIC_FOR_BEST_MODEL:-eval_loss}"
 SEED="${SEED:-42}"
 DATA_SEED="${DATA_SEED:-42}"
 
@@ -94,14 +100,15 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
     local -a args=(
         --external_plugins "$FINETUNE_DIR/plugin.py"
         --model "$model" --model_type qwen3 --check_model false --load_args false
-        # 与旧 qwen3_nothinking 同一编码格式；插件仅处理 PGCA 前向及闲置辅助头。
-        --template cc_llm_correction --use_chat_template true --enable_thinking false
-        --add_non_thinking_prefix false --disable_ignore_empty_think true --loss_scale default
+        # 任务脚本选择已验收的模板；插件仅处理 PGCA 前向及闲置辅助头。
+        --template "$TEMPLATE_TYPE" --use_chat_template true --enable_thinking false
+        --add_non_thinking_prefix "$ADD_NON_THINKING_PREFIX" \
+        --disable_ignore_empty_think "$DISABLE_IGNORE_EMPTY_THINK" --loss_scale default
         --callbacks cc_llm_correction
         --dataset "$TRAIN" --val_dataset "$DEV" --split_dataset_ratio 0
         --dataset_shuffle true --train_dataloader_shuffle true --val_dataset_shuffle false
         --dataset_num_proc "$DATASET_NUM_PROC" --load_from_cache_file "$LOAD_FROM_CACHE_FILE"
-        --strict true --truncation_strategy delete --max_length "$MAX_LENGTH"
+        --strict true --truncation_strategy "$TRUNCATION_STRATEGY" --max_length "$MAX_LENGTH"
         --tuner_type lora --tuner_backend peft --target_modules all-linear
         --lora_rank "$LORA_RANK" --lora_alpha "$LORA_ALPHA" --lora_dropout "$LORA_DROPOUT"
         --torch_dtype "$TORCH_DTYPE" --attn_impl sdpa
@@ -114,12 +121,13 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
         --gradient_checkpointing "$GRADIENT_CHECKPOINTING"
         --gradient_checkpointing_kwargs '{"use_reentrant": false}'
         --ddp_find_unused_parameters "$DDP_FIND_UNUSED_PARAMETERS"
+        --enable_channel_loss "$ENABLE_CHANNEL_LOSS"
         --packing false --padding_free false --sequence_parallel_size 1
         --use_liger_kernel false --use_logits_to_keep false
         --logging_steps "$LOGGING_STEPS" --logging_nan_inf_filter false --eval_on_start true
         --eval_strategy steps --eval_steps "$EVAL_STEPS" --save_strategy steps --save_steps "$SAVE_STEPS"
         --save_total_limit "$SAVE_TOTAL_LIMIT" --save_only_model false --load_best_model_at_end true
-        --metric_for_best_model eval_loss --greater_is_better false --max_new_tokens "$MAX_NEW_TOKENS"
+        --metric_for_best_model "$METRIC_FOR_BEST_MODEL" --greater_is_better false --max_new_tokens "$MAX_NEW_TOKENS"
         --seed "$SEED" --data_seed "$DATA_SEED" --add_version "$add_version" --output_dir "$output"
     )
     # 不导出 .raw、不另建准备缓存，直接使用 ms-swift 原生 JSONL 加载/缓存机制。

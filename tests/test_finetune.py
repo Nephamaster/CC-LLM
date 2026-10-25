@@ -38,13 +38,23 @@ if sys.argv[1:3] == ["-B", "-c"]:
     sys.argv = ["-c", *sys.argv[4:]]
     exec(code)
     raise SystemExit(0)
+if len(sys.argv) > 2 and sys.argv[1] == "-B" and sys.argv[2].endswith("/prepare_ancient_views.py"):
+    output = Path(sys.argv[sys.argv.index("--output-dir") + 1])
+    output.mkdir(parents=True, exist_ok=True)
+    for name in ("train.jsonl", "dev.jsonl"):
+        (output / name).write_text('{"messages":[],"channel":"c2m"}\\n')
+    raise SystemExit(0)
 Path(os.environ["CAPTURE"]).write_text(json.dumps({"args": sys.argv[1:], "pgca": os.getenv("PGCA_ENABLED"),
-    "root": os.getenv("CC_LLM_SFT_OUTPUT_ROOT"), "world": os.getenv("NPROC_PER_NODE")}))
+    "root": os.getenv("CC_LLM_SFT_OUTPUT_ROOT"), "world": os.getenv("NPROC_PER_NODE"),
+    "macro_channels": os.getenv("CC_LLM_MACRO_CHANNELS")}))
 ''')
     python.chmod(0o755)
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     for key in ("MODEL", "MODEL_NAME", "BASE_MODEL_NAME", "OUT", "TRAIN", "DEV", "MAX_LENGTH", "LEARNING_RATE",
-                "NUM_TRAIN_EPOCHS", "RESUME_FROM_CHECKPOINT", "NPROC_PER_NODE", "LOAD_FROM_CACHE_FILE"):
+                "NUM_TRAIN_EPOCHS", "RESUME_FROM_CHECKPOINT", "NPROC_PER_NODE", "LOAD_FROM_CACHE_FILE",
+                "ADD_NON_THINKING_PREFIX", "TRUNCATION_STRATEGY", "ENABLE_CHANNEL_LOSS",
+                "DISABLE_IGNORE_EMPTY_THINK", "METRIC_FOR_BEST_MODEL", "TEMPLATE_TYPE",
+                "CC_LLM_MACRO_CHANNELS", "ANCIENT_DATA_DIR", "ANCIENT_VIEW_DIR"):
         env.pop(key, None)
     env.update(CC_ROOT=str(tmp_path), TRAIN_ROOT=str(tmp_path / "outputs/train"), PYTHON_CMD=str(python),
                TRAIN=str(train), DEV=str(dev), CAPTURE=str(capture), CUDA_VISIBLE_DEVICES="4,5")
@@ -87,6 +97,28 @@ def test_explicit_model_and_options_take_precedence(shell_inputs, tmp_path):
     for flag, value in {"--model": str(model), "--output_dir": env["OUT"], "--load_from_cache_file": "false",
                         "--lora_rank": "8", "--max_length": "512", "--learning_rate": "2e-4"}.items():
         assert option(args, flag) == value
+
+
+def test_ancient_script_uses_task_channels_and_macro_selection(shell_inputs, tmp_path):
+    model, capture, env = shell_inputs
+    data_dir = tmp_path / "ancient/final"
+    data_dir.mkdir(parents=True)
+    env.update(MODEL=str(model), MODEL_NAME="ExampleBase-PGCA-CPT", ANCIENT_DATA_DIR=str(data_dir),
+               OUT=str(tmp_path / "outputs/train/ExampleBase-PGCA-CPT-ACT"), CUDA_VISIBLE_DEVICES="4,5,6,7")
+    subprocess.run(["bash", str(SFT / "ancient.sh")], env=env, check=True)
+    call = json.loads(capture.read_text())
+    args = call["args"]
+    assert option(args, "--dataset") == str(Path(env["OUT"]) / ".inputs/train.jsonl")
+    assert option(args, "--val_dataset") == str(Path(env["OUT"]) / ".inputs/dev.jsonl")
+    for flag, value in {"--max_length": "2048", "--per_device_train_batch_size": "1",
+                        "--gradient_accumulation_steps": "8", "--add_non_thinking_prefix": "true",
+                        "--disable_ignore_empty_think": "false",
+                        "--truncation_strategy": "delete", "--enable_channel_loss": "true",
+                        "--metric_for_best_model": "eval_macro_task_loss",
+                        "--template": "cc_llm_ancient"}.items():
+        assert option(args, flag) == value
+    assert call["world"] == "4"
+    assert call["macro_channels"] == "c2m,m2c,punctuate"
 
 
 @pytest.mark.parametrize("explicit_model", [True, False])
@@ -157,10 +189,20 @@ def test_pgca_lora_has_branch_gradients_without_auxiliary_loss(plugin, tmp_path)
     for group in (".pgca_attn.", ".context_encoder."):
         assert any(group in n and p.grad is not None and p.grad.abs().sum() > 0 for n, p in model.named_parameters())
     model.config.pgca_enabled = False
-    with patch.object(plugin["BASE_META"].template_cls, "generate", return_value="generated") as generate:
+    with patch.object(plugin["CORRECTION_META"].template_cls, "generate", return_value="generated") as generate:
         assert template.generate(model, input_ids=ids) == "generated"
         assert generate.call_args.kwargs["return_aux_logits"] is False
     assert model.config.pgca_enabled
+
+
+def test_callback_adds_macro_task_loss_before_selection(plugin, monkeypatch):
+    monkeypatch.setenv("CC_LLM_MACRO_CHANNELS", "c2m,m2c,punctuate")
+    callback = plugin["CorrectionCallback"](SimpleNamespace(), SimpleNamespace())
+    logs = {"eval_loss_c2m": 1.0, "eval_loss_m2c": 2.0, "eval_loss_punctuate": 3.0}
+    state = SimpleNamespace(log_history=[dict(logs)])
+    callback.on_log(None, state, None, logs=logs)
+    assert logs["eval_macro_task_loss"] == 2.0
+    assert state.log_history[-1]["eval_macro_task_loss"] == 2.0
 
 
 @pytest.mark.parametrize("kind,world_size", [("base", 1), ("pgca", 1), ("pgca", 2)])
@@ -256,6 +298,15 @@ def test_real_swift_lora_sft_and_evaluator_contract(plugin, tmp_path, monkeypatc
     assert encoded[0]["labels"] == encoded[1]["labels"]
     assert any(label == -100 for label in encoded[1]["labels"])
     assert any(label != -100 for label in encoded[1]["labels"])
+    ancient_encoded = []
+    for template_name in ("qwen3", "cc_llm_ancient"):
+        template = get_template(processor, template_type=template_name, use_chat_template=True,
+                                enable_thinking=False, add_non_thinking_prefix=True,
+                                loss_scale="default")
+        template.set_mode("train")
+        ancient_encoded.append(template.encode(rows[0]))
+    assert ancient_encoded[0]["input_ids"] == ancient_encoded[1]["input_ids"]
+    assert ancient_encoded[0]["labels"] == ancient_encoded[1]["labels"]
     if kind == "pgca" and world_size == 1:
         from scripts.evaluation.inference import TrainingTemplatePredictor
         monkeypatch.setenv("PGCA_ENABLED", "false")
