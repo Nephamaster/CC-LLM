@@ -121,6 +121,9 @@ def test_all_task_bundles_load_with_correct_protocol(tmp_path, fake_hub, benchma
         if benchmark == "squadv2":
             requests = task.construct_requests(task.eval_docs[0], text)
             assert [req.request_type for req in requests] == ["generate_until", "loglikelihood"]
+            assert requests[0].args[1]["max_gen_toks"] == 256
+        if benchmark == "gsm8k":
+            assert yaml.safe_load((bundle / "gsm8k.yaml").read_text())["generation_kwargs"]["max_gen_toks"] == 512
     if benchmark != "cmmlu":
         assert fake_hub
 
@@ -186,7 +189,10 @@ def test_backend_rejects_truncation_and_generates(tiny_model):
     from scripts.evaluation.lmeh.backend import StrictHFLM
     from scripts.evaluation.ppl.evaluate import load_model
     model, tokenizer, _ = load_model(str(tiny_model), device="cpu", dtype="float32")
+    model.generation_config.max_new_tokens = 2048
     backend = StrictHFLM(pretrained=model, tokenizer=tokenizer, backend="causal", max_length=16, batch_size=1)
+    assert backend.checkpoint_max_new_tokens == 2048
+    assert backend.model.generation_config.max_new_tokens is None
     with pytest.raises(ValueError, match="refusing to truncate"):
         backend._loglikelihood_tokens([(("context", "answer"), [1] * 16, [2, 3])])
     request = Instance(request_type="generate_until", doc={}, arguments=("A " * 16, {"max_gen_toks": 2}), idx=0)

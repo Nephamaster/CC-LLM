@@ -25,6 +25,7 @@ MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-
 MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
 BENCHMARK=mmlu \
 RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
+MODEL=/share/project/wuhaiming/data/models/Qwen3-1.7B-Base
 
 HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=5 \
 MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \

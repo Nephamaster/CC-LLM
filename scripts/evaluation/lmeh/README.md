@@ -79,7 +79,7 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/checkpoint MODEL_NAME=Qwen3-1.7B-Base-PGCA
 
 默认单进程、单设备，在一次 `all` 调用中复用已加载模型；不要用 torchrun/accelerate launch 启动。多个可见 GPU 不会自动数据并行。CPU 小模型可用 `DEVICE=cpu DTYPE=float32`。PGCA 的 HF 似然评分和带 KV cache 生成均有小模型回归，但服务器大模型 CUDA 仍需冒烟确认。
 
-所有模型比较时使用相同 MAX_LENGTH/DTYPE。上下文容量不足或“prompt + 生成预算”超长时直接报错，不删题目、不截 few-shot、不自动降 shot。需要增大 MAX_LENGTH 时应对所有对照模型一致设置，且不得超过各自容量。GSM8K 生成预算 512、SQuAD v2 为 256、CLUE CMRC2018 为 64；greedy，不开启 thinking/chat template。更换生成预算会改变实验协议，应修改协议并单独记录，不能混用分数。
+所有模型比较时使用相同 MAX_LENGTH/DTYPE。上下文容量不足或“prompt + 生成预算”超长时直接报错，不删题目、不截 few-shot、不自动降 shot。需要增大 MAX_LENGTH 时应对所有对照模型一致设置，且不得超过各自容量。GSM8K 生成预算 512、SQuAD v2 为 256、CLUE CMRC2018 为 64；greedy，不开启 thinking/chat template。后端会忽略检查点 `generation_config.json` 中可能覆盖任务预算的 `max_new_tokens`，实际任务预算记录在 manifest 的 `protocol` 中。更换生成预算会改变实验协议，应修改协议并单独记录，不能混用分数。
 
 ## 输出与可追溯性
 

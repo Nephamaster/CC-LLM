@@ -3,6 +3,15 @@ from lm_eval.models.huggingface import HFLM
 
 
 class StrictHFLM(HFLM):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        generation_config = getattr(self.model, "generation_config", None)
+        self.checkpoint_max_new_tokens = getattr(generation_config, "max_new_tokens", None)
+        if generation_config is not None:
+            # HFLM computes a task-specific total max_length for every request.
+            # A checkpoint-level max_new_tokens takes precedence over that limit.
+            generation_config.max_new_tokens = None
+
     def _loglikelihood_tokens(self, requests, **kwargs):
         for _, context, continuation in requests:
             if len(context) + len(continuation) - 1 > self.max_length:

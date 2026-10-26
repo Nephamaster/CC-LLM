@@ -131,7 +131,8 @@ def evaluate_one(args, benchmark, backend):
     manifest["actual_model"] = {"class": type(backend.model).__name__, "dtype": str(backend.model.dtype),
                                 "tokenizer": type(backend.tokenizer).__name__,
                                 "pgca_enabled": getattr(backend.model.config, "pgca_enabled", None),
-                                "pgca_context_enabled": getattr(backend.model.config, "pgca_context_enabled", None)}
+                                "pgca_context_enabled": getattr(backend.model.config, "pgca_context_enabled", None),
+                                "checkpoint_max_new_tokens_ignored": backend.checkpoint_max_new_tokens}
     write_report(manifest_path, manifest)
     # Pass already loaded root groups/tasks, retaining harness's own group aggregation.
     task_name = BENCHMARKS[benchmark]["task"]

@@ -15,8 +15,8 @@ DATA_REVISIONS = json.loads((HERE / "dataset_revisions.json").read_text(encoding
 BENCHMARKS = {
     "mmlu": {"task": "mmlu", "shots": 5, "leaves": 57, "output": "mmlu"},
     "arc_challenge": {"task": "arc_challenge", "shots": 0, "leaves": 1, "output": "arc/challenge"},
-    "squadv2": {"task": "squadv2", "shots": 0, "leaves": 1, "output": "squadv2"},
-    "gsm8k": {"task": "gsm8k", "shots": 5, "leaves": 1, "output": "gsm8k"},
+    "squadv2": {"task": "squadv2", "shots": 0, "leaves": 1, "output": "squadv2", "max_gen_toks": 256},
+    "gsm8k": {"task": "gsm8k", "shots": 5, "leaves": 1, "output": "gsm8k", "max_gen_toks": 512},
     "cmmlu": {"task": "cmmlu", "shots": 5, "leaves": 67, "output": "cmmlu"},
     "clue": {"task": "clue", "shots": 0, "leaves": 9, "output": "clue"},
 }
@@ -78,7 +78,7 @@ def build_bundle(destination, benchmark, cmmlu_dir=DEFAULT_CMMLU_DIR):
         if family == "cmmlu" and "dataset_name" in config:
             config["dataset_kwargs"] = {"subject": config["dataset_name"], "data_dir": str(Path(cmmlu_dir).resolve())}
         if family == "gsm8k":
-            config["generation_kwargs"]["max_gen_toks"] = 512
+            config["generation_kwargs"]["max_gen_toks"] = BENCHMARKS[benchmark]["max_gen_toks"]
         (destination / name).write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False) + extra,
                                         encoding="utf-8")
     return destination
