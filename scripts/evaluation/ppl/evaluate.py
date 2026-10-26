@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.metadata
 import json
 import os
-import platform
 import time
 from pathlib import Path
 
@@ -51,19 +49,12 @@ def checkpoint_identity(path):
     if (path / "adapter_config.json").exists():
         raise ValueError("PPL requires full/merged weights, not a LoRA adapter directory")
     # Exclude args.json: training arguments may include credentials.
-    metadata = {p.name: sha256(p) for p in path.iterdir() if p.is_file() and
-                (p.name in {"config.json", "generation_config.json", "merges.txt", "vocab.json", "vocab.txt",
-                            "special_tokens_map.json", "added_tokens.json", "tokenizer.model", "spiece.model",
-                            "model.safetensors.index.json", "pytorch_model.bin.index.json"}
-                 or p.name.startswith("tokenizer") or p.suffix == ".jinja")}
-    runtime = {str(p.relative_to(path)): sha256(p) for p in path.rglob("*.py")}
     weights = {p.name: {"bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
                for p in path.iterdir() if p.is_file() and
                (p.suffix == ".safetensors" or p.name.startswith("pytorch_model") and p.suffix == ".bin")}
     if not weights:
         raise ValueError(f"no model weights in {path}; tokenizer/build metadata alone cannot be evaluated")
-    return {"path": str(path), "metadata_sha256": metadata, "runtime_code_sha256": runtime,
-            "weights_stat": weights, "weight_identity_method": "path/size/mtime_ns, not full content hash"}
+    return {"path": str(path), "weights_stat": weights}
 
 
 def load_model(model_path, dtype="auto", device="auto", attention="sdpa"):
@@ -93,11 +84,7 @@ def load_model(model_path, dtype="auto", device="auto", attention="sdpa"):
 def runtime_info(model, tokenizer, loading):
     import torch
 
-    versions = {name: importlib.metadata.version(name)
-                for name in ("torch", "transformers", "tokenizers", "accelerate", "tqdm")}
-    backend = getattr(tokenizer, "backend_tokenizer", None)
-    return {"python": platform.python_version(), "packages": versions, "cuda": torch.version.cuda,
-            "gpu_names": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],
+    return {"gpu_names": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],
             "model_class": type(model).__name__, "model_dtype": str(model.dtype),
             "device_map": {k: str(v) for k, v in getattr(model, "hf_device_map", {}).items()},
             "attention": getattr(model.config, "_attn_implementation", None),
@@ -107,7 +94,6 @@ def runtime_info(model, tokenizer, loading):
             "pgca_enabled_env": os.environ.get("PGCA_ENABLED"),
             "unexpected_checkpoint_keys": sorted(loading.get("unexpected_keys", [])),
             "tokenizer_class": type(tokenizer).__name__, "tokenizer_length": len(tokenizer),
-            "tokenizer_backend_sha256": hashlib.sha256(backend.to_str().encode()).hexdigest() if backend else None,
             "bos_token_id": tokenizer.bos_token_id, "eos_token_id": tokenizer.eos_token_id}
 
 
@@ -152,10 +138,7 @@ def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
                 "no_target_documents": "retain raw counts; zero NLL; counts disclosed",
                 "aggregation": "sum NLL / sum denominators, then exp; no mean of document/domain PPL"}
     manifest = {"complete": False, "model": identity, "sources": sources, "protocol": protocol,
-                "runtime": runtime_info(model, tokenizer, loading),
-                "code_sha256": {name: sha256(Path(__file__).with_name(name))
-                                for name in ("evaluate.py", "metrics.py", "requirements.txt")},
-                "common_sha256": sha256(Path(__file__).parents[1] / "common.py")}
+                "runtime": runtime_info(model, tokenizer, loading)}
     output.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation also prevents two evaluations sharing the same OUT.
     with manifest_path.open("x", encoding="utf-8") as handle:
@@ -199,7 +182,7 @@ def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path)
-    parser.add_argument("--input-dir", type=Path, default=ROOT / "data/ppl")
+    parser.add_argument("--input-dir", type=Path, default=ROOT / "data/evaluation/ppl")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--inspect", action="store_true", help="validate all source rows without loading a model")
     parser.add_argument("--window", type=int, default=2048)

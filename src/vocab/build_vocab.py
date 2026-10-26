@@ -14,17 +14,17 @@ from .semantic_vocab import SemanticVocabBuildConfig, SemanticVocabBuilder
 from .validate_vocab import VocabValidationConfig, VocabValidator
 
 
-DEFAULT_BASE_MODEL = "/share/project/wuhaiming/data/models/Qwen3-1.7B-Base/"
-DEFAULT_CHAR_MODEL = Path("models/Qwen3-1.7B-Base-Char")
+DEFAULT_BASE_MODEL = Path("models/base")
+DEFAULT_CHAR_MODEL = Path("models/char")
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-model-path", default=DEFAULT_BASE_MODEL)
     parser.add_argument("--char-model-path", type=Path, default=DEFAULT_CHAR_MODEL)
-    parser.add_argument("--hanzi-dir", type=Path, default=Path("resources/hanzi"))
+    parser.add_argument("--hanzi-dir", type=Path, default=Path("models/.build/hanzi"))
     parser.add_argument("--features-dir", type=Path, default=None)
-    parser.add_argument("--unihan-path", type=Path, default=Path("resources/unihan/Unihan.zip"))
-    parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("resources/raw/Unihan"))
+    parser.add_argument("--unihan-path", type=Path, default=Path("data/model_build/unihan/Unihan.zip"))
+    parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("data/model_build/unihan"))
 
 
 def build_hanzi_set(args) -> dict:

@@ -1,21 +1,18 @@
-"""Run the agreed HF benchmark protocols, with source/model/data provenance."""
+"""Run local benchmark protocols with HF or vLLM inference."""
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import math
 import os
-import platform
 import tempfile
 import time
 from pathlib import Path
 
-from ..common import ROOT, sha256
+from ..common import ROOT
 from ..runs import new_run_directory
 from ..ppl.evaluate import checkpoint_identity, load_model, write_report
-from .protocol import (BENCHMARKS, DEFAULT_CMMLU_DIR, build_bundle,
-                       bundle_hashes, select_benchmarks)
+from .protocol import BENCHMARKS, DEFAULT_DATA_DIR, build_bundle, select_benchmarks
 
 
 def validate_component(value):
@@ -58,18 +55,15 @@ def load_tasks(bundle, benchmark):
                            "num_fewshot": BENCHMARKS[benchmark]["shots"],
                            "dataset_path": task.DATASET_PATH, "dataset_name": task.DATASET_NAME,
                            "dataset_kwargs": task.config.dataset_kwargs,
-                           "splits": {split: {"rows": len(data), "fingerprint": data._fingerprint}
-                                      for split, data in dataset.items()}}
+                           "splits": {split: {"rows": len(data)} for split, data in dataset.items()}}
     return manager, loaded, inventory
 
 
-def runtime_info():
-    packages = {}
-    for name in ("lm_eval", "torch", "transformers", "tokenizers", "accelerate", "datasets", "evaluate", "peft"):
-        packages[name] = importlib.metadata.version(name)
-    return {"packages": packages, "python": platform.python_version(),
-            "HF_ENDPOINT": os.getenv("HF_ENDPOINT", "https://huggingface.co"),
-            "pgca_enabled_env": os.getenv("PGCA_ENABLED")}
+def resolve_backend(args):
+    if args.backend != "auto":
+        return args.backend
+    config = json.loads((args.model / "config.json").read_text(encoding="utf-8"))
+    return "hf" if config.get("model_type") == "qwen3_pgca" else "vllm"
 
 
 def json_ready(value):
@@ -89,50 +83,58 @@ def json_ready(value):
 
 def evaluate_one(args, benchmark, backend):
     from lm_eval import evaluator
-    from .datasets import cmmlu_files
 
     output = output_directory(args.output_root, benchmark, args.model_name, args.run_name).resolve()
-    if output.is_relative_to(args.model.resolve()) or output.is_relative_to(args.cmmlu_dir.resolve()):
+    if output.is_relative_to(args.model.resolve()) or output.is_relative_to(args.data_dir.resolve()):
         raise ValueError("evaluation output must not be inside model or source data")
     output = new_run_directory(output)
     print(f"[evaluation][{benchmark}] output={output}", flush=True)
     model_identity = checkpoint_identity(args.model)
     if backend is not None and backend.checkpoint_identity != model_identity:
         raise RuntimeError("checkpoint changed between benchmarks; refusing to relabel an already loaded model")
+    backend_name = resolve_backend(args)
     manifest = {"complete": False, "benchmark": benchmark, "protocol": BENCHMARKS[benchmark],
-                "model": model_identity, "runtime": runtime_info(),
+                "model": model_identity, "backend": backend_name,
                 "max_length": args.max_length, "dtype": args.dtype, "device": args.device,
                 "batch_size": args.batch_size, "limit": args.limit, "smoke_only": args.limit is not None,
                 "seed": 42, "bootstrap_iters": 0 if args.limit else 1000,
                 "apply_chat_template": False, "add_bos_token": False,
-                "overflow_policy": "error; no prompt/few-shot truncation"}
+                "tensor_parallel_size": args.tensor_parallel_size,
+                "overflow_policy": "error; no prompt/few-shot truncation",
+                "HF_ENDPOINT": os.getenv("HF_ENDPOINT", "https://hf-mirror.com")}
     manifest_path = output / "manifest.json"
     write_report(manifest_path, manifest)
     started = time.monotonic()
-    bundle = build_bundle(output / "tasks", benchmark, args.cmmlu_dir)
-    manifest["task_snapshot_sha256"] = bundle_hashes(bundle)
-    source_hashes = cmmlu_files(args.cmmlu_dir) if benchmark == "cmmlu" else None
+    bundle = build_bundle(output / "tasks", benchmark, args.data_dir)
     manager, loaded, inventory = load_tasks(bundle, benchmark)
     manifest["datasets"] = inventory
-    manifest["cmmlu_file_sha256"] = source_hashes
     write_report(manifest_path, manifest)
     if backend is None:
-        from .backend import StrictHFLM
-        from ..ppl.metrics import validate_window
+        if backend_name == "vllm":
+            from .backend import build_vllm_backend
+            backend = build_vllm_backend(
+                args.model, dtype=args.dtype, batch_size=args.batch_size,
+                max_length=args.max_length, tensor_parallel_size=args.tensor_parallel_size)
+        else:
+            from .backend import StrictHFLM
+            from ..ppl.metrics import validate_window
 
-        model, tokenizer, _ = load_model(str(args.model.resolve()), args.dtype, args.device, "sdpa")
-        validate_window(model, tokenizer, args.max_length, 1)
-        backend = StrictHFLM(pretrained=model, tokenizer=tokenizer, backend="causal",
-                             max_length=args.max_length, batch_size=args.batch_size,
-                             device=args.device, add_bos_token=False, softmax_dtype="float32")
-        if backend.world_size != 1:
-            raise ValueError("this launcher is single-process; do not use torchrun/accelerate launch")
+            model, tokenizer, _ = load_model(str(args.model.resolve()), args.dtype, args.device, "sdpa")
+            validate_window(model, tokenizer, args.max_length, 1)
+            backend = StrictHFLM(pretrained=model, tokenizer=tokenizer, backend="causal",
+                                 max_length=args.max_length, batch_size=args.batch_size,
+                                 device=args.device, add_bos_token=False, softmax_dtype="float32")
+            if backend.world_size != 1:
+                raise ValueError("this launcher is single-process; do not use torchrun/accelerate launch")
         backend.checkpoint_identity = model_identity
-    manifest["actual_model"] = {"class": type(backend.model).__name__, "dtype": str(backend.model.dtype),
-                                "tokenizer": type(backend.tokenizer).__name__,
-                                "pgca_enabled": getattr(backend.model.config, "pgca_enabled", None),
-                                "pgca_context_enabled": getattr(backend.model.config, "pgca_context_enabled", None),
-                                "checkpoint_max_new_tokens_ignored": backend.checkpoint_max_new_tokens}
+    manifest["actual_model"] = {"backend_class": type(backend).__name__,
+                                "tokenizer": type(backend.tokenizer).__name__}
+    if backend_name == "hf":
+        manifest["actual_model"].update(
+            class_name=type(backend.model).__name__, dtype=str(backend.model.dtype),
+            pgca_enabled=getattr(backend.model.config, "pgca_enabled", None),
+            pgca_context_enabled=getattr(backend.model.config, "pgca_context_enabled", None),
+            checkpoint_max_new_tokens_ignored=backend.checkpoint_max_new_tokens)
     write_report(manifest_path, manifest)
     # Pass already loaded root groups/tasks, retaining harness's own group aggregation.
     task_name = BENCHMARKS[benchmark]["task"]
@@ -147,8 +149,6 @@ def evaluate_one(args, benchmark, backend):
         raise RuntimeError("harness returned no results")
     if checkpoint_identity(args.model) != model_identity:
         raise RuntimeError("checkpoint changed during evaluation")
-    if benchmark == "cmmlu" and cmmlu_files(args.cmmlu_dir) != source_hashes:
-        raise RuntimeError("CMMLU files changed during evaluation")
     result = json_ready(result)
     samples = result.pop("samples")
     samples_dir = output / "samples"
@@ -158,9 +158,7 @@ def evaluate_one(args, benchmark, backend):
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
     write_report(output / "results.json", result)
-    manifest.update(complete=True, elapsed_seconds=time.monotonic() - started,
-                    results_sha256=sha256(output / "results.json"),
-                    sample_sha256={p.name: sha256(p) for p in samples_dir.glob("*.jsonl")})
+    manifest.update(complete=True, elapsed_seconds=time.monotonic() - started)
     write_report(manifest_path, manifest)
     return backend, {"benchmark": benchmark, "output": str(output), "smoke_only": args.limit is not None}
 
@@ -173,11 +171,13 @@ def main(argv=None):
     parser.add_argument("--model-name")
     parser.add_argument("--run-name")
     parser.add_argument("--output-root", type=Path, default=ROOT / "outputs/evaluation")
-    parser.add_argument("--cmmlu-dir", type=Path, default=DEFAULT_CMMLU_DIR)
+    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dtype", choices=("auto", "float32", "bfloat16", "float16"), default="bfloat16")
     parser.add_argument("--batch-size", default="1")
     parser.add_argument("--max-length", type=int, default=8192)
+    parser.add_argument("--backend", choices=("auto", "hf", "vllm"), default="auto")
+    parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--limit", type=int, help="smoke only: examples per leaf task, NOT a corpus-wide limit")
     args = parser.parse_args(argv)
     benchmarks = select_benchmarks(args.benchmark)
@@ -185,6 +185,8 @@ def main(argv=None):
         parser.error("--limit must be positive")
     if args.max_length < 2:
         parser.error("--max-length must be at least two")
+    if args.tensor_parallel_size < 1:
+        parser.error("--tensor-parallel-size must be positive")
     if args.stage == "run" and (args.model is None or args.model_name is None):
         parser.error("--model and --model-name are required for run")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
@@ -201,9 +203,8 @@ def main(argv=None):
             backend, summary = evaluate_one(args, benchmark, backend)
         else:
             with tempfile.TemporaryDirectory(prefix="ccllm-lmeh-") as temporary:
-                bundle = build_bundle(Path(temporary) / "tasks", benchmark, args.cmmlu_dir)
-                summary = {"benchmark": benchmark, **BENCHMARKS[benchmark],
-                           "task_snapshot_sha256": bundle_hashes(bundle)}
+                bundle = build_bundle(Path(temporary) / "tasks", benchmark, args.data_dir)
+                summary = {"benchmark": benchmark, **BENCHMARKS[benchmark]}
                 if args.stage == "check":
                     _, _, summary["datasets"] = load_tasks(bundle, benchmark)
         summaries.append(summary)

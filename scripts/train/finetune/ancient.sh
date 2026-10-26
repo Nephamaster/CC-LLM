@@ -17,7 +17,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 
 # ==================== 古汉语多任务 SFT 参数 ====================
 MODEL="${MODEL:-}"
-ANCIENT_DATA_DIR="${ANCIENT_DATA_DIR:-$CC_ROOT/data/downstream/ancient/train/final}"
+ANCIENT_DATA_DIR="${ANCIENT_DATA_DIR:-$CC_ROOT/data/finetune/ancient}"
 OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME%-ALIGN}-ACT}"
 ANCIENT_VIEW_DIR="${ANCIENT_VIEW_DIR:-$OUT/.inputs}"
 TRAIN="$ANCIENT_VIEW_DIR/train.jsonl"

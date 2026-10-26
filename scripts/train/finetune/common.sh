@@ -6,9 +6,8 @@ CC_ROOT="${CC_ROOT:-$(cd -- "$FINETUNE_DIR/../../.." && pwd)}"
 
 # ==================== 下游 LoRA 共享参数 ====================
 # 修改 :- 后的默认值；命令行同名环境变量优先。任务路径、长度、学习率在任务脚本顶部。
-PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/scripts/train/env/bin/python}"
-BASE_MODEL_NAME="${BASE_MODEL_NAME:-Qwen3-1.7B-Base}"
-MODEL_NAME="${MODEL_NAME:-${BASE_MODEL_NAME}-PGCA-CPT}"  # 输入模型名称，不是 checkpoint-N
+PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/.venv/train/bin/python}"
+MODEL_NAME="${MODEL_NAME:-}"  # 输入模型名称，不是 checkpoint-N
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 
@@ -52,12 +51,18 @@ SEED="${SEED:-42}"
 DATA_SEED="${DATA_SEED:-42}"
 
 # ==================== 执行逻辑，通常无需修改 ====================
+if [[ -z "$MODEL_NAME" ]]; then
+    [[ -s "$CC_ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run model_build/run.sh" >&2; exit 1; }
+    IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
+    MODEL_NAME="${MODEL_NAME}-CPT"
+fi
 [[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
     echo "MODEL_NAME must be the input model name, not a checkpoint path" >&2; exit 2;
 }
 IFS=, read -r -a finetune_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#finetune_devices[@]}}"
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE PYTHONDONTWRITEBYTECODE=1
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 run_finetuning() {
     local model="$MODEL" output="$OUT" add_version=true

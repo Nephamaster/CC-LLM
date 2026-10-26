@@ -17,7 +17,7 @@ from .feature_memory import FeatureMemoryBuilder, load_feature_index
 
 @dataclass(frozen=True)
 class EmbeddingValidationConfig:
-    char_model_path: Path = Path("models/Qwen3-1.7B-Base-Char")
+    char_model_path: Path = Path("models/char")
     trust_remote_code: bool = True
     torch_dtype: str = "auto"
     validate_model_weights: bool = True
@@ -119,7 +119,7 @@ class EmbeddingValidator:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--char-model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
+    parser.add_argument("--char-model-path", type=Path, default=Path("models/char"))
     parser.add_argument("--skip-model-weights", action="store_true")
     parser.add_argument("--torch-dtype", default="auto")
     args = parser.parse_args()

@@ -3,15 +3,16 @@ set -euo pipefail
 
 CC_PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CC_ROOT="${CC_ROOT:-$(cd -- "$CC_PLUGIN_DIR/../../.." && pwd)}"
-MS_SWIFT_DIR="$(cd -- "$CC_PLUGIN_DIR/.." && pwd)"
 
 # ==================== Phase2-B 独立参数：通常只改这里 ====================
 # 修改 :- 后的默认值即可；命令行传入的同名环境变量优先。
 
 # 环境、模型名称与产物根目录。本文件包含本阶段全部配置，不依赖 common.sh。
-PYTHON_CMD="${PYTHON_CMD:-$MS_SWIFT_DIR/env/bin/python}"
-BASE_MODEL_NAME="${BASE_MODEL_NAME:-Qwen3-1.7B-Base}"
-MODEL_NAME="${MODEL_NAME:-${BASE_MODEL_NAME}-PGCA}"
+PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/.venv/train/bin/python}"
+MODEL_NAME="${MODEL_NAME:-}"
+if [[ -z "$MODEL_NAME" && -s "$CC_ROOT/models/model_name.txt" ]]; then
+    IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
+fi
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 
 # 本阶段输入、输出及训练参数。MODEL 优先；留空时读取 Phase2-A 完成指针。
@@ -19,9 +20,9 @@ MODEL="${MODEL:-}"
 CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
 ADAPTATION_OUT="${ADAPTATION_OUT:-$CPT_ROOT/adaptation}"
 OUT="${OUT:-$CPT_ROOT/joint}"
-DATA_DIR="${DATA_DIR:-$CC_ROOT/data/corpus/runs/phase2/phase2-10b-default-6d14a3c4e453/final/ms_swift}"
+DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase2}"
 MAX_LENGTH="${MAX_LENGTH:-4096}"
-CACHE_DIR="${CACHE_DIR:-$CC_ROOT/data/cc_llm_multitask/phase2_${MAX_LENGTH}}"
+CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/phase2_${MAX_LENGTH}}"
 # 与 A 保持相同数据、长度、DATA_SEED 和预算；B 只使用扣除 A 后的剩余监督目标。
 PHASE2_TOKENS="${PHASE2_TOKENS:-10000000000}"
 ADAPTATION_TOKENS="${ADAPTATION_TOKENS:-100000000}"
@@ -66,6 +67,7 @@ DATA_SEED="${DATA_SEED:-42}"                      # 同时控制准备缓存时�
     echo "MODEL_NAME must be a model name, not a checkpoint path" >&2; exit 2;
 }
 export PYTHONDONTWRITEBYTECODE=1
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE

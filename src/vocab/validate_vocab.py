@@ -20,9 +20,9 @@ from .unicode_ranges import CJK_RANGES, count_hanzi
 
 @dataclass(frozen=True)
 class VocabValidationConfig:
-    char_model_path: Path = Path("models/Qwen3-1.7B-Base-Char")
-    features_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
-    hanzi_set_path: Path = Path("resources/hanzi/hanzi_set.txt")
+    char_model_path: Path = Path("models/char")
+    features_dir: Path = Path("models/char/features")
+    hanzi_set_path: Path = Path("models/.build/hanzi/hanzi_set.txt")
     output_path: Path | None = None
     trust_remote_code: bool = True
     use_fast: bool = True
@@ -346,9 +346,9 @@ class VocabValidator:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--char-model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--features-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char/features"))
-    parser.add_argument("--hanzi-set-path", type=Path, default=Path("resources/hanzi/hanzi_set.txt"))
+    parser.add_argument("--char-model-path", type=Path, default=Path("models/char"))
+    parser.add_argument("--features-dir", type=Path, default=Path("models/char/features"))
+    parser.add_argument("--hanzi-set-path", type=Path, default=Path("models/.build/hanzi/hanzi_set.txt"))
     parser.add_argument("--max-hanzi-checks", type=int, default=None)
     args = parser.parse_args()
     report = VocabValidator(

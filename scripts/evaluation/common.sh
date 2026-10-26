@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# The calling task supplies its own environment directory and evaluation protocol.
 configure_evaluation() {
     local task_dir="$1" benchmark="$2" protocol="${3:-}"
     local component
     ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-    PYTHON="${PYTHON:-$task_dir/env/bin/python}"
+    PYTHON="${PYTHON:-$ROOT/.venv/evaluation/bin/python}"
     export PYTHONDONTWRITEBYTECODE=1
+    export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
     cd "$ROOT"
     if [[ -n "${RUN_DIR:-}" ]]; then
         OUT="$RUN_DIR"

@@ -3,23 +3,24 @@ set -euo pipefail
 
 CC_PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CC_ROOT="${CC_ROOT:-$(cd -- "$CC_PLUGIN_DIR/../../.." && pwd)}"
-MS_SWIFT_DIR="$(cd -- "$CC_PLUGIN_DIR/.." && pwd)"
 
 # ==================== Phase1 独立参数：通常只改这里 ====================
 # 修改 :- 后的默认值即可；命令行传入的同名环境变量优先。
 
 # 环境、模型名称与产物根目录。本文件包含本阶段全部配置，不依赖 common.sh。
-PYTHON_CMD="${PYTHON_CMD:-$MS_SWIFT_DIR/env/bin/python}"
-BASE_MODEL_NAME="${BASE_MODEL_NAME:-Qwen3-1.7B-Base}"
-MODEL_NAME="${MODEL_NAME:-${BASE_MODEL_NAME}-PGCA}"
+PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/.venv/train/bin/python}"
+MODEL_NAME="${MODEL_NAME:-}"
+if [[ -z "$MODEL_NAME" && -s "$CC_ROOT/models/model_name.txt" ]]; then
+    IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
+fi
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 
 # 本阶段输入、输出及训练参数。MODEL 是未做 ALIGN 的初始 PGCA 模型。
-MODEL="${MODEL:-$CC_ROOT/models/$MODEL_NAME}"
-DATA_DIR="${DATA_DIR:-$CC_ROOT/data/corpus/runs/phase1/phase1-1b-default-c97f9387391d/final/ms_swift}"
+MODEL="${MODEL:-}"
+DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase1}"
 OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
 MAX_LENGTH="${MAX_LENGTH:-2048}"
-CACHE_DIR="${CACHE_DIR:-$CC_ROOT/data/cc_llm_multitask/phase1_${MAX_LENGTH}}"
+CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/phase1_${MAX_LENGTH}}"
 PHASE1_TOKENS="${PHASE1_TOKENS:-1000000000}"        # 上限；不足时用实际量，0 表示全部
 PHASE1_LR="${PHASE1_LR:-1e-5}"
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
@@ -57,10 +58,15 @@ DATA_SEED="${DATA_SEED:-42}"                      # 同时控制准备缓存时�
 
 
 # ==================== 1. 初始化与输入模型 ====================
+if [[ -z "$MODEL" ]]; then
+    [[ -s "$CC_ROOT/models/next_stage_model.txt" ]] || { echo "Set MODEL or run model_build/run.sh" >&2; exit 1; }
+    IFS= read -r MODEL < "$CC_ROOT/models/next_stage_model.txt"
+fi
 [[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
     echo "MODEL_NAME must be a model name, not a checkpoint path" >&2; exit 2;
 }
 export PYTHONDONTWRITEBYTECODE=1
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE

@@ -1,5 +1,0 @@
-# Install the server-compatible PyTorch wheel first; no ms-swift dependency.
-torch>=2.6
-transformers==5.12.1
-accelerate>=1.10,<2
-tqdm>=4.66,<5

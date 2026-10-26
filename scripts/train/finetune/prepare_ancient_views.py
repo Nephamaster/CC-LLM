@@ -55,19 +55,10 @@ def build_view(messages_path: Path, metadata_path: Path, output_path: Path,
 
 
 def prepare(data_dir: Path, output_dir: Path) -> dict:
-    report_path = data_dir / "report.json"
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if not report.get("ready_for_training"):
-        raise ValueError(f"ancient dataset is not accepted for training: {report_path}")
-
     counts = {}
     for split in ("train", "dev"):
-        expected = {
-            task: report["tasks"][f"{split}/{task}"]["selected"]
-            for task in TASKS
-        }
         split_counts = build_view(data_dir / f"{split}.jsonl", data_dir / f"{split}.metadata.jsonl",
-                                  output_dir / f"{split}.jsonl", expected)
+                                  output_dir / f"{split}.jsonl")
         counts[split] = split_counts
 
     view_report = {

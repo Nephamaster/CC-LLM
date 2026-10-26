@@ -14,8 +14,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 @dataclass(frozen=True)
 class EmbeddingMigrationConfig:
-    base_model_path: str | Path = Path("/share/project/wuhaiming/data/models/Qwen3-1.7B-Base")
-    char_model_path: Path = Path("models/Qwen3-1.7B-Base-Char")
+    base_model_path: str | Path = Path("models/base")
+    char_model_path: Path = Path("models/char")
     torch_dtype: str = "auto"
     trust_remote_code: bool = True
     low_cpu_mem_usage: bool = True
@@ -177,8 +177,8 @@ class SemanticEmbeddingMigrator:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("migrate",), nargs="?", default="migrate")
-    parser.add_argument("--base-model-path", default="/share/project/wuhaiming/data/models/Qwen3-1.7B-Base/")
-    parser.add_argument("--char-model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
+    parser.add_argument("--base-model-path", default="models/base")
+    parser.add_argument("--char-model-path", type=Path, default=Path("models/char"))
     parser.add_argument("--torch-dtype", default="auto")
     args = parser.parse_args()
     report = SemanticEmbeddingMigrator(

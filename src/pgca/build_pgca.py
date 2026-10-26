@@ -486,8 +486,8 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--output-path", type=Path, default=Path("models/Qwen3-1.7B-Base-PGCA"))
+    parser.add_argument("--model-path", type=Path, default=Path("models/char"))
+    parser.add_argument("--output-path", type=Path, default=Path("models/pgca"))
     parser.add_argument("--pgca-layers", type=str, default=None)
     parser.add_argument("--context-encoder", action="store_true")
     parser.add_argument("--auxiliary-heads", action="store_true")

@@ -102,7 +102,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=("fcgec", "nacgec"), required=True)
     parser.add_argument("--split", choices=("valid", "test"), default="test")
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/downstream/cgec/test")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/evaluation/cgec")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.dataset == "fcgec":

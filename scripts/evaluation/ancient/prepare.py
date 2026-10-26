@@ -70,7 +70,7 @@ def fuxi_rows(directory, fewshot=0):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=("c3", "fuxi"), required=True)
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/downstream/ancient/benchmark")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/evaluation/ancient")
     parser.add_argument("--fewshot", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

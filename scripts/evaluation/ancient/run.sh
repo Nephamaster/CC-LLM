@@ -18,7 +18,8 @@ if [[ "$STAGE" == all || "$STAGE" == infer ]]; then
   [[ -z "${LORA:-}" ]] || adapter=(--adapter "$LORA")
   printf '[evaluation][%s/shot%s] starting inference\n' "$DATASET" "${FEWSHOT:-0}"
   "$PYTHON" -B -m scripts.evaluation.inference --input "$OUT/input.jsonl" --output "$OUT/predictions.jsonl" \
-    --model "$MODEL" "${adapter[@]}" --batch-size "${BATCH_SIZE:-8}" --max-new-tokens "${MAX_NEW_TOKENS:-2048}"
+    --model "$MODEL" "${adapter[@]}" --batch-size "${BATCH_SIZE:-8}" --max-new-tokens "${MAX_NEW_TOKENS:-2048}" \
+    --backend "${INFERENCE_BACKEND:-auto}" --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-1}"
   printf '[evaluation][%s/shot%s] inference complete\n' "$DATASET" "${FEWSHOT:-0}"
 fi
 if [[ "$STAGE" == judge || ( "$STAGE" == all && "$DATASET" == fuxi && -n "${JUDGE_MODEL:-}" ) ]]; then

@@ -22,7 +22,6 @@ UNK_TOKEN = "<unk>"
 PAD_TOKEN = "<pad>"
 
 FEATURE_SCHEMA_VERSION = 2
-PYPINYIN_VERSION = "0.55.0"
 SPECIAL_TOKENS = {PAD_TOKEN, NONE_TOKEN, UNK_TOKEN}
 POLYPHONE_EXPECTATIONS = {
     "行": {"xing2", "hang2"}, "重": {"zhong4", "chong2"},
@@ -44,19 +43,17 @@ def require_pypinyin():
     try:
         import pypinyin
     except ImportError as exc:
-        raise RuntimeError(f"feature vocab requires pypinyin=={PYPINYIN_VERSION}; no silent fallback") from exc
-    if pypinyin.__version__ != PYPINYIN_VERSION:
-        raise RuntimeError(f"expected pypinyin=={PYPINYIN_VERSION}, got {pypinyin.__version__}")
+        raise RuntimeError("feature vocab requires pypinyin; no silent fallback") from exc
     return pypinyin
 
 
 @dataclass(frozen=True)
 class FeatureVocabBuildConfig:
-    hanzi_set_path: Path = Path("resources/hanzi/hanzi_set.txt")
-    structure_path: Path = Path("resources/hanzi/structure.tsv")
-    unihan_path: Path = Path("resources/unihan/Unihan.zip")
-    fallback_unihan_dir: Path = Path("resources/raw/Unihan")
-    output_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
+    hanzi_set_path: Path = Path("models/.build/hanzi/hanzi_set.txt")
+    structure_path: Path = Path("models/.build/hanzi/structure.tsv")
+    unihan_path: Path = Path("data/model_build/unihan/Unihan.zip")
+    fallback_unihan_dir: Path = Path("data/model_build/unihan")
+    output_dir: Path = Path("models/char/features")
     max_pinyin_per_char: int = 16
     allow_missing_features: bool = True
 
@@ -387,11 +384,11 @@ class FeatureVocabBuilder:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hanzi-set-path", type=Path, default=Path("resources/hanzi/hanzi_set.txt"))
-    parser.add_argument("--structure-path", type=Path, default=Path("resources/hanzi/structure.tsv"))
-    parser.add_argument("--unihan-path", type=Path, default=Path("resources/unihan/Unihan.zip"))
-    parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("resources/raw/Unihan"))
-    parser.add_argument("--output-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char/features"))
+    parser.add_argument("--hanzi-set-path", type=Path, default=Path("models/.build/hanzi/hanzi_set.txt"))
+    parser.add_argument("--structure-path", type=Path, default=Path("models/.build/hanzi/structure.tsv"))
+    parser.add_argument("--unihan-path", type=Path, default=Path("data/model_build/unihan/Unihan.zip"))
+    parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("data/model_build/unihan"))
+    parser.add_argument("--output-dir", type=Path, default=Path("models/char/features"))
     parser.add_argument("--max-pinyin-per-char", type=int, default=16)
     parser.add_argument("--require-complete-features", action="store_true")
     args = parser.parse_args()

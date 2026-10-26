@@ -11,7 +11,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class EmbeddingFeatureConfig:
     semantic_vocab_size: int
-    d_model: int = 2048
+    d_model: int
     d_feat: int = 256
     max_pinyin_per_char: int = 8
     num_feature_slots: int = 9
@@ -27,11 +27,15 @@ class EmbeddingFeatureConfig:
         cls,
         char_model_path: str | Path,
         *,
-        d_model: int = 2048,
+        d_model: int | None = None,
         d_feat: int = 256,
         initializer_range: float = 0.02,
     ) -> "EmbeddingFeatureConfig":
         root = Path(char_model_path)
+        model_config = _read_json(root / "config.json")
+        hidden_size = int(model_config["hidden_size"])
+        if d_model is not None and d_model != hidden_size:
+            raise ValueError("d_model must match the selected Base model hidden_size")
         feature_manifest = _read_json(root / "features" / "feature_vocab_manifest.json")
         index_manifest = _read_json(root / "features" / "feature_index_manifest.json")
         if feature_manifest.get("schema_version") != 2 or index_manifest.get("schema_version") != 2:
@@ -55,7 +59,7 @@ class EmbeddingFeatureConfig:
         max_pinyin = int(index_manifest["max_pinyin_per_char"])
         return cls(
             semantic_vocab_size=vocab_size,
-            d_model=d_model,
+            d_model=hidden_size,
             d_feat=d_feat,
             max_pinyin_per_char=max_pinyin,
             num_feature_slots=max_pinyin + 1,

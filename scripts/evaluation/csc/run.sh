@@ -17,7 +17,8 @@ if [[ "$STAGE" == all || "$STAGE" == infer ]]; then
   [[ -z "${LORA:-}" ]] || adapter=(--adapter "$LORA")
   printf '[evaluation][csc] starting inference\n'
   "$PYTHON" -B -m scripts.evaluation.inference --input "$OUT/input.jsonl" --output "$OUT/predictions.jsonl" \
-    --model "$MODEL" "${adapter[@]}" --batch-size "${BATCH_SIZE:-8}" --max-new-tokens "${MAX_NEW_TOKENS:-1024}"
+    --model "$MODEL" "${adapter[@]}" --batch-size "${BATCH_SIZE:-8}" --max-new-tokens "${MAX_NEW_TOKENS:-1024}" \
+    --backend "${INFERENCE_BACKEND:-auto}" --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-1}"
   printf '[evaluation][csc] inference complete\n'
 fi
 if [[ "$STAGE" == all || "$STAGE" == score ]]; then

@@ -14,10 +14,10 @@ from .feature_validation import check_vocab_binding, validate_char_features
 
 @dataclass(frozen=True)
 class FeatureIndexBuildConfig:
-    tokenizer_dir: Path = Path("models/Qwen3-1.7B-Base-Char")
-    features_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
-    output_jsonl: Path = Path("models/Qwen3-1.7B-Base-Char/features/char_feature_index.jsonl")
-    output_pt: Path = Path("models/Qwen3-1.7B-Base-Char/features/feature_index.pt")
+    tokenizer_dir: Path = Path("models/char")
+    features_dir: Path = Path("models/char/features")
+    output_jsonl: Path = Path("models/char/features/char_feature_index.jsonl")
+    output_pt: Path = Path("models/char/features/feature_index.pt")
     max_pinyin_per_char: int | None = None
     write_torch_tensor: bool = True
 
@@ -214,8 +214,8 @@ class FeatureIndexBuilder:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tokenizer-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--features-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char/features"))
+    parser.add_argument("--tokenizer-dir", type=Path, default=Path("models/char"))
+    parser.add_argument("--features-dir", type=Path, default=Path("models/char/features"))
     parser.add_argument("--no-torch", action="store_true")
     args = parser.parse_args()
     config = FeatureIndexBuildConfig(

@@ -235,7 +235,7 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-PGCA"))
+    parser.add_argument("--model-path", type=Path, default=Path("models/pgca"))
     parser.add_argument("--text", type=str, default="中国ABC")
     args = parser.parse_args()
 

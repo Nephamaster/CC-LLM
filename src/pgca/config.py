@@ -23,7 +23,7 @@ class PGCAConfig:
     pgca_head_dim: int = 128
     pgca_dropout: float = 0.0
     pgca_feature_slots: int = 9
-    pgca_feature_hidden_size: int = 2048
+    pgca_feature_hidden_size: int | None = None
     pgca_feature_embedding_dim: int = 256
     pgca_max_pinyin_per_char: int = 8
     pgca_feature_vocab_sizes: dict[str, int] | None = None

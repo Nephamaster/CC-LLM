@@ -90,8 +90,8 @@ class PhoneticGlyphFeatureEmbedding(nn.Module):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("build",), nargs="?", default="build")
-    parser.add_argument("--char-model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--d-model", type=int, default=2048)
+    parser.add_argument("--char-model-path", type=Path, default=Path("models/char"))
+    parser.add_argument("--d-model", type=int)
     parser.add_argument("--d-feat", type=int, default=256)
     parser.add_argument("--initializer-range", type=float, default=0.02)
     args = parser.parse_args()

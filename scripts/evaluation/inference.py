@@ -1,10 +1,7 @@
-"""Local Transformers inference using exactly the saved ms-swift training template."""
+"""Local HF or vLLM inference using the saved ms-swift training template."""
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
-import importlib.util
-import inspect
 import json
 import os
 import time
@@ -55,81 +52,76 @@ def training_contract(model_path, adapter_path=None):
     # Never persist the full args.json: training arguments can contain Hub/API credentials.
     selected = {key: args[key] for key in TEMPLATE_KEYS if key in args}
     plugins = relocated_training_plugins(args.get("external_plugins"))
-    dependencies = [plugins] if isinstance(plugins, str) else list(plugins)
-    if isinstance(selected.get("system"), str) and selected["system"].endswith(".txt"):
-        dependencies.append(selected["system"])
-    return {"args_path": str(path), "args_sha256": sha256(path), "template": args["template"],
+    return {"args_path": str(path), "template": args["template"],
             "settings": selected, "model_type": args.get("model_type"),
-            "external_plugins": plugins, "dependency_sha256": {p: sha256(p) for p in dependencies}}
+            "external_plugins": plugins}
 
 
 def checkpoint_identity(path):
     path = Path(path).resolve()
     if not path.is_dir():
         raise FileNotFoundError(path)
-    small = {p.name: sha256(p) for p in path.iterdir() if p.is_file() and
-             (p.suffix in {".json", ".py", ".jinja"} or p.name in {"merges.txt"})}
     weights = {str(p.relative_to(path)): {"bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
                for p in path.rglob("*") if p.is_file() and p.suffix in {".safetensors", ".bin"}}
-    return {"path": str(path), "metadata_sha256": small, "weights_stat": weights}
+    return {"path": str(path), "weights_stat": weights}
 
 
-def runtime_identity():
-    packages = {}
-    for name in ("torch", "transformers", "tokenizers", "peft"):
-        try:
-            packages[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            packages[name] = None
-    spec = importlib.util.find_spec("swift")
-    sources = {}
-    if spec and spec.origin:
-        root = Path(spec.origin).parent
-        for name in ("version.py", "template/base.py", "template/register.py", "template/templates/qwen.py",
-                     "template/templates/utils.py", "infer_engine/transformers_engine.py"):
-            if (root / name).is_file():
-                sources[name] = sha256(root / name)
-    return {"packages": packages, "swift_source_sha256": sources}
+def resolve_backend(model_path, requested):
+    if requested != "auto":
+        return requested
+    config = json.loads((Path(model_path) / "config.json").read_text(encoding="utf-8"))
+    return "hf" if config.get("model_type") == "qwen3_pgca" else "vllm"
 
 
 class TrainingTemplatePredictor:
-    def __init__(self, model_path, adapter_path, contract, batch_size, max_new_tokens):
-        import torch
+    def __init__(self, model_path, adapter_path, contract, batch_size, max_new_tokens,
+                 backend="auto", tensor_parallel_size=1):
         from swift import InferRequest, RequestConfig, TransformersEngine
         from swift.model import get_model_processor
         from swift.template import get_template
         from swift.utils import import_external_file
-        from swift.version import __version__ as swift_version
+        from transformers import AutoConfig
 
         plugins = contract["external_plugins"]
         for path in [plugins] if isinstance(plugins, str) else plugins:
             if not Path(path).is_file():
                 raise FileNotFoundError(f"training plugin no longer exists: {path}")
             import_external_file(path)
-        model, processor = get_model_processor(str(Path(model_path).resolve()),
-                                               model_type=contract["model_type"], load_model=True)
-        enable_generation_cache(model)
+        backend = resolve_backend(model_path, backend)
+        load_model = backend == "hf"
+        model, processor = get_model_processor(
+            str(Path(model_path).resolve()), model_type=contract["model_type"], load_model=load_model)
+        if model is not None:
+            enable_generation_cache(model)
         settings = dict(contract["settings"])
         settings["default_system"] = settings.pop("system", None)
         if isinstance(settings["default_system"], str) and settings["default_system"].endswith(".txt"):
             settings["default_system"] = Path(settings["default_system"]).read_text(encoding="utf-8")
-        context_length = int(model.config.max_position_embeddings)
+        config = model.config if model is not None else AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        context_length = int(config.max_position_embeddings)
         if max_new_tokens >= context_length:
             raise ValueError("generation budget must leave room for input within the model context")
         template = get_template(processor, template_type=contract["template"],
                                 max_length=context_length - max_new_tokens,
                                 truncation_strategy="raise", **settings)
-        # The framework loads LoRA into the supplied model without replacing PGCA's custom loader.
-        self.engine = TransformersEngine(model, template=template,
-                                         adapters=[str(Path(adapter_path).resolve())] if adapter_path else None,
-                                         max_batch_size=batch_size)
-        enable_generation_cache(self.engine.model)
-        self.engine.generation_config.use_cache = True
+        adapters = [str(Path(adapter_path).resolve())] if adapter_path else None
+        if backend == "vllm":
+            from swift import VllmEngine
+            self.engine = VllmEngine(
+                str(Path(model_path).resolve()), template=template, adapters=adapters,
+                tensor_parallel_size=tensor_parallel_size, max_model_len=context_length,
+                max_num_seqs=batch_size,
+                engine_kwargs={"model_impl": "transformers", "trust_remote_code": True},
+            )
+        else:
+            self.engine = TransformersEngine(model, template=template, adapters=adapters, max_batch_size=batch_size)
+            enable_generation_cache(self.engine.model)
+            self.engine.generation_config.use_cache = True
         self.request_cls = InferRequest
         self.request_config = RequestConfig(max_tokens=max_new_tokens, temperature=0, stream=False)
-        self.info = {"torch": torch.__version__, "transformers": importlib.metadata.version("transformers"),
-                     "ms_swift": swift_version,
-                     "model_class": type(model).__name__, "template": contract, "use_cache": True}
+        self.info = {"backend": backend, "model_class": type(model).__name__ if model is not None else None,
+                     "template": contract, "use_cache": True,
+                     "tensor_parallel_size": tensor_parallel_size}
 
     def __call__(self, rows):
         requests = [self.request_cls(messages=row["messages"]) for row in rows]
@@ -148,7 +140,8 @@ class TrainingTemplatePredictor:
         return output
 
 
-def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, max_new_tokens=1024, predictor=None):
+def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, max_new_tokens=1024,
+          predictor=None, backend="auto", tensor_parallel_size=1):
     from .csc.metrics import clean_prediction
 
     if batch_size < 1 or max_new_tokens < 1:
@@ -163,8 +156,8 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
                 "adapter": checkpoint_identity(adapter_path) if adapter_path else None,
                 "training_contract": contract, "max_new_tokens": max_new_tokens,
                 "batch_size": batch_size, "decoder": "greedy", "use_cache": True,
-                "implementation": sha256(__file__),
-                "cleanup_sha256": signature(inspect.getsource(clean_prediction)), "runtime": runtime_identity(),
+                "backend": resolve_backend(model_path, backend),
+                "tensor_parallel_size": tensor_parallel_size,
                 "pgca_enabled_env": os.getenv("PGCA_ENABLED")}
     previous = []
     if manifest_path.exists():
@@ -207,7 +200,9 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
           f"batch_size={batch_size}", flush=True)
     if predictor is None and pending_ids:
         print("[evaluation] loading model and adapter", flush=True)
-        predictor = TrainingTemplatePredictor(model_path, adapter_path, contract, batch_size, max_new_tokens)
+        predictor = TrainingTemplatePredictor(
+            model_path, adapter_path, contract, batch_size, max_new_tokens,
+            backend=backend, tensor_parallel_size=tensor_parallel_size)
         print("[evaluation] model and adapter loaded", flush=True)
     predictor_info = getattr(predictor, "info", manifest.get("predictor", {"backend": "test_fixture"}))
     write_json(manifest_path, {**manifest, "complete": False, "predictor": predictor_info})
@@ -264,8 +259,11 @@ def main():
     parser.add_argument("--adapter", type=Path)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--backend", choices=("auto", "hf", "vllm"), default="auto")
+    parser.add_argument("--tensor-parallel-size", type=int, default=1)
     args = parser.parse_args()
-    report = infer(args.input, args.output, args.model, args.adapter, args.batch_size, args.max_new_tokens)
+    report = infer(args.input, args.output, args.model, args.adapter, args.batch_size, args.max_new_tokens,
+                   backend=args.backend, tensor_parallel_size=args.tensor_parallel_size)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if not report["complete"]:
         raise SystemExit(1)

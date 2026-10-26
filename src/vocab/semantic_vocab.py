@@ -18,9 +18,9 @@ from .unicode_ranges import count_hanzi
 
 @dataclass(frozen=True)
 class SemanticVocabBuildConfig:
-    base_tokenizer_path: str | Path = Path("/share/project/wuhaiming/data/models/Qwen3-1.7B-Base")
-    output_dir: Path = Path("models/Qwen3-1.7B-Base-Char")
-    hanzi_set_path: Path = Path("resources/hanzi/hanzi_set.txt")
+    base_tokenizer_path: str | Path = Path("models/base")
+    output_dir: Path = Path("models/char")
+    hanzi_set_path: Path = Path("models/.build/hanzi/hanzi_set.txt")
     trust_remote_code: bool = True
     use_fast: bool = True
     remove_mixed_hanzi_tokens: bool = True
@@ -462,9 +462,9 @@ def build_semantic_vocab(config: SemanticVocabBuildConfig) -> SemanticVocabResul
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-tokenizer-path", default="/share/project/wuhaiming/data/models/Qwen3-1.7B-Base/")
-    parser.add_argument("--output-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--hanzi-set-path", type=Path, default=Path("resources/hanzi/hanzi_set.txt"))
+    parser.add_argument("--base-tokenizer-path", default="models/base")
+    parser.add_argument("--output-dir", type=Path, default=Path("models/char"))
+    parser.add_argument("--hanzi-set-path", type=Path, default=Path("models/.build/hanzi/hanzi_set.txt"))
     parser.add_argument("--allow-slow", action="store_true")
     parser.add_argument(
         "--metadata-only",

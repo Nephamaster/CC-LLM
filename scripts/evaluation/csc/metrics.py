@@ -241,7 +241,7 @@ def cherrant_equalize(rows: Sequence[Dict[str, Any]], cherrant_dir: Path) -> Tup
             subprocess.run(command, cwd=str(cherrant_dir), check=True)
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
-                "ChERRANT failed; install scripts/evaluation/requirements.txt and inspect its stderr"
+                "ChERRANT failed; run scripts/environment/run.sh and inspect its stderr"
             ) from exc
         groups = _parse_m2_operations(m2_path)
     if len(groups) != len(rows):

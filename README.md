@@ -1,85 +1,176 @@
 # CC-LLM
 
-## 当前目录与环境约定
+CC-LLM 在 Qwen3 Base 模型上构建单汉字语义词表，并加入音形特征、因果上下文编码器和 PGCA 分支。仓库包含模型构建、继续预训练、下游 LoRA 微调与完整评估代码，不包含数据集、模型权重和运行产物。
 
-训练、评估的项目脚本都在本仓库管理；ms-swift 和 lm-evaluation-harness 作为普通安装的 Python 依赖，不使用 editable 安装，也不通过 PYTHONPATH 引用它们的源码仓库。
+代码不绑定某个参数规模。选择不同的本地 Qwen3 Base 权重即可复用同一套流程；隐藏维度、注意力头数和 PGCA 层位置均从所选模型配置推导。
 
-模型、词表实现仍属于 `src/`，数据工厂仍属于 `scripts/data_factory/`；它们不是需要迁入训练目录的运行入口。
+## 目录
 
 ```text
-scripts/
-  data_factory/
-    ancient_sft/                 # 古汉语 SFT 数据构建与验收
-  train/
-    env/                         # ms-swift 训练环境，不提交
-    requirements.txt
-    cpt/                         # 独立 phase1 / phase2_a / phase2_b 脚本、插件、数据准备
-    finetune/                    # CSC / CGEC / 古汉语 all-linear LoRA
-  evaluation/
-    lmeh/                        # MMLU / ARC / SQuAD v2 / GSM8K / CMMLU / CLUE
-      env/
-    ppl/                         # Base / Char / 语义对齐模型的 PPL
-    csc/                         # CSCD-NS / LEMON
-      env/
-    cgec/                        # FCGEC / NaCGEC
-      env/
-    ancient/                     # C³Bench / Fùxì
-      env/
-models/                          # 未训练的 Base、Char、PGCA 输入/构建产物
-data/                            # 原始数据、数据工厂与预处理缓存
-outputs/
-  train/<模型名>/                # 训练 checkpoint、日志、阶段指针
-  evaluation/<评估项>/<模型名>/   # 预测、分数、评估日志和必要中间文件
+src/                         模型、词表、embedding 与 PGCA 实现
+scripts/environment/         train/evaluation 两套环境
+scripts/model_build/         Char 与 PGCA 模型构建
+scripts/train/               Phase1、Phase2 和下游 LoRA
+scripts/evaluation/          PPL、通用 benchmark 与下游评估
+requirements/                两套环境的普通 pip 依赖
+data/                        用户提供的数据，不提交 Git
+models/                      Base/Char/PGCA 模型，不提交 Git
+outputs/                     训练缓存、checkpoint 和评估结果，不提交 Git
 ```
 
-不同 checkpoint、seed、split 或 few-shot 的结果可进一步放在模型目录的子目录中，不改变模型名。构建过程的词表/索引校验报告可随构建模型保存在 `models/<模型名>/reports/`，不与 benchmark/PPL 结果混用。
+## 数据目录
 
-`outputs/`、任意层级的 `env/`、`.venv/` 和 Python 缓存已忽略；脚本、任务 YAML、模板和辅助 Python 文件应正常纳入版本管理。旧目录或已有模型/语料不会自动改名、删除或搬迁。
+将准备好的数据目录直接放到仓库根目录并命名为 `data`。运行代码不需要数据 manifest。
 
-## 模型命名
+```text
+data/
+├── model_build/
+│   ├── hanzi/
+│   │   ├── tghz2013.txt
+│   │   ├── common_traditional.txt
+│   │   ├── structure.tsv
+│   │   └── rare_high_freq.txt          # 可选
+│   └── unihan/
+│       ├── Unihan.zip                  # 与下面的解压文件二选一
+│       └── Unihan_*.txt
+├── pretrain/
+│   ├── phase1/{train,validation}/*.jsonl
+│   └── phase2/{train,validation}/*.jsonl
+├── finetune/
+│   ├── csc/{train,validation}.jsonl
+│   ├── cgec/{train,validation}.jsonl
+│   └── ancient/
+│       ├── train.jsonl
+│       ├── train.metadata.jsonl
+│       ├── dev.jsonl
+│       └── dev.metadata.jsonl
+└── evaluation/
+    ├── ppl/*.jsonl
+    ├── csc/*.jsonl
+    ├── cgec/{FCGEC,NaCGEC}/...
+    ├── ancient/{c3bench,FuxiBench}/...
+    └── lmeh/
+        ├── mmlu/<subject>/{dev,test}*.parquet
+        ├── arc_challenge/ARC-Challenge/{train,validation,test}*.parquet
+        ├── gsm8k/main/{train,test}*.parquet
+        ├── squadv2/{train,validation}*.parquet
+        ├── cmmlu/{dev,test}/*.csv
+        └── clue/<task>/{train,validation}*.parquet
+```
 
-设原始 Base 模型名为 `B`，例如 `Qwen3-1.7B-Base`。三种基础模型分别为：
+预训练文件必须是可直接读取的 JSONL，不能只放仍需二次解压的分片。通用 benchmark 全部从上述本地目录读取，不会在线下载数据或评分脚本。
 
-| 模型 | 名称 |
-| --- | --- |
-| 原始模型 | `B` |
-| 单汉字模型 | `B-Char` |
-| 单汉字＋完整 PGCA 分支模型 | `B-PGCA` |
+Base 模型也必须是本地完整 Hugging Face 模型。默认放在 `models/base/`，也可以在构建时传入 `BASE_MODEL=/path/to/model`。
 
-PGCA 已包含字符级 tokenizer 与完整音形分支，不再使用 `B-Char-PGCA`、`PGCA-CONTEXT` 或把特征版本写进模型名称。特征版本、结构开关和哈希记录在 config/manifest。
+## 四步运行
 
-令 `M` 为上述任一种模型名：
+### 1. 环境
 
-| 处理阶段 | 模型名称 |
-| --- | --- |
-| Phase1 语义对齐 | `M-ALIGN` |
-| Phase2 继续预训练 | `M-CPT`，不叠加 ALIGN |
-| CSC，含/不含 CPT | `M-CPT-CSC` / `M-CSC` |
-| CGEC，含/不含 CPT | `M-CPT-CGEC` / `M-CGEC` |
-| 古汉语训练，含/不含 CPT | `M-CPT-ACT` / `M-ACT` |
+```bash
+bash scripts/environment/run.sh
+```
 
-例：`outputs/train/Qwen3-1.7B-Base-PGCA-CPT/` 下保留 Phase2-A 的 `adaptation/`、Phase2-B 的 `joint/`，二者的 checkpoint/logs 都属于该模型目录。`next_stage_model.txt` 指向选出的真实 checkpoint；模型输出根目录不等于可直接加载的权重目录。
+该命令创建：
 
-## 入口
+```text
+.venv/train
+.venv/evaluation
+```
 
-- 模型构建：`scripts/build_vocab.sh`、`scripts/build_embedding.sh`、`scripts/build_pgca.sh`。完整 PGCA 构建入口启用上下文编码器、辅助头和零输出初始化；手工调用低层构建 CLI 时仍需显式指定相应开关。
-- 古汉语 SFT 数据：[scripts/data_factory/ancient_sft/README.md](scripts/data_factory/ancient_sft/README.md)。原始数据、评测数据和训练产物分别位于 `data/downstream/ancient/{raw,benchmark,train}`；入口为 `python -m scripts.data_factory.ancient_sft.run`。
-- 继续预训练：[scripts/train/cpt/README.md](scripts/train/cpt/README.md)。按 `phase1.sh → phase2_a.sh → phase2_b.sh` 顺序运行，每个脚本独立配置全部参数，不再使用公共 common 或合并 Phase2 入口；Base/Char 的 CPT 对照入口仍需另行安排。
-- 下游微调：[scripts/train/finetune/README.md](scripts/train/finetune/README.md)。CSC/CGEC/古汉语均使用 all-linear LoRA，支持 Base/Char/PGCA 输入，PGCA 参与 LoRA、辅助损失关闭；古汉语按三项任务验证 loss 的宏平均选优。
-- 下游评估：[scripts/evaluation/README.md](scripts/evaluation/README.md)。`MODEL` 是真实 checkpoint 路径，`MODEL_NAME` 是用于结果目录的完整模型名；LoRA 评估填 adapter 对应的模型名，而非基座名。
-- 通用 benchmark：[scripts/evaluation/lmeh/README.md](scripts/evaluation/lmeh/README.md)。六类任务已提供 HF 入口，MMLU/CMMLU/GSM8K 5-shot，其余 0-shot；默认使用 lmeh/env。
-- PPL：[scripts/evaluation/ppl/README.md](scripts/evaluation/ppl/README.md)。归入评估，不把 Phase0 forward 诊断当作完整 PPL 实现。
+普通 pip 包默认使用清华镜像，PyTorch 默认使用国内 CUDA wheel 镜像，Hugging Face 端点统一设置为：
 
-训练和下游评估脚本自行定位仓库根目录，默认调用所属子目录的 `env/bin/python`。训练用同一个 Python 执行 `swift.cli.main` 和数据准备，保留框架的 torchrun 分发，不再依赖 PATH 中另一个环境的 `swift`。可显式使用 `PYTHON_CMD`（训练）或 `PYTHON`（CSC/CGEC/古汉语评估）指定另一个已配置环境。PPL 入口独立于评估 common.sh，直接使用运行前激活环境的 `python`，不要求单独建立 env，也不读取 `PYTHON` 变量。
+```bash
+HF_ENDPOINT=https://hf-mirror.com
+```
 
-## 本轮审查后仍需注意
+如果机器完全无法访问任何网络，先在可联网机器准备 wheel 目录，然后执行：
 
-- 现有训练插件的 ms-swift 安装来源由训练 requirements 指定；lmeh 直接安装普通 PyPI 包，不做版本或框架源码校验。benchmark 的 few-shot 和数据选择由评估脚本配置。
-- 当前 CSC/CGEC/古汉语推理仍使用 ms-swift 的训练模板接口，因此各自评估环境也需要安装 ms-swift；不能只安装评分依赖。通用 benchmark/PPL 不走这个要求 SFT args.json 的入口。
-- 旧 checkpoint 的 `args.json` 可能保存旧插件绝对路径。代码移动后，先核对依赖，再使用正确 checkpoint；本轮不修改已有 checkpoint 元数据来伪装兼容。
-- 当前推理缓存没有把所有框架版本纳入复用身份；切换环境/升级依赖时用新的 `RUN_NAME/OUT`，不能把旧预测当作新环境重跑结果。
-- Data Factory 的路径参与配置/运行身份。Phase2 tokenizer 默认改为共享 Char tokenizer，但旧 run 和 manifest 保留原始身份；不要仅为目录改名就重跑整条数据链路或覆盖旧产物。
-- `scripts/build_embedding.sh` 当前使用 `all`，默认会执行语义权重迁移；若词表阶段已经迁移，应按 embedding 文档显式使用 `--skip-migrate`。不要对训练后的权重误跑初始化流程；本轮未改这项构建行为。
-- 数据资源及 Base 权重仍有原服务器路径作为默认输入，跨机器需显式传入正确路径。CPT token 预算是上限，数据不足时按实际可用量继续并报告缺口；准备中断后可能保留 raw 缓存，可显式复用它完成分段，不自动删除重导。
-- Base 与 Char 的 tokenizer 不同，per-token PPL 不宜直接横比；需同一原始文本协议，并报告字节/字符归一化 NLL。旧 Phase0 诊断有截断和迁移检查，不能替代此评估。
-- 新上下文 PGCA 尚未实现 vLLM 对应缓存/后端；先使用并验证 HF 路径。FCGEC test 无公开 gold、Fùxì 模型裁判未配置时只能保留 pending，目录调整不会使这些结果自动完整。
+```bash
+WHEELHOUSE=/path/to/wheels bash scripts/environment/run.sh
+```
+
+此时 pip 使用 `--no-index`，不会访问网络。
+
+### 2. 模型构建
+
+```bash
+bash scripts/model_build/run.sh
+```
+
+执行顺序：词表与特征索引 → embedding 迁移 → PGCA 构建 → 模型校验。输出名称由 Base 模型目录名自动生成，也可显式设置：
+
+```bash
+BASE_MODEL=/path/to/base BASE_MODEL_NAME=Qwen3-Base \
+bash scripts/model_build/run.sh
+```
+
+构建完成后，`models/next_stage_model.txt` 和 `models/model_name.txt` 供训练入口自动读取。
+
+### 3. 训练
+
+```bash
+bash scripts/train/run.sh
+```
+
+默认依次执行：
+
+```text
+Phase1 → Phase2-A → Phase2-B → CSC LoRA → CGEC LoRA → Ancient LoRA
+```
+
+只运行部分阶段：
+
+```bash
+STAGES=phase1,phase2_a,phase2_b bash scripts/train/run.sh
+STAGES=csc,cgec,ancient bash scripts/train/run.sh
+```
+
+每个阶段的学习率、batch、长度、保存间隔等参数都直接位于对应脚本顶部，不通过隐藏配置层转发：
+
+```text
+scripts/train/cpt/phase1.sh
+scripts/train/cpt/phase2_a.sh
+scripts/train/cpt/phase2_b.sh
+scripts/train/finetune/common.sh
+scripts/train/finetune/{csc,cgec,ancient}.sh
+```
+
+完整阶段通过 `next_stage_model.txt` 自动衔接。已完成阶段默认跳过；`FORCE=true` 可启动新一轮。中断训练使用各阶段脚本的 `RESUME_FROM_CHECKPOINT`，不会猜测最大编号的 checkpoint。
+
+### 4. 评估
+
+```bash
+bash scripts/evaluation/run.sh
+```
+
+默认运行 PPL、六类通用 benchmark、CSC、CGEC、C³Bench 和 Fùxì。也可以选择：
+
+```bash
+BENCHMARKS=ppl,lmeh bash scripts/evaluation/run.sh
+BENCHMARKS=csc,fcgec_valid,nacgec,ancient_c3 bash scripts/evaluation/run.sh
+```
+
+所有评估共用 `.venv/evaluation`。标准 Qwen 模型在 `INFERENCE_BACKEND=auto` 时使用 vLLM；当前 PGCA 因音形上下文使用独立因果缓存，自动选择 HF 后端以保证结果正确。可显式设置 `INFERENCE_BACKEND=vllm` 试用 vLLM Transformers backend，但在对应模型通过实际一致性验收前，不应将其结果与 HF 正式结果混用。
+
+```bash
+INFERENCE_BACKEND=vllm TENSOR_PARALLEL_SIZE=2 \
+bash scripts/evaluation/run.sh
+```
+
+评估结果自动写入 `outputs/evaluation/<task>/<model>/.../vN/`，重复运行自动创建新版本。FCGEC test 没有公开标签，只生成提交文件；Fùxì 未配置裁判接口时，模型裁判项目保持 pending。
+
+## 产物命名
+
+设 Base 名称为 `B`：
+
+```text
+B-Char                 单汉字模型
+B-PGCA                 完整 PGCA 模型
+B-PGCA-ALIGN           Phase1
+B-PGCA-CPT             Phase2
+B-PGCA-CPT-CSC         CSC LoRA
+B-PGCA-CPT-CGEC        CGEC LoRA
+B-PGCA-CPT-ACT         古汉语 LoRA
+```
+
+模型规模只体现在用户选择的 Base 名称与权重中，不写死在源码、脚本或实验文档里。

@@ -1,6 +1,4 @@
-dataset_path: clue/clue
-dataset_kwargs:
-  revision: 28178267a609dd08bdc703dd6c931dfc2c2f4431
+dataset_path: null
 output_type: generate_until
 training_split: train
 validation_split: validation
@@ -23,4 +21,3 @@ metric_list:
     higher_is_better: true
 metadata:
   version: 1.0
-  dataset_revision: 28178267a609dd08bdc703dd6c931dfc2c2f4431

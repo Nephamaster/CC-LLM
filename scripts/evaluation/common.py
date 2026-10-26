@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -73,23 +72,7 @@ def prediction_health(rows):
 
 
 def scoring_environment():
-    from importlib.metadata import PackageNotFoundError, version
-
-    versions = {}
-    for name in ("numpy", "pypinyin", "opencc-python-reimplemented", "python-Levenshtein", "thulac", "sacrebleu"):
-        try:
-            versions[name] = version(name)
-        except PackageNotFoundError:
-            versions[name] = None
-    root = Path(__file__).parent
-    hashes = {}
-    for directory, children, files in os.walk(root):
-        children[:] = sorted(name for name in children if name not in {"env", ".venv", "__pycache__", ".git"})
-        for name in sorted(files):
-            path = Path(directory) / name
-            if path.is_file() and path.suffix in {".py", ".txt", ".json"}:
-                hashes[str(path.relative_to(root))] = sha256(path)
-    return {"packages": versions, "implementation_and_assets_sha256": signature(hashes)}
+    return {"implementation": "repository-local scoring code"}
 
 
 def is_cjk_char(value):
