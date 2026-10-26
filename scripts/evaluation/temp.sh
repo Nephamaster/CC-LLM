@@ -6,7 +6,7 @@ MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT \
 RUN_NAME=rnd2 \
 DATASET=c3 \
 FEWSHOT=0 \
-BATCH_SIZE=16 \
+BATCH_SIZE=32 \
 STAGE=all \
 bash scripts/evaluation/ancient/run.sh
 
@@ -16,6 +16,6 @@ MODEL="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/training/
 LORA="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/finetune/Qwen3-1.7B-Base-PGCA-CPT-CSC/v0-20261025-173119/checkpoint-11000" \
 MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CSC \
 RUN_NAME=rnd2 \
-BATCH_SIZE=16 \
+BATCH_SIZE=32 \
 STAGE=all \
 bash scripts/evaluation/csc/run.sh

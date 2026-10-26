@@ -84,6 +84,37 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/ancient-sft DATASET=fuxi \
 STAGE=prepare MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CSC bash scripts/evaluation/csc/run.sh
 ```
 
+## ACT 训练／推理诊断
+
+在服务器使用实际 CPT 基座和 ACT adapter 运行：
+
+```bash
+CUDA_VISIBLE_DEVICES=2 bash scripts/evaluation/diagnose.sh
+```
+
+默认模型为第二轮 CPT `joint/v0-20261023-114945/checkpoint-12500`，adapter 为 ACT
+`v0-20261025-232029/checkpoint-1000`。可通过 `MODEL`、`LORA`、`PYTHON`、`DEV` 覆盖。
+每次默认在 `outputs/diagnostics/act_checks_<时间戳>/` 创建独立目录；显式指定 `OUT` 时必须尚不存在。
+不修改模型权重、final 数据或正式评估输出，不做代码/权重哈希。
+
+- 全量编码 `dev.metadata.jsonl`，使用保存的 `cc_llm_ancient` 模板设置和实际训练 `loss_scale`，
+  检查最终 assistant `<|im_end|>` 的 label 是否保留，逐条证据写入 `eos_labels.jsonl`。
+- 三类任务各固定抽取 2 条短 Dev 样本；在同一模型中开关 LoRA，比对相同提示的下一 token 全词表
+  logits，并在恢复 adapter 后复核 logits。按实际评估引擎分别生成，保留原始 token ID、含特殊符号的文本、
+  EOS/stop 配置及逐步 cache 信息。生成文本相同不等于 adapter 未生效，判断主要依据 logits。
+- 在 LoRA 开启下，三类任务各取一对不等长、左侧 padding 的输入，比较完整前向与逐 token 前向
+  每个有效位置的全词表 logits，同时检查主干与特征 cache 长度是否同步递增。
+
+默认 `MAX_NEW_TOKENS=128`、`CACHE_MAX_TOKENS=128`、`SAMPLES_PER_TASK=2`，只限制诊断成本。
+`generations.jsonl` 保存生成对照，`selected_dev.json` 保存选定样本，`report.json` 汇总三项检查和版本／dtype。
+诊断默认数值阈值 `ATOL=0.05 RTOL=0.01`，报告同时保留最大误差、均值、RMS 和 argmax 一致率；
+BF16 下超限需要数值复核，不直接等同于 cache 错误，更不直接等同于需要重训。
+生成只有一步时，报告将增量 cache 观察标记为 null，而不会声称已观察到递增。
+
+检查不通过返回退出码 1；运行异常也会尽量保留部分 `report.json`。
+三项通过仅说明这些样本的标签、adapter 效果及数值一致性符合检查，不保证模型生成质量或所有长度都正确。
+本地测试使用实际 ms-swift 的 CPU 小模型路径；真实 1.7B＋LoRA 结果必须以上述服务器报告为准。
+
 ## 评分口径
 
 ### CSC
