@@ -7,7 +7,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from scripts.data_factory.v2.mixture import ShardedParquetWriter
+from scripts.data_factory.mixture import ShardedParquetWriter
 
 
 class DataFactoryV2MixtureTest(unittest.TestCase):

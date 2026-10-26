@@ -20,7 +20,7 @@ CSC/CGEC 的 `cc_llm_correction` 模板基于 `qwen3_nothinking`，不加入额�
 
 ## 环境与参数入口
 
-复用 `scripts/train/ms_swift/env/` 及上一级 `requirements.txt`，无需新环境、无需外部 ms-swift 仓库。GPU PyTorch 安装沿用训练环境的配置。
+复用 `scripts/train/env/` 及上一级 `requirements.txt`，无需新环境、无需外部 ms-swift 仓库。GPU PyTorch 安装沿用训练环境的配置。
 
 - `common.sh` 顶部：GPU、batch、LoRA、优化器、缓存开关、eval/save/logging 间隔等。
 - `csc.sh` / `cgec.sh` / `ancient.sh` 顶部：任务数据、输出目录、长度、学习率、epoch及任务特有参数。
@@ -37,18 +37,18 @@ CSC/CGEC 的 `cc_llm_correction` 模板基于 `qwen3_nothinking`，不加入额�
 
 ```bash
 # 默认使用最近完成的 PGCA-CPT checkpoint；两项任务独立训练。
-bash scripts/train/ms_swift/finetune/csc.sh
-bash scripts/train/ms_swift/finetune/cgec.sh
-bash scripts/train/ms_swift/finetune/ancient.sh
+bash scripts/train/finetune/csc.sh
+bash scripts/train/finetune/cgec.sh
+bash scripts/train/finetune/ancient.sh
 
 # 固定输入 checkpoint；一组对照实验应固定同一路径，不随 CPT 指针更新切换基座。
 CUDA_VISIBLE_DEVICES=0,1 MODEL=/实际路径/checkpoint-N \
 MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
-bash scripts/train/ms_swift/finetune/csc.sh
+bash scripts/train/finetune/csc.sh
 
 # 原 Base 对照；Char/ALIGN 对照同理。
 MODEL=/实际路径/Qwen3-1.7B-Base MODEL_NAME=Qwen3-1.7B-Base \
-bash scripts/train/ms_swift/finetune/cgec.sh
+bash scripts/train/finetune/cgec.sh
 ```
 
 输出根目录默认 `outputs/train/<输入名称去掉-ALIGN>-CSC|CGEC|ACT/`；由 ms-swift 自动创建 `v0-时间戳`、`v1-时间戳`，日志随版本保存。CSC/CGEC 按 `eval_loss` 选优，古汉语按 `eval_macro_task_loss` 选优。完成后在 run 目录及输出根目录写入 `next_stage_model.txt`。`finetune_report.json` 记录实际可训练参数，方便核对 PGCA/context LoRA 是否启用。并发实验使用不同 `OUT`，避免共享完成指针。
@@ -58,7 +58,7 @@ bash scripts/train/ms_swift/finetune/cgec.sh
 ```bash
 MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
 RESUME_FROM_CHECKPOINT=/实际路径/outputs/train/Qwen3-1.7B-Base-PGCA-CPT-CSC/v0-时间戳/checkpoint-N \
-bash scripts/train/ms_swift/finetune/csc.sh
+bash scripts/train/finetune/csc.sh
 ```
 
 恢复时原版本目录继续写入，不创建新版本。未传 `MODEL` 时，从 adapter_config.json 读取原基座路径，不使用后来更新的 CPT 指针；基座搬迁后可显式传 `MODEL`，但必须指向同一份权重。保持原模型名称、数据、卡数、batch、梯度累积及训练配置。

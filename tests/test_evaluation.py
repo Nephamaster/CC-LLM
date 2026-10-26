@@ -52,6 +52,24 @@ def test_lora_uses_adapter_training_args(model_dir, tmp_path):
     assert training_contract(model_dir, adapter)["template"] == "qwen3"
 
 
+def test_moved_training_plugin_resolves_without_editing_checkpoint(model_dir, tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    plugin = root / "scripts/train/finetune/plugin.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("# relocated plugin\n")
+    monkeypatch.setattr(inference_module, "ROOT", root)
+    args = model_dir / "args.json"
+    write_json(args, {"template": "cc_llm_ancient", "use_chat_template": True,
+                     "external_plugins": [str(tmp_path / "old/scripts/train/ms_swift/finetune/plugin.py")]})
+    original = args.read_bytes()
+    contract = training_contract(model_dir)
+    assert contract["external_plugins"] == [str(plugin)]
+    assert args.read_bytes() == original
+    # Arbitrary missing plugins must not be silently redirected.
+    missing = str(tmp_path / "external/plugin.py")
+    assert inference_module.relocated_training_plugins([missing]) == [missing]
+
+
 def test_generation_cache_is_enabled_for_model_and_generation_config():
     from types import SimpleNamespace
 

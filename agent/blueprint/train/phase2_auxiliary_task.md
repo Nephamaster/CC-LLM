@@ -1,6 +1,6 @@
 # CC-LLM 辅助预训练方案
 
-> 2026-10-18 实施校对：源代码已有音形 schema v2 修复及 `pgca_enabled` 旁路。在此基础上实现上下文模块、辅助头与 ms-swift 插件，当前入口为 `scripts/train/ms_swift/cpt/README.md`；框架在 `scripts/train/ms_swift/env/` 普通安装，不把项目脚本搬到外部框架仓库。模型名采用 `B-PGCA`，Phase1/2 分别为 `M-ALIGN` / `M-CPT`，训练产物位于 `outputs/train/<模型名>/`。旧训练脚本的 `2e-5` 学习率不作为新实验默认值，下文三阶段日程是新脚本依据。
+> 2026-10-18 实施校对：源代码已有音形 schema v2 修复及 `pgca_enabled` 旁路。在此基础上实现上下文模块、辅助头与 ms-swift 插件，当前入口为 `scripts/train/cpt/README.md`；框架在 `scripts/train/env/` 普通安装，不把项目脚本搬到外部框架仓库。模型名采用 `B-PGCA`，Phase1/2 分别为 `M-ALIGN` / `M-CPT`，训练产物位于 `outputs/train/<模型名>/`。旧训练脚本的 `2e-5` 学习率不作为新实验默认值，下文三阶段日程是新脚本依据。
 
 本版固定采用：**保留单汉字 Tokenizer 和无 gate 的 PGCA 残差融合；在静态音形特征与 PGCA 之间加入共享的轻量因果 Transformer；Phase2 联合优化语言建模、下一 token 字音预测、下一 token 字形属性预测。**
 
@@ -201,7 +201,7 @@ HF 路径应先完成验证；使用 vLLM 时，需要相应实现新增编码�
 | `src/embedding/feature_memory.py` | 在现有静态 memory 后接入上下文编码器，传递位置、padding mask 和 cache |
 | `src/modeling_qwen3_pgca.py` | 调整 feature memory 构造时机，接入位置与 cache；增加辅助头及可选辅助 logits 输出 |
 | `src/configuration_qwen3_pgca.py` | 保存编码器尺寸、辅助头开关、损失权重和特征版本 |
-| `scripts/train/ms_swift/cpt/` | 本仓库管理的 Template、`BaseLoss`、参数组学习率、指标、数据分段及完整 Phase1/2 脚本；不修改 ms-swift 安装包 |
+| `scripts/train/cpt/` | 本仓库管理的 Template、`BaseLoss`、参数组学习率、指标、数据分段及完整 Phase1/2 脚本；不修改 ms-swift 安装包 |
 | 构建／导出与测试 | 复制新增运行代码，检查权重完整性，覆盖旁路、因果、loss、cache 测试 |
 
 新编码器放在 `model.feature_memory_builder.context_encoder` 下；旧脚本的冻结正则仅覆盖 `feature_embedding`，新脚本必须扩大到整个 `feature_memory_builder` 并显式冻结顶层 `auxiliary_heads`。

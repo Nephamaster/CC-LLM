@@ -11,11 +11,10 @@ scripts/
   data_factory/
     ancient_sft/                 # 古汉语 SFT 数据构建与验收
   train/
-    ms_swift/
-      env/                       # 该训练后端的环境，不提交
-      requirements.txt
-      cpt/                       # 独立 phase1 / phase2_a / phase2_b 脚本、插件、数据准备
-      finetune/                  # CSC / CGEC / 古汉语 all-linear LoRA
+    env/                         # ms-swift 训练环境，不提交
+    requirements.txt
+    cpt/                         # 独立 phase1 / phase2_a / phase2_b 脚本、插件、数据准备
+    finetune/                    # CSC / CGEC / 古汉语 all-linear LoRA
   evaluation/
     lmeh/                        # MMLU / ARC / SQuAD v2 / GSM8K / CMMLU / CLUE
       env/
@@ -65,8 +64,8 @@ PGCA 已包含字符级 tokenizer 与完整音形分支，不再使用 `B-Char-P
 
 - 模型构建：`scripts/build_vocab.sh`、`scripts/build_embedding.sh`、`scripts/build_pgca.sh`。完整 PGCA 构建入口启用上下文编码器、辅助头和零输出初始化；手工调用低层构建 CLI 时仍需显式指定相应开关。
 - 古汉语 SFT 数据：[scripts/data_factory/ancient_sft/README.md](scripts/data_factory/ancient_sft/README.md)。原始数据、评测数据和训练产物分别位于 `data/downstream/ancient/{raw,benchmark,train}`；入口为 `python -m scripts.data_factory.ancient_sft.run`。
-- 继续预训练：[scripts/train/ms_swift/cpt/README.md](scripts/train/ms_swift/cpt/README.md)。按 `phase1.sh → phase2_a.sh → phase2_b.sh` 顺序运行，每个脚本独立配置全部参数，不再使用公共 common 或合并 Phase2 入口；Base/Char 的 CPT 对照入口仍需另行安排。
-- 下游微调：[scripts/train/ms_swift/finetune/README.md](scripts/train/ms_swift/finetune/README.md)。CSC/CGEC/古汉语均使用 all-linear LoRA，支持 Base/Char/PGCA 输入，PGCA 参与 LoRA、辅助损失关闭；古汉语按三项任务验证 loss 的宏平均选优。
+- 继续预训练：[scripts/train/cpt/README.md](scripts/train/cpt/README.md)。按 `phase1.sh → phase2_a.sh → phase2_b.sh` 顺序运行，每个脚本独立配置全部参数，不再使用公共 common 或合并 Phase2 入口；Base/Char 的 CPT 对照入口仍需另行安排。
+- 下游微调：[scripts/train/finetune/README.md](scripts/train/finetune/README.md)。CSC/CGEC/古汉语均使用 all-linear LoRA，支持 Base/Char/PGCA 输入，PGCA 参与 LoRA、辅助损失关闭；古汉语按三项任务验证 loss 的宏平均选优。
 - 下游评估：[scripts/evaluation/README.md](scripts/evaluation/README.md)。`MODEL` 是真实 checkpoint 路径，`MODEL_NAME` 是用于结果目录的完整模型名；LoRA 评估填 adapter 对应的模型名，而非基座名。
 - 通用 benchmark：[scripts/evaluation/lmeh/README.md](scripts/evaluation/lmeh/README.md)。六类任务已提供 HF 入口，MMLU/CMMLU/GSM8K 5-shot，其余 0-shot；默认使用 lmeh/env。
 - PPL：[scripts/evaluation/ppl/README.md](scripts/evaluation/ppl/README.md)。归入评估，不把 Phase0 forward 诊断当作完整 PPL 实现。

@@ -1,5 +1,5 @@
 # Install into each downstream evaluator's own env; inference needs ms-swift as a package.
--r ../train/ms_swift/requirements.txt
+-r ../train/requirements.txt
 tqdm>=4.66
 regex
 numpy

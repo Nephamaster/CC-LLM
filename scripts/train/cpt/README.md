@@ -1,15 +1,15 @@
 # CC-LLM Phase1 / Phase2 训练
 
-本目录固定由 CC-LLM 管理，不移动到 ms-swift 仓库。训练环境位于 `scripts/train/ms_swift/env/`，通过普通安装提供 ms-swift；插件调用模型 checkpoint 自带的 `multitask_loss_sums`，不依赖外部框架源码目录。
+本目录固定由 CC-LLM 管理，不移动到 ms-swift 仓库。训练环境位于 `scripts/train/env/`，通过普通安装提供 ms-swift；插件调用模型 checkpoint 自带的 `multitask_loss_sums`，不依赖外部框架源码目录。
 
 目标接口：ms-swift `4.7.0.dev0`，交付时本地源码 HEAD 为 `ce28e0288657d6472a439ea219f1bcc77310e764`（其 `swift/` 与审查起点 `1516d78d627381c2072be80037a7a64c3811480d` 无差异）。隔离验证环境使用 PyTorch `2.10.0+cpu`、Transformers `5.12.1`。这不是服务器 CUDA/显存验证；不要为了照抄测试版本在 GPU 环境安装 CPU wheel。
 
 先在 CC-LLM 根目录准备环境（GPU 环境先安装匹配 CUDA 的 PyTorch）：
 
 ```bash
-python3.11 -m venv scripts/train/ms_swift/env
-scripts/train/ms_swift/env/bin/python -m pip install -r scripts/train/ms_swift/requirements.txt
-scripts/train/ms_swift/env/bin/python -m pip check
+python3.11 -m venv scripts/train/env
+scripts/train/env/bin/python -m pip install -r scripts/train/requirements.txt
+scripts/train/env/bin/python -m pip check
 ```
 
 ## 1. 先构建新模型
@@ -19,14 +19,14 @@ scripts/train/ms_swift/env/bin/python -m pip check
 在 CC-LLM 仓库根目录执行，输出目录必须尚不存在：
 
 ```bash
-scripts/train/ms_swift/env/bin/python -B -m src.pgca.build_pgca \
+scripts/train/env/bin/python -B -m src.pgca.build_pgca \
   --model-path models/Qwen3-1.7B-Base-Char \
   --output-path models/Qwen3-1.7B-Base-PGCA \
   --pgca-layers 11,12,13,14,15,16 \
   --context-encoder --auxiliary-heads --zero-init-output \
   --aux-phonetic-weight 0.03 --aux-glyph-weight 0.03
 
-scripts/train/ms_swift/env/bin/python -B -m src.pgca.validate_pgca \
+scripts/train/env/bin/python -B -m src.pgca.validate_pgca \
   --model-path models/Qwen3-1.7B-Base-PGCA
 ```
 
@@ -55,12 +55,12 @@ P1 更新后，新构建模型的辅助权重默认是字音 `0.03`、字形 `0.
 例如，在 `phase1.sh` 中把 `PHASE1_LR="${PHASE1_LR:-1e-5}"` 改为 `PHASE1_LR="${PHASE1_LR:-2e-5}"`，或者只对一次运行覆盖：
 
 ```bash
-PHASE1_LR=2e-5 bash scripts/train/ms_swift/cpt/phase1.sh
+PHASE1_LR=2e-5 bash scripts/train/cpt/phase1.sh
 ```
 
 关键参数：
 
-- `PYTHON_CMD`：默认 `scripts/train/ms_swift/env/bin/python`；同一解释器负责导出、数据准备和 Swift 启动。
+- `PYTHON_CMD`：默认 `scripts/train/env/bin/python`；同一解释器负责导出、数据准备和 Swift 启动。
 - `MODEL_NAME`：基础模型 M，默认 `Qwen3-1.7B-Base-PGCA`；`MODEL` 是本阶段的输入模型路径，显式值优先。
 - `ALIGN_OUT`：仅 A 使用，默认读取 `outputs/train/M-ALIGN/next_stage_model.txt`。
 - `CPT_ROOT`：A/B 的产物根目录，默认 `outputs/train/M-CPT`。A 的 `OUT` 默认是其 `adaptation/`，B 的 `OUT` 默认是其 `joint/`；B 完成后向 `CPT_ROOT` 发布最终指针。
@@ -79,16 +79,16 @@ PHASE1_LR=2e-5 bash scripts/train/ms_swift/cpt/phase1.sh
 在仓库根目录按顺序执行；每个命令只运行一个阶段：
 
 ```bash
-bash scripts/train/ms_swift/cpt/phase1.sh
-bash scripts/train/ms_swift/cpt/phase2_a.sh
-bash scripts/train/ms_swift/cpt/phase2_b.sh
+bash scripts/train/cpt/phase1.sh
+bash scripts/train/cpt/phase2_a.sh
+bash scripts/train/cpt/phase2_b.sh
 ```
 
 也可以显式固定输入 checkpoint：
 
 ```bash
-MODEL=/实际路径/Phase1/checkpoint-N bash scripts/train/ms_swift/cpt/phase2_a.sh
-MODEL=/实际路径/Phase2-A/checkpoint-N bash scripts/train/ms_swift/cpt/phase2_b.sh
+MODEL=/实际路径/Phase1/checkpoint-N bash scripts/train/cpt/phase2_a.sh
+MODEL=/实际路径/Phase2-A/checkpoint-N bash scripts/train/cpt/phase2_b.sh
 ```
 
 输出保持原布局：Phase1 为 `outputs/train/M-ALIGN/vN-时间戳/`；A/B 分别为 `outputs/train/M-CPT/adaptation/vN-时间戳/`、`joint/vN-时间戳/`，日志在对应版本的 `runs/` 下。已有 checkpoint 和默认目录下的完成指针可继续使用，不需要迁移。
@@ -105,7 +105,7 @@ MODEL=/实际路径/Phase2-A/checkpoint-N bash scripts/train/ms_swift/cpt/phase2
 已有 `CACHE_DIR/preparation_report.json` 时，脚本继续校验并复用准备好的数据，不重新调用导出。因此 `LOAD_FROM_CACHE_FILE=false` **不等于强制重建 `CACHE_DIR`**；需要重新准备时，指定一个新的 `CACHE_DIR`。已有产物不会自动删除或覆盖。例如：
 
 ```bash
-LOAD_FROM_CACHE_FILE=true bash scripts/train/ms_swift/cpt/phase1.sh
+LOAD_FROM_CACHE_FILE=true bash scripts/train/cpt/phase1.sh
 ```
 
 准备过程：
@@ -123,7 +123,7 @@ LOAD_FROM_CACHE_FILE=true bash scripts/train/ms_swift/cpt/phase1.sh
 如果旧版本因预算不足停在 `prepare_data.py`，此时 `.raw` 通常已成功导出，分段目录尚未创建；可直接运行下面的准备命令（填写本阶段的实际路径、长度、卡数和 batch），完成后再启动原训练脚本，不必重新导出。直接重跑整段脚本仍可能触发已有 raw 目录的保护检查。
 
 ```bash
-scripts/train/ms_swift/env/bin/python -B scripts/train/ms_swift/cpt/prepare_data.py \
+scripts/train/env/bin/python -B scripts/train/cpt/prepare_data.py \
   --input /已有官方缓存根目录 \
   --output /新的分段缓存目录 \
   --model /本轮模型目录 --max-length 4096 \
@@ -139,13 +139,13 @@ scripts/train/ms_swift/env/bin/python -B scripts/train/ms_swift/cpt/prepare_data
 
 ```bash
 RESUME_FROM_CHECKPOINT=/本轮ALIGN/v0-时间戳/checkpoint-N \
-bash scripts/train/ms_swift/cpt/phase1.sh
+bash scripts/train/cpt/phase1.sh
 
 RESUME_FROM_CHECKPOINT=/本轮CPT/adaptation/v0-时间戳/checkpoint-N \
-bash scripts/train/ms_swift/cpt/phase2_a.sh
+bash scripts/train/cpt/phase2_a.sh
 
 RESUME_FROM_CHECKPOINT=/本轮CPT/joint/v0-时间戳/checkpoint-N \
-bash scripts/train/ms_swift/cpt/phase2_b.sh
+bash scripts/train/cpt/phase2_b.sh
 ```
 
 恢复时保持该阶段原 `OUT` 根目录、缓存、模型/数据版本、卡数、batch、累积步数、预算、种子和优化器配置。脚本定位断点所在的版本目录，关闭自动加版本并继续写入。A 恢复完成后不会自行启动 B；需要运行 B 脚本。`cc_llm_state.json` 和模型 buffer 继续保存辅助训练进度，不重置辅助权重 warmup。
@@ -161,4 +161,4 @@ bash scripts/train/ms_swift/cpt/phase2_b.sh
 - 首版仅验证 HF DynamicCache 路径，支持 prefill、增量解码和 beam 重排。不支持 packing、padding-free、sequence parallel、Liger loss、logits-to-keep、StaticCache 或 vLLM；不能把旧 vLLM 后端当作已经支持新编码器。
 - 正式 GPU 训练前应先用少量独立 JSONL 和显式小 token 预算做冒烟，检查真实显存、吞吐、三阶段冻结状态及有效验证指标。本地 CPU 测试不替代该步骤。
 
-第二轮的独立实卡入口为 `scripts/train/ms_swift/smoke.sh`，默认读取 `models/rnd2/Qwen3-1.7B-Base-PGCA`，每次创建新的冒烟目录；命令、验收条件和回传清单见 [冒烟说明](../SMOKE.md)。不要将冒烟 checkpoint 用作正式第二轮起点。
+此前的独立 smoke 入口及说明已删除；正式训练使用上面的三个阶段脚本。不要将历史冒烟 checkpoint 用作正式第二轮起点。

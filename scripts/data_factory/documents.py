@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from scripts.data_factory.v2.config import SourceSpec
+from scripts.data_factory.config import SourceSpec
 
 
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")

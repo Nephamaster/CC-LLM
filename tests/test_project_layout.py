@@ -13,7 +13,7 @@ from scripts.validation.common import default_report_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CPT = ROOT / "scripts/train/ms_swift/cpt"
+CPT = ROOT / "scripts/train/cpt"
 
 
 @pytest.fixture
@@ -27,11 +27,6 @@ if args[:3] == ["-B", "-m", "scripts.evaluation.runs"]:
     raise SystemExit(0)
 with open(os.environ["CAPTURE"], "a") as handle:
     handle.write(json.dumps(args) + "\\n")
-if args[:4] == ["-B", "-m", "scripts.train.ms_swift.smoke_check", "prepare"]:
-    root = Path(args[args.index("--root") + 1])
-    for split in ("train", "validation"):
-        (root / "dataset" / split).mkdir(parents=True)
-        (root / "dataset" / split / "part.jsonl").write_text("{}\\n")
 if len(args) > 1 and args[1].endswith("/prepare_data.py") and "--verify" not in args:
     prepared = Path(args[args.index("--output") + 1])
     prepared.mkdir(parents=True)
@@ -80,38 +75,12 @@ def option(args, name):
     return args[args.index(name) + 1]
 
 
-def test_round2_smoke_uses_isolated_paths_and_new_model(tmp_path, recorder):
-    program, capture = recorder
-    model = tmp_path / "initial"
-    model.mkdir()
-    (model / "config.json").write_text("{}")
-    parent = tmp_path / "smoke"
-    env = environment(PYTHON_CMD=program, CAPTURE=capture, PGCA_MODEL=model, SMOKE_PARENT=parent,
-                      CUDA_VISIBLE_DEVICES="4,5", NPROC_PER_NODE=2, GRAD_ACCUMULATION=2,
-                      MODEL_NAME="M", OUT=tmp_path / "formal", CPT_ROOT=tmp_path / "formal",
-                      ALIGN_OUT=tmp_path / "formal", RESUME_FROM_CHECKPOINT=tmp_path / "old_checkpoint")
-    for _ in range(2):
-        subprocess.run(["bash", str(ROOT / "scripts/train/ms_swift/smoke.sh")], env=env, cwd=tmp_path, check=True)
-    calls = captured(capture)
-    preparations = [args for args in calls if args[:4] == ["-B", "-m", "scripts.train.ms_swift.smoke_check", "prepare"]]
-    roots = [Path(option(args, "--root")) for args in preparations]
-    assert len(set(roots)) == 2
-    assert all(root.parent == parent for root in roots)
-    training = [args for args in calls if args[:4] == ["-B", "-m", "swift.cli.main", "pt"]]
-    assert len(training) == 6
-    for index, args in enumerate(training):
-        root = roots[index // 3]
-        assert root in Path(option(args, "--output_dir")).parents
-        assert option(args, "--add_version") == "true"
-        assert "--resume_from_checkpoint" not in args
-        assert option(args, "--weight_decay") == "0.01"
-        assert option(args, "--gradient_accumulation_steps") == "2"
-        assert option(args, "--warmup_ratio") == ("0.01" if index % 3 == 2 else "0.03")
-        if index % 3 == 0:
-            assert option(args, "--model") == str(model)
-        else:
-            assert root in Path(option(args, "--model")).parents
-    assert not (tmp_path / "formal").exists()
+def test_flattened_finetune_resolves_repository_and_environment(tmp_path):
+    common = ROOT / "scripts/train/finetune/common.sh"
+    command = 'source "$1"; printf "%s\\n" "$CC_ROOT" "$PYTHON_CMD"'
+    result = subprocess.run(["bash", "-c", command, "_", str(common)], cwd=tmp_path,
+                            env=environment(), capture_output=True, text=True, check=True)
+    assert result.stdout.splitlines() == [str(ROOT), str(ROOT / "scripts/train/env/bin/python")]
 
 
 @pytest.mark.parametrize("overrides", [{}, {"AUX_PHONETIC_WEIGHT": "0.06", "AUX_GLYPH_WEIGHT": "0.01"}])
@@ -330,7 +299,7 @@ def test_validation_reports_are_model_scoped():
 
 
 def test_generated_outputs_and_envs_are_git_ignored():
-    paths = ["outputs/train/ExampleBase-CPT/checkpoint-1/model.bin", "scripts/train/ms_swift/env/bin/python",
+    paths = ["outputs/train/ExampleBase-CPT/checkpoint-1/model.bin", "scripts/train/env/bin/python",
              "scripts/evaluation/lmeh/env/bin/python"]
     result = subprocess.run(["git", "check-ignore", "--no-index", *paths], cwd=ROOT, check=True, capture_output=True, text=True)
     assert result.stdout.splitlines() == paths

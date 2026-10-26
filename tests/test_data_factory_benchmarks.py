@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.data_factory.v2.benchmarks import read_benchmark_rows
+from scripts.data_factory.benchmarks import read_benchmark_rows
 
 
 class BenchmarkReaderTest(unittest.TestCase):

@@ -20,7 +20,7 @@ def save(path, value):
 
 
 def read_contract(model, adapter):
-    from ...inference import TEMPLATE_KEYS
+    from ...inference import TEMPLATE_KEYS, relocated_training_plugins
 
     path = adapter / "args.json"
     if not path.exists():
@@ -33,7 +33,8 @@ def read_contract(model, adapter):
         raise ValueError("MODEL differs from adapter_config.base_model_name_or_path; verify the base checkpoint")
     # Only read settings needed for diagnosis. No code/weight hashing or credentials in reports.
     contract = {"template": args["template"], "settings": {k: args[k] for k in TEMPLATE_KEYS if k in args},
-                "external_plugins": args.get("external_plugins", []), "model_type": args.get("model_type")}
+                "external_plugins": relocated_training_plugins(args.get("external_plugins")),
+                "model_type": args.get("model_type")}
     return args, contract
 
 

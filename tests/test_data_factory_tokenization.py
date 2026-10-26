@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from scripts.data_factory.v2.tokenization import PackedWriter, SwiftJsonlWriter
+from scripts.data_factory.tokenization import PackedWriter, SwiftJsonlWriter
 
 
 class DataFactoryV2TokenizationTest(unittest.TestCase):

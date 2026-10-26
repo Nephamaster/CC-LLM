@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CC_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
-PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/scripts/train/ms_swift/env/bin/python}"
+CC_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/scripts/train/env/bin/python}"
 export PYTHONDONTWRITEBYTECODE=1
 
 : "${MODEL_PATH:?set MODEL_PATH}"

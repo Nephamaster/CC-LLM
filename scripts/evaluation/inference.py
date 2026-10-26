@@ -12,7 +12,7 @@ from pathlib import Path
 
 from tqdm.auto import tqdm
 
-from .common import ensure_dir, iter_jsonl, read_journal, sha256, signature, write_json, write_line
+from .common import ROOT, ensure_dir, iter_jsonl, read_journal, sha256, signature, write_json, write_line
 
 TEMPLATE_KEYS = (
     "system", "use_chat_template", "response_prefix", "enable_thinking", "preserve_thinking",
@@ -25,6 +25,20 @@ def enable_generation_cache(model):
     generation_config = getattr(model, "generation_config", None)
     if generation_config is not None:
         generation_config.use_cache = True
+
+
+def relocated_training_plugins(plugins):
+    paths = [plugins] if isinstance(plugins, str) else list(plugins or [])
+    for index, value in enumerate(paths):
+        path = Path(value)
+        if path.is_file():
+            continue
+        for stage in ("cpt", "finetune"):
+            if path.parts[-5:] == ("scripts", "train", "ms_swift", stage, "plugin.py"):
+                relocated = ROOT / "scripts/train" / stage / "plugin.py"
+                if relocated.is_file():
+                    paths[index] = str(relocated)
+    return paths
 
 
 def training_contract(model_path, adapter_path=None):
@@ -40,7 +54,7 @@ def training_contract(model_path, adapter_path=None):
         raise ValueError("this evaluator requires a chat-template SFT checkpoint, not a CPT/raw-text checkpoint")
     # Never persist the full args.json: training arguments can contain Hub/API credentials.
     selected = {key: args[key] for key in TEMPLATE_KEYS if key in args}
-    plugins = args.get("external_plugins") or []
+    plugins = relocated_training_plugins(args.get("external_plugins"))
     dependencies = [plugins] if isinstance(plugins, str) else list(plugins)
     if isinstance(selected.get("system"), str) and selected["system"].endswith(".txt"):
         dependencies.append(selected["system"])

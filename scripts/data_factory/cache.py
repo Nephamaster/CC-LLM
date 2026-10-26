@@ -9,8 +9,8 @@ from datatrove.data import Document, DocumentsPipeline
 from datatrove.pipeline.base import PipelineStep
 from datatrove.pipeline.writers import ParquetWriter
 
-from scripts.data_factory.v2.config import DataFactoryConfig, SourceSpec
-from scripts.data_factory.v2.documents import (
+from scripts.data_factory.config import DataFactoryConfig, SourceSpec
+from scripts.data_factory.documents import (
     SourceRecordError,
     adapt_records,
     clean_and_tag,
@@ -18,7 +18,7 @@ from scripts.data_factory.v2.documents import (
     iter_raw_records,
     source_cache_id,
 )
-from scripts.data_factory.v2.runtime import TaskOutputGuard, build_executor
+from scripts.data_factory.runtime import TaskOutputGuard, build_executor
 
 
 def cache_schema():

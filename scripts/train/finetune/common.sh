@@ -2,11 +2,11 @@
 set -euo pipefail
 
 FINETUNE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-CC_ROOT="${CC_ROOT:-$(cd -- "$FINETUNE_DIR/../../../.." && pwd)}"
+CC_ROOT="${CC_ROOT:-$(cd -- "$FINETUNE_DIR/../../.." && pwd)}"
 
 # ==================== 下游 LoRA 共享参数 ====================
 # 修改 :- 后的默认值；命令行同名环境变量优先。任务路径、长度、学习率在任务脚本顶部。
-PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/scripts/train/ms_swift/env/bin/python}"
+PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/scripts/train/env/bin/python}"
 BASE_MODEL_NAME="${BASE_MODEL_NAME:-Qwen3-1.7B-Base}"
 MODEL_NAME="${MODEL_NAME:-${BASE_MODEL_NAME}-PGCA-CPT}"  # 输入模型名称，不是 checkpoint-N
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"

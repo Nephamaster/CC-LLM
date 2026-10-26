@@ -11,9 +11,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from scripts.data_factory.v2.config import BucketSpec, DataFactoryConfig
-from scripts.data_factory.v2.documents import source_cache_id
-from scripts.data_factory.v2.quality import sub_bucket
+from scripts.data_factory.config import BucketSpec, DataFactoryConfig
+from scripts.data_factory.documents import source_cache_id
+from scripts.data_factory.quality import sub_bucket
 
 
 CACHE_COLUMNS = [

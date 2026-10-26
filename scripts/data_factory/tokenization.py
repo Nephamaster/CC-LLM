@@ -10,11 +10,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterator
 
-from scripts.data_factory.v2.config import DataFactoryConfig
-from scripts.data_factory.v2.mixture import ShardedParquetWriter, _input_schema
-from scripts.data_factory.v2.sampling import stable_fraction, stable_key
-from scripts.data_factory.v2.sampling import load_new_characters
-from scripts.data_factory.v2.quality import MixtureMetrics
+from scripts.data_factory.config import DataFactoryConfig
+from scripts.data_factory.mixture import ShardedParquetWriter, _input_schema
+from scripts.data_factory.sampling import stable_fraction, stable_key
+from scripts.data_factory.sampling import load_new_characters
+from scripts.data_factory.quality import MixtureMetrics
 
 
 def _files(root: Path) -> list[Path]:

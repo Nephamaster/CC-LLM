@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scripts.data_factory.v2.config import DataFactoryConfig, load_data_factory_config
-from scripts.data_factory.v2.documents import (
+from scripts.data_factory.config import DataFactoryConfig, load_data_factory_config
+from scripts.data_factory.documents import (
     expand_source_paths,
     inspect_source,
     source_contract_hash,
@@ -250,7 +250,7 @@ def main() -> None:
         if args.stage == "manifest":
             result = {**manifest, "run_id": config.run_id}
         else:
-            from scripts.data_factory.v2.cache import run_cache
+            from scripts.data_factory.cache import run_cache
 
             _require_passed_inspection(config, source_names)
             config.write_snapshot(config.run_root / "config.snapshot.yaml")
@@ -268,7 +268,7 @@ def main() -> None:
             }
     else:
         config, manifest = _load_run_config(args, source_names)
-        from scripts.data_factory.v2.sampling import (
+        from scripts.data_factory.sampling import (
             build_plan,
             calibrate,
             calibration_path,
@@ -303,7 +303,7 @@ def main() -> None:
                     )
                 plan = json.loads(candidate_plan.read_text(encoding="utf-8"))
                 if args.stage == "candidate":
-                    from scripts.data_factory.v2.candidate import run_candidate
+                    from scripts.data_factory.candidate import run_candidate
 
                     result = run_candidate(
                         config,
@@ -312,7 +312,7 @@ def main() -> None:
                         **_executor_options(args),
                     )
                 elif args.stage in {"exact_dedup", "minhash", "decontaminate"}:
-                    from scripts.data_factory.v2.dedup import (
+                    from scripts.data_factory.dedup import (
                         run_decontamination,
                         run_exact_dedup,
                         run_minhash,
@@ -329,7 +329,7 @@ def main() -> None:
                         **_executor_options(args),
                     )
                 elif args.stage == "mixture":
-                    from scripts.data_factory.v2.mixture import build_mixture
+                    from scripts.data_factory.mixture import build_mixture
 
                     result = build_mixture(
                         config,
@@ -337,7 +337,7 @@ def main() -> None:
                         overwrite=args.overwrite,
                     )
                 else:
-                    from scripts.data_factory.v2.tokenization import (
+                    from scripts.data_factory.tokenization import (
                         finalize_dataset,
                         tokenize_selected,
                     )

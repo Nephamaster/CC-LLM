@@ -2,10 +2,10 @@
 set -euo pipefail
 
 CC_PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-CC_ROOT="${CC_ROOT:-$(cd -- "$CC_PLUGIN_DIR/../../../.." && pwd)}"
+CC_ROOT="${CC_ROOT:-$(cd -- "$CC_PLUGIN_DIR/../../.." && pwd)}"
 MS_SWIFT_DIR="$(cd -- "$CC_PLUGIN_DIR/.." && pwd)"
 
-# ==================== Phase1 独立参数：通常只改这里 ====================
+# ==================== Phase2-A 独立参数：通常只改这里 ====================
 # 修改 :- 后的默认值即可；命令行传入的同名环境变量优先。
 
 # 环境、模型名称与产物根目录。本文件包含本阶段全部配置，不依赖 common.sh。
@@ -14,14 +14,18 @@ BASE_MODEL_NAME="${BASE_MODEL_NAME:-Qwen3-1.7B-Base}"
 MODEL_NAME="${MODEL_NAME:-${BASE_MODEL_NAME}-PGCA}"
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 
-# 本阶段输入、输出及训练参数。MODEL 是未做 ALIGN 的初始 PGCA 模型。
-MODEL="${MODEL:-$CC_ROOT/models/$MODEL_NAME}"
-DATA_DIR="${DATA_DIR:-$CC_ROOT/data/corpus/runs/phase1/phase1-1b-default-c97f9387391d/final/ms_swift}"
-OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
-MAX_LENGTH="${MAX_LENGTH:-2048}"
-CACHE_DIR="${CACHE_DIR:-$CC_ROOT/data/cc_llm_multitask/phase1_${MAX_LENGTH}}"
-PHASE1_TOKENS="${PHASE1_TOKENS:-1000000000}"        # 上限；不足时用实际量，0 表示全部
-PHASE1_LR="${PHASE1_LR:-1e-5}"
+# 本阶段输入、输出及训练参数。MODEL 优先；留空时读取 Phase1 完成指针。
+MODEL="${MODEL:-}"
+ALIGN_OUT="${ALIGN_OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
+CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
+OUT="${OUT:-$CPT_ROOT/adaptation}"
+DATA_DIR="${DATA_DIR:-$CC_ROOT/data/corpus/runs/phase2/phase2-10b-default-6d14a3c4e453/final/ms_swift}"
+MAX_LENGTH="${MAX_LENGTH:-4096}"
+CACHE_DIR="${CACHE_DIR:-$CC_ROOT/data/cc_llm_multitask/phase2_${MAX_LENGTH}}"
+# A/B 的数据、长度、DATA_SEED 和以下两项预算应保持一致，保证监督区间不重叠。
+PHASE2_TOKENS="${PHASE2_TOKENS:-10000000000}"      # A+B 总上限；不足时用实际量
+ADAPTATION_TOKENS="${ADAPTATION_TOKENS:-100000000}"
+PHASE2_A_LR="${PHASE2_A_LR:-5e-5}"                # 仅训练新增分支
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 
 # 单机 GPU 与 batch；有效 batch = 卡数 × TRAIN_BATCH_SIZE × GRAD_ACCUMULATION。
@@ -29,13 +33,13 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-}"              # 留空时按可见 GPU 数推导
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"         # 每卡训练 batch
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"           # 每卡验证 batch
-GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-32}"
+GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-8}"
 DATASET_NUM_PROC="${DATASET_NUM_PROC:-32}"
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
 
 # ms-swift 原生数据预处理缓存复用；不是模型 KV cache，也不清理已准备的 CACHE_DIR。
-LOAD_FROM_CACHE_FILE="${LOAD_FROM_CACHE_FILE:-true}"
+LOAD_FROM_CACHE_FILE="${LOAD_FROM_CACHE_FILE:-false}"
 
 # 优化器；学习率在本文件上方的阶段参数区。
 OPTIM="${OPTIM:-adamw_torch_fused}"
@@ -64,14 +68,20 @@ export PYTHONDONTWRITEBYTECODE=1
 IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE
-export CC_LLM_STAGE=phase1 PGCA_ENABLED=false
+export CC_LLM_STAGE=phase2a PGCA_ENABLED=true
+if [[ -z "$MODEL" ]]; then
+    [[ -f "$ALIGN_OUT/next_stage_model.txt" ]] || {
+        echo "Set MODEL to a Phase1 checkpoint or finish phase1.sh first" >&2; exit 1;
+    }
+    IFS= read -r MODEL < "$ALIGN_OUT/next_stage_model.txt"
+fi
 
 # ==================== 2. 准备或校验训练数据 ====================
 RAW_CACHE="${CACHE_DIR}.raw"
 prepare_args=(
     --input "$RAW_CACHE" --output "$CACHE_DIR"
     --model "$MODEL" --max-length "$MAX_LENGTH"
-    --adaptation-tokens "0" --total-tokens "$PHASE1_TOKENS"
+    --adaptation-tokens "$ADAPTATION_TOKENS" --total-tokens "$PHASE2_TOKENS"
     --world-size "$NPROC_PER_NODE" --batch-size "$TRAIN_BATCH_SIZE" --seed "$DATA_SEED"
 )
 shopt -s nullglob
@@ -122,7 +132,7 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
     --model "$MODEL" --model_type qwen3 --template cc_llm_multitask \
     --check_model false --load_args false --tuner_type full \
     --torch_dtype "$TORCH_DTYPE" --max_length "$MAX_LENGTH" \
-    --cached_dataset "$CACHE_DIR/train" --cached_val_dataset "$CACHE_DIR/val" \
+    --cached_dataset "$CACHE_DIR/train_a" --cached_val_dataset "$CACHE_DIR/val" \
     --load_from_cache_file "$LOAD_FROM_CACHE_FILE" \
     --remove_unused_columns false --use_chat_template false \
     --loss_scale all --disable_ignore_empty_think true --truncation_strategy split \
@@ -131,7 +141,7 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
     --packing false --padding_free false --sequence_parallel_size 1 \
     --use_liger_kernel false --use_logits_to_keep false --attn_impl sdpa \
     --num_train_epochs 1 \
-    --learning_rate "$PHASE1_LR" \
+    --learning_rate "$PHASE2_A_LR" \
     --per_device_train_batch_size "$TRAIN_BATCH_SIZE" \
     --per_device_eval_batch_size "$EVAL_BATCH_SIZE" \
     --gradient_accumulation_steps "$GRAD_ACCUMULATION" \
@@ -145,9 +155,9 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
     --logging_steps "$LOGGING_STEPS" --logging_nan_inf_filter false \
     --eval_on_start true --eval_strategy steps --eval_steps "$EVAL_STEPS" \
     --save_strategy steps --save_steps "$SAVE_STEPS" --save_total_limit "$SAVE_TOTAL_LIMIT" \
-    --save_only_model false --load_best_model_at_end "true" \
+    --save_only_model false --load_best_model_at_end "false" \
     --metric_for_best_model eval_clm_loss --greater_is_better false \
     --add_version "$add_version" --output_dir "$training_output" \
-    --freeze_parameters_ratio 0 \
-    --freeze_parameters_regex '(^model\.layers\.[0-9]+\.pgca_attn\.|^model\.feature_memory_builder\.|^auxiliary_heads\.)' \
+    --freeze_parameters_ratio 1 \
+    --trainable_parameters_regex '(^model\.layers\.[0-9]+\.pgca_attn\.|^model\.feature_memory_builder\.|^auxiliary_heads\.)' \
     "${resume_args[@]}"

@@ -9,9 +9,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from scripts.data_factory.v2.config import DataFactoryConfig
-from scripts.data_factory.v2.quality import MixtureMetrics, sub_bucket
-from scripts.data_factory.v2.sampling import eligible_buckets, load_new_characters, stable_key
+from scripts.data_factory.config import DataFactoryConfig
+from scripts.data_factory.quality import MixtureMetrics, sub_bucket
+from scripts.data_factory.sampling import eligible_buckets, load_new_characters, stable_key
 
 
 def _input_files(config: DataFactoryConfig, plan: dict[str, Any]) -> list[Path]:

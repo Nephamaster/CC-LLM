@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.train.ms_swift.finetune.prepare_ancient_views import TASKS, prepare
+from scripts.train.finetune.prepare_ancient_views import TASKS, prepare
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:

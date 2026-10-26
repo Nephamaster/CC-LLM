@@ -1,6 +1,6 @@
 # PGCA Backbone Implementation Plan
 
-当前完整分支结合 `causal_feature_encoder.md` 与 `../train/phase2_auxiliary_task.md` 实施。模型统一命名为 `<Base原名>-PGCA`，不使用 `Char-PGCA-CONTEXT`；训练入口在 `scripts/train/ms_swift/cpt/`，Phase1/Phase2 产物分别位于 `outputs/train/M-ALIGN/` 与 `outputs/train/M-CPT/`。下文基础接口中的示例维度不是固定资源版本，实际 slots 以 manifest 为准。
+当前完整分支结合 `causal_feature_encoder.md` 与 `../train/phase2_auxiliary_task.md` 实施。模型统一命名为 `<Base原名>-PGCA`，不使用 `Char-PGCA-CONTEXT`；训练入口在 `scripts/train/cpt/`，Phase1/Phase2 产物分别位于 `outputs/train/M-ALIGN/` 与 `outputs/train/M-CPT/`。下文基础接口中的示例维度不是固定资源版本，实际 slots 以 manifest 为准。
 
 ## 1. 目标与边界
 

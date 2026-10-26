@@ -10,9 +10,9 @@ from datatrove.data import Document, DocumentsPipeline
 from datatrove.pipeline.base import PipelineStep
 from datatrove.pipeline.writers import ParquetWriter
 
-from scripts.data_factory.v2.config import DataFactoryConfig
-from scripts.data_factory.v2.runtime import TaskOutputGuard, build_executor
-from scripts.data_factory.v2.sampling import (
+from scripts.data_factory.config import DataFactoryConfig
+from scripts.data_factory.runtime import TaskOutputGuard, build_executor
+from scripts.data_factory.sampling import (
     CACHE_COLUMNS,
     eligible_buckets,
     load_new_characters,

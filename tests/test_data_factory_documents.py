@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.data_factory.v2.config import SourceSpec
-from scripts.data_factory.v2.documents import (
+from scripts.data_factory.config import SourceSpec
+from scripts.data_factory.documents import (
     RawRecord,
     SourceRecordError,
     adapt_record,

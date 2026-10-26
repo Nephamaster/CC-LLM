@@ -5,7 +5,7 @@ CC_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "$CC_ROOT"
 
 # 与正式评估相同的环境、完整基座及 ACT adapter。
-PYTHON="${PYTHON:-$CC_ROOT/scripts/train/ms_swift/env/bin/python}"
+PYTHON="${PYTHON:-$CC_ROOT/scripts/train/env/bin/python}"
 MODEL="${MODEL:-$CC_ROOT/outputs/experiments/rnd2/training/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500}"
 LORA="${LORA:-$CC_ROOT/outputs/experiments/rnd2/finetune/Qwen3-1.7B-Base-PGCA-CPT-ACT/v0-20261025-232029/checkpoint-1000}"
 DEV="${DEV:-$CC_ROOT/data/downstream/ancient/train/final/dev.metadata.jsonl}"

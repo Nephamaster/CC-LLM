@@ -10,8 +10,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from scripts.data_factory.v2.config import BucketSpec, load_data_factory_config
-from scripts.data_factory.v2.tokenization import tokenize_selected, finalize_dataset, _require_mixture
+from scripts.data_factory.config import BucketSpec, load_data_factory_config
+from scripts.data_factory.tokenization import tokenize_selected, finalize_dataset, _require_mixture
 
 
 class AcceptExistingMixtureTest(unittest.TestCase):

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from scripts.data_factory.v2.config import load_data_factory_config
+from scripts.data_factory.config import load_data_factory_config
 
 
 CONFIG_ROOT = Path("scripts/data_factory/configs")

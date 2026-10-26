@@ -13,15 +13,15 @@ import pyarrow.parquet as pq
 import yaml
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from scripts.data_factory.v2.config import BucketSpec, load_data_factory_config
-from scripts.data_factory.v2.sampling import eligible_buckets, build_plan
-from scripts.data_factory.v2.mixture import build_mixture
-from scripts.data_factory.v2.tokenization import tokenize_selected, finalize_dataset
-from scripts.data_factory.v2.dedup import minhash_dimensions
-from scripts.data_factory.v2.candidate import CandidateSelector
-from scripts.data_factory.v2.cache import CanonicalSourceReader
-from scripts.data_factory.v2.documents import RawRecord
-from scripts.data_factory.v2.runtime import build_executor
+from scripts.data_factory.config import BucketSpec, load_data_factory_config
+from scripts.data_factory.sampling import eligible_buckets, build_plan
+from scripts.data_factory.mixture import build_mixture
+from scripts.data_factory.tokenization import tokenize_selected, finalize_dataset
+from scripts.data_factory.dedup import minhash_dimensions
+from scripts.data_factory.candidate import CandidateSelector
+from scripts.data_factory.cache import CanonicalSourceReader
+from scripts.data_factory.documents import RawRecord
+from scripts.data_factory.runtime import build_executor
 from datatrove.data import Document
 
 
@@ -103,7 +103,7 @@ class PipelineRepairTest(unittest.TestCase):
             "buckets": {"zh_general": {"tokens_per_character": 2},
                         "mixed_zh_en": {"tokens_per_character": 0}},
         }}}
-        with patch("scripts.data_factory.v2.candidate.load_new_characters", return_value=frozenset("罕")):
+        with patch("scripts.data_factory.candidate.load_new_characters", return_value=frozenset("罕")):
             selector = CandidateSelector(config, plan, calibration)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -135,7 +135,7 @@ class PipelineRepairTest(unittest.TestCase):
                  for i, content in enumerate(["x", "print('a valid source file containing enough characters')"])]
         raw = RawRecord({"repo_id": 1, "files": files}, Path("stack.parquet"), 0)
         reader = CanonicalSourceReader(source, [Path("stack.parquet")])
-        with patch("scripts.data_factory.v2.cache.iter_raw_records", return_value=iter([raw])):
+        with patch("scripts.data_factory.cache.iter_raw_records", return_value=iter([raw])):
             rows = list(reader.run())
         self.assertEqual(len(rows), 1)
         self.assertIn("valid source", rows[0].text)
@@ -146,7 +146,7 @@ class PipelineRepairTest(unittest.TestCase):
             "zh_general": {"cci3_hq": 0}, "new_char_enhancement": {"cci3_hq": 1},
         }}
         calibration = {"sources": {"cci3_hq": {"tokens_per_character": 1}}}
-        with patch("scripts.data_factory.v2.candidate.load_new_characters", return_value=frozenset("罕")):
+        with patch("scripts.data_factory.candidate.load_new_characters", return_value=frozenset("罕")):
             selector = CandidateSelector(config, plan, calibration)
         doc = Document(id="one", text="罕见文字", metadata={"source": "cci3_hq", "language": "zh",
                        "domain": "general", "char_count": 4})
@@ -215,13 +215,13 @@ class PipelineRepairTest(unittest.TestCase):
                 ("estimated_tokens", pa.int64()), ("sample_key", pa.uint64()),
             ])
             pq.write_table(pa.Table.from_pylist(rows, schema=schema), input_dir / "input.parquet")
-            with patch("scripts.data_factory.v2.mixture._feature_map", return_value={"罕": frozenset({"tone:1"}), "缺": frozenset()}):
+            with patch("scripts.data_factory.mixture._feature_map", return_value={"罕": frozenset({"tone:1"}), "缺": frozenset()}):
                 mixture = build_mixture(config, plan)
             self.assertTrue(mixture["passed"], mixture)
             self.assertFalse(mixture["enhancement"]["coverage_passed"])
             tokenized = tokenize_selected(config, plan)
             self.assertEqual(tokenized["total_tokens"], 220)
-            with patch("scripts.data_factory.v2.tokenization.stable_fraction", return_value=0):
+            with patch("scripts.data_factory.tokenization.stable_fraction", return_value=0):
                 final = finalize_dataset(config, plan)
             self.assertTrue(final["passed"], final)
             self.assertEqual(final["document_overlap"], 0)

@@ -137,7 +137,7 @@ H_\ell+
 | `src/embedding/feature_memory.py` | 在现有静态 memory 后接入上下文编码器，传递位置、padding mask 和 cache |
 | `src/modeling_qwen3_pgca.py` | 调整 feature memory 构造时机，接入位置与 cache；增加辅助头及可选辅助 logits 输出 |
 | `src/configuration_qwen3_pgca.py` | 保存编码器尺寸、辅助头开关、损失权重和特征版本 |
-| `scripts/train/ms_swift/cpt/` | 本仓库管理的 Template、`BaseLoss`、参数组学习率、指标与训练脚本；使用 `scripts/train/ms_swift/env/` 普通安装的框架 |
+| `scripts/train/cpt/` | 本仓库管理的 Template、`BaseLoss`、参数组学习率、指标与训练脚本；使用 `scripts/train/env/` 普通安装的框架 |
 | 构建／导出与测试 | 复制新增运行代码，检查权重完整性，覆盖旁路、因果、loss、cache 测试 |
 
 新编码器放在 `model.feature_memory_builder.context_encoder` 下。旧脚本只冻结 `feature_memory_builder.feature_embedding`，不能覆盖新增编码器；新脚本改为冻结整个 `model.feature_memory_builder`，并冻结模型顶层的 `auxiliary_heads`。

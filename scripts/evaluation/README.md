@@ -1,6 +1,6 @@
 # 下游评估
 
-下游入口位于 `scripts/evaluation/{csc,cgec,ancient}/run.sh`。原始文本 PPL 已提供独立入口 [`scripts/evaluation/ppl/run.sh`](ppl/README.md)，默认读取 `data/ppl/`，不走 SFT 模板推理；通用 benchmark 入口为 [`scripts/evaluation/lmeh/run.sh`](lmeh/README.md)，MMLU/CMMLU/GSM8K 为 5-shot，其余为 0-shot，使用独立 lmeh/env。训练入口位于 `scripts/train/ms_swift/`。
+下游入口位于 `scripts/evaluation/{csc,cgec,ancient}/run.sh`。原始文本 PPL 已提供独立入口 [`scripts/evaluation/ppl/run.sh`](ppl/README.md)，默认读取 `data/ppl/`，不走 SFT 模板推理；通用 benchmark 入口为 [`scripts/evaluation/lmeh/run.sh`](lmeh/README.md)，MMLU/CMMLU/GSM8K 为 5-shot，其余为 0-shot，使用独立 lmeh/env。训练入口位于 `scripts/train/`。
 
 原始 `data/downstream/` 只读。prepare 只在 OUT 下生成评估输入，不重采样、不重新划分、不删除 rSIGHAN/ECSpell 或任何其他数据。
 
@@ -18,6 +18,9 @@ scripts/evaluation/csc/env/bin/python -m pip check
 这里的推理仍使用普通安装的 ms-swift 的 TransformersEngine 和实际 get_template，保留自定义 PGCA AutoClass 加载路径，支持完整 SFT 模型和基座＋LoRA。该依赖与 lmeh 的通用 benchmark 环境相互独立。
 
 模板只来自 SFT checkpoint 的 `args.json`（也允许其直接父目录）；LoRA 优先使用 adapter 的训练参数。继承 template、system、use_chat_template、enable_thinking、response_prefix 等，不提供 `--template` 覆盖，也不绕过聊天模板直接拼接文本。不猜测训练设置：缺失 args.json、插件文件或 use_chat_template=false 的 CPT checkpoint 会报错。导出合并模型时应保留正确的 SFT args.json，不能复制无关的 CPT 参数。
+
+训练目录上移后，若旧 checkpoint 保存的 `scripts/train/ms_swift/{cpt,finetune}/plugin.py` 已不存在，
+加载器会解析到本仓库的 `scripts/train/{cpt,finetune}/plugin.py`；不改写 checkpoint 的 args.json。
 
 任务指令和 chat template 是两层：CSC/CGEC 现统一为 source-only，user 消息只放原句，不附加任务说明或“输入/输出”包装；C³Bench 用论文中文任务指令；Fùxì 用原数据 instruction/input。这些 user 消息仍由训练聊天模板编码。参考答案不会传入待测模型；Fùxì 明确启用的官方 few-shot 示例除外。
 

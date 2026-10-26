@@ -5,7 +5,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # 只运行离线推理，不接管或停止训练进程。参数集中在这里。
 : "${CUDA_VISIBLE_DEVICES:?Set CUDA_VISIBLE_DEVICES to an idle GPU}"
-PYTHON_CMD="${PYTHON_CMD:-$ROOT/scripts/train/ms_swift/env/bin/python}"
+PYTHON_CMD="${PYTHON_CMD:-$ROOT/scripts/train/env/bin/python}"
 P0_DIR="${P0_DIR:-$ROOT/outputs/experiments/rnd2/p0_pgca_probe}"
 OUT="${OUT:-$ROOT/outputs/experiments/rnd2/p0_uniform_pgca}"
 MODEL="${MODEL:-}"  # 留空：使用原 P0 manifest 的 checkpoint；可指定同一权重的迁移副本。

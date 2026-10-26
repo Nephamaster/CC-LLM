@@ -13,7 +13,7 @@ P0 完成后的最小补充对照见 [Uniform-Attention 实验](UNIFORM_ATTENTIO
 
 ## 运行
 
-复用 `scripts/train/ms_swift/env/` 的 torch / transformers / datasets / numpy，不需要安装额外框架或启动 Swift/DDP。先确保指定 GPU 空闲；**如果目前所有卡都在训练，先完成审核并保留 checkpoint，等空闲卡或另一台机器再运行**。
+复用 `scripts/train/env/` 的 torch / transformers / datasets / numpy，不需要安装额外框架或启动 Swift/DDP。先确保指定 GPU 空闲；**如果目前所有卡都在训练，先完成审核并保留 checkpoint，等空闲卡或另一台机器再运行**。
 
 在 CC-LLM 根目录，以下 `0` 仅为示例，确认空闲后再执行：
 
@@ -72,6 +72,6 @@ Git 仅用于补充 commit 和工作区状态，不是运行前提。服务器�
 本地回归：
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 scripts/train/ms_swift/env/bin/python -B \
+PYTHONDONTWRITEBYTECODE=1 scripts/train/env/bin/python -B \
   -m unittest discover -s tests -p test_pgca_probe.py -v
 ```

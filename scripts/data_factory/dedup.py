@@ -16,9 +16,9 @@ from datatrove.pipeline.base import PipelineStep
 from datatrove.pipeline.writers import ParquetWriter
 from datatrove.utils.word_tokenizers import WordTokenizer
 
-from scripts.data_factory.v2.benchmarks import read_benchmark_rows
-from scripts.data_factory.v2.config import DataFactoryConfig
-from scripts.data_factory.v2.runtime import DistributionStats, TaskOutputGuard, build_executor
+from scripts.data_factory.benchmarks import read_benchmark_rows
+from scripts.data_factory.config import DataFactoryConfig
+from scripts.data_factory.runtime import DistributionStats, TaskOutputGuard, build_executor
 
 PROFILE_NAMES = ("zh", "en", "code")
 

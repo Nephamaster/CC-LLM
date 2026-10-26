@@ -126,7 +126,7 @@ $$L\_{\mathrm{glyph}} =\frac{L\_{\mathrm{stroke}}+L\_{\mathrm{radical}}+L\_{\mat
 
 - `src/configuration_qwen3_pgca.py`：设置新的默认辅助权重；
 - `src/pgca/build_pgca.py`：增加明确的权重构建参数，并写入最终 config；
-- `scripts/train/ms_swift/cpt/plugin.py`：保留原计算公式，新增每项加权损失比例以及分模块梯度记录。
+- `scripts/train/cpt/plugin.py`：保留原计算公式，新增每项加权损失比例以及分模块梯度记录。
 
 建议在 Phase2-B 持续记录 `weighted_phon_to_clm`、`weighted_glyph_to_clm`，而不只记录两者之和。
 
@@ -203,7 +203,7 @@ $$r_l=\frac{\\|F_l\\|\_2}{\\|A_l\\|\_2+\epsilon}.$$
 正确入口为：
 
 ```
-scripts/train/ms_swift/cpt/
+scripts/train/cpt/
 ├── phase1.sh
 ├── phase2_a.sh
 ├── phase2_b.sh
@@ -216,11 +216,11 @@ scripts/train/ms_swift/cpt/
 ```
 # Phase1
 WEIGHT_DECAY=0.01 GRAD_ACCUMULATION=32 \
-bash scripts/train/ms_swift/cpt/phase1.sh
+bash scripts/train/cpt/phase1.sh
 
 # Phase2-A
 WEIGHT_DECAY=0.01 GRAD_ACCUMULATION=8 \
-bash scripts/train/ms_swift/cpt/phase2_a.sh
+bash scripts/train/cpt/phase2_a.sh
 
 # Phase2-B
 WEIGHT_DECAY=0.01 \
@@ -228,7 +228,7 @@ GRAD_ACCUMULATION=32 \
 WARMUP_RATIO=0.01 \
 PHASE2_B_LR=1e-5 \
 PHASE2_B_BRANCH_LR=3e-5 \
-bash scripts/train/ms_swift/cpt/phase2_b.sh
+bash scripts/train/cpt/phase2_b.sh
 ```
 
 这只是关键超参数示例，不是现在即可执行的完整第二轮命令。正式启动时使用独立初始 `MODEL` 与第二轮 `TRAIN_ROOT`／`OUT`，核对 A 的 `ALIGN_OUT`、B 的 `CPT_ROOT`／`ADAPTATION_OUT`，防止误读第一轮的 `next_stage_model.txt`。模型名称仍沿用 M-ALIGN、M-CPT，用轮次目录隔离，不额外堆叠模型后缀。

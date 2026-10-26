@@ -26,7 +26,7 @@ from src.pgca.build_pgca import AUTO_MAP, copy_runtime_code, save_pretrained_wit
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRIDGE = ROOT / "scripts/train/ms_swift/cpt"
+BRIDGE = ROOT / "scripts/train/cpt"
 PREPARE = runpy.run_path(str(BRIDGE / "prepare_data.py"))
 
 

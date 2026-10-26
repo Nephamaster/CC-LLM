@@ -26,7 +26,7 @@ Stack V3 Train 每行是一个仓库，代码位于 `files[].content`。Adapter 
 ## 3. 检查真实 Schema
 
 ```bash
-python -m scripts.data_factory.v2.run inspect \
+python -m scripts.data_factory.run inspect \
   --config scripts/data_factory/configs/phase1.yaml \
   --max-files 3 \
   --max-rows 20
@@ -35,7 +35,7 @@ python -m scripts.data_factory.v2.run inspect \
 只检查指定来源：
 
 ```bash
-python -m scripts.data_factory.v2.run inspect \
+python -m scripts.data_factory.run inspect \
   --config scripts/data_factory/configs/phase1.yaml \
   --source cci3_hq
 ```
@@ -45,7 +45,7 @@ python -m scripts.data_factory.v2.run inspect \
 ## 4. 冻结 File Manifest
 
 ```bash
-python -m scripts.data_factory.v2.run manifest \
+python -m scripts.data_factory.run manifest \
   --config scripts/data_factory/configs/phase1.yaml
 ```
 
@@ -56,7 +56,7 @@ Manifest 位于 `data/corpus/registry/manifests/`，记录文件路径、大小�
 单机多进程：
 
 ```bash
-python -m scripts.data_factory.v2.run cache \
+python -m scripts.data_factory.run cache \
   --config scripts/data_factory/configs/phase1.yaml \
   --executor local \
   --workers 16
@@ -65,7 +65,7 @@ python -m scripts.data_factory.v2.run cache \
 Slurm：
 
 ```bash
-python -m scripts.data_factory.v2.run cache \
+python -m scripts.data_factory.run cache \
   --config scripts/data_factory/configs/phase1.yaml \
   --executor slurm \
   --workers 64 \
@@ -83,15 +83,15 @@ python -m scripts.data_factory.v2.run cache \
 完成所有当前 Phase 来源的 Cache 后，重新生成完整 Manifest，再执行：
 
 ```bash
-python -m scripts.data_factory.v2.run calibrate \
+python -m scripts.data_factory.run calibrate \
   --config scripts/data_factory/configs/phase1.yaml \
   --overwrite
 
-python -m scripts.data_factory.v2.run plan \
+python -m scripts.data_factory.run plan \
   --config scripts/data_factory/configs/phase1.yaml \
   --overwrite
 
-python -m scripts.data_factory.v2.run candidate \
+python -m scripts.data_factory.run candidate \
   --config scripts/data_factory/configs/phase1.yaml \
   --executor local \
   --workers 16
@@ -114,15 +114,15 @@ data/corpus/runs/<phase>/<run_id>/candidates/<plan_hash>/
 Candidate 完成后依次执行：
 
 ```bash
-python -m scripts.data_factory.v2.run exact_dedup \
+python -m scripts.data_factory.run exact_dedup \
   --config scripts/data_factory/configs/phase1.yaml \
   --executor local --workers 16
 
-python -m scripts.data_factory.v2.run minhash \
+python -m scripts.data_factory.run minhash \
   --config scripts/data_factory/configs/phase1.yaml \
   --executor local --workers 16
 
-python -m scripts.data_factory.v2.run decontaminate \
+python -m scripts.data_factory.run decontaminate \
   --config scripts/data_factory/configs/phase1.yaml \
   --executor local --workers 16
 ```
@@ -138,7 +138,7 @@ MinHash 使用 DataTrove 官方 Signature、Bucket、Cluster、Filter 四阶段�
 完成去污染后执行：
 
 ```bash
-python -m scripts.data_factory.v2.run mixture \
+python -m scripts.data_factory.run mixture \
   --config scripts/data_factory/configs/phase1.yaml \
   --overwrite
 ```
@@ -154,11 +154,11 @@ python -m scripts.data_factory.v2.run mixture \
 ## 9. Exact Tokenization、Finalization 与 ms-swift
 
 ```bash
-python -m scripts.data_factory.v2.run tokenize \
+python -m scripts.data_factory.run tokenize \
   --config scripts/data_factory/configs/phase1.yaml \
   --overwrite
 
-python -m scripts.data_factory.v2.run finalize \
+python -m scripts.data_factory.run finalize \
   --config scripts/data_factory/configs/phase1.yaml \
   --overwrite
 ```
@@ -167,13 +167,13 @@ python -m scripts.data_factory.v2.run finalize \
 
 ms-swift 使用 assistant-only `messages` JSONL。按照官方接口生成 cached dataset：
 
-导出入口默认使用 `scripts/train/ms_swift/env/bin/python` 中普通安装的 ms-swift；可显式设置 `PYTHON_CMD`，不依赖 PATH 中的 `swift`。Phase1/2 数据配置共享 Char tokenizer；模型目录规范化会改变配置身份，既有 run/manifest 和语料无需仅为改名而重建。
+导出入口默认使用 `scripts/train/env/bin/python` 中普通安装的 ms-swift；可显式设置 `PYTHON_CMD`，不依赖 PATH 中的 `swift`。Phase1/2 数据配置共享 Char tokenizer；模型目录规范化会改变配置身份，既有 run/manifest 和语料无需仅为改名而重建。
 
 ```bash
 MODEL_PATH=models/Qwen3-1.7B-Base-PGCA \
 FINAL_DIR=data/corpus/runs/phase1/<run_id>/final \
 MAX_LENGTH=2048 \
-bash scripts/data_factory/v2/export_ms_swift.sh
+bash scripts/data_factory/export_ms_swift.sh
 ```
 
 训练时使用脚本输出的 `--cached_dataset` 和 `--cached_val_dataset`。导出与训练必须保持相同的 `max_length` 和 `truncation_strategy=split`。
@@ -185,11 +185,11 @@ bash scripts/data_factory/v2/export_ms_swift.sh
 如果明确决定停止补采，接受已有数据的Token数量、来源及专项子类比例偏差，可执行：
 
 ```bash
-python -m scripts.data_factory.v2.run tokenize \
+python -m scripts.data_factory.run tokenize \
   --config scripts/data_factory/configs/phase1.yaml \
   --round 1 --accept-existing-mixture
 
-python -m scripts.data_factory.v2.run finalize \
+python -m scripts.data_factory.run finalize \
   --config scripts/data_factory/configs/phase1.yaml \
   --round 1 --accept-existing-mixture
 ```
@@ -205,11 +205,11 @@ Finalize按稳定父文档划分预留验证集，保留完整文档，因此验
 若明确接受Phase2现有Mixture的数量、来源偏差，以及整体古文低于8%的现状，两个步骤同时追加`--accept-classical-shortfall`：
 
 ```bash
-python -m scripts.data_factory.v2.run tokenize \
+python -m scripts.data_factory.run tokenize \
   --config scripts/data_factory/configs/phase2.yaml \
   --round 1 --accept-existing-mixture --accept-classical-shortfall
 
-python -m scripts.data_factory.v2.run finalize \
+python -m scripts.data_factory.run finalize \
   --config scripts/data_factory/configs/phase2.yaml \
   --round 1 --accept-existing-mixture --accept-classical-shortfall
 ```

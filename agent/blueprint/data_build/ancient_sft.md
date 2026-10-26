@@ -150,5 +150,5 @@ Dev 每项核心任务 600 条，每项至少 5 部书、10 个独立组，单�
 - Train 核心 53K，可选知识任务另计；Dev 按任务独立留出 1,800 条。知识/出处样本及疑似污染记录未审核不入选。HistoryTrans 官方 validation/test 必须提供作为跨来源排除集。
 - 篇章优先，整书回退，不随机拆句、不跨书传递合并。已校验的 v1 eligible 候选可通过 repartition 复用；不改写旧产物，不恢复隔离或此前已删数据。
 - 正式训练就绪需同时满足核心 Train 配额、Dev 数量/作品/篇章/集中度和标点监督 token 占比，不能只检查两个集合非空。
-- 训练入口为 `scripts/train/ms_swift/finetune/ancient.sh`；它从 final metadata 构建不改写源文件的 channel 运行视图，记录 `c2m/m2c/punctuate` 三项 Dev loss，以等权宏平均 `eval_macro_task_loss` 选择 checkpoint。
+- 训练入口为 `scripts/train/finetune/ancient.sh`；它从 final metadata 构建不改写源文件的 channel 运行视图，记录 `c2m/m2c/punctuate` 三项 Dev loss，以等权宏平均 `eval_macro_task_loss` 选择 checkpoint。
 - 来源不足、严格过滤和作品上限导致的缺额如实报告；诊断模式不能导出正式训练文件。文件版本/许可证未知时明确标记，不推断已验证。

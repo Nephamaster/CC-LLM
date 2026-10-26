@@ -8,9 +8,9 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from scripts.data_factory.v2.config import load_data_factory_config
-from scripts.data_factory.v2.documents import source_cache_id
-from scripts.data_factory.v2.sampling import (
+from scripts.data_factory.config import load_data_factory_config
+from scripts.data_factory.documents import source_cache_id
+from scripts.data_factory.sampling import (
     _bounded_sample,
     assign_bucket,
     eligible_buckets,
