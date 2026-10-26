@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from scripts.evaluation.diagnose_act import compare_cache, eos_evidence, make_batch, select_cases
+from scripts.evaluation.ancient.diagnostics.checks import compare_cache, eos_evidence, make_batch, select_cases
 
 
 @pytest.mark.parametrize("labels,passed", [([-100, 3, 9, 4], True), ([-100, 3, -100, 4], False)])
@@ -46,11 +46,11 @@ def test_cache_check_with_real_small_pgca_and_nonzero_lora():
     assert report["steps"][-1]["feature"] == report["steps"][-1]["backbone"] == 4
     # A defective feature-cache length must be detected even if logits still match.
     from unittest.mock import patch
-    from scripts.evaluation.diagnose_act import cache_lengths
+    from scripts.evaluation.ancient.diagnostics.checks import cache_lengths
 
     def incorrect_length(cache):
         return {**cache_lengths(cache), "feature": 0}
-    with patch("scripts.evaluation.diagnose_act.cache_lengths", side_effect=incorrect_length):
+    with patch("scripts.evaluation.ancient.diagnostics.checks.cache_lengths", side_effect=incorrect_length):
         assert not compare_cache(model, inputs, 2e-6, 2e-5)["passed"]
 
 
@@ -62,7 +62,7 @@ def test_actual_swift_adapter_generation_trace(tmp_path, monkeypatch):
     from transformers import PreTrainedTokenizerFast
     from test_pgca_context import context_model
     from src.pgca.build_pgca import AUTO_MAP, copy_runtime_code, save_pretrained_without_auto_copy
-    from scripts.evaluation.diagnose_act import read_contract, traced_generation
+    from scripts.evaluation.ancient.diagnostics.checks import read_contract, traced_generation
     from scripts.evaluation.inference import TrainingTemplatePredictor
     from test_finetune import SFT
 
@@ -112,10 +112,18 @@ def test_actual_swift_adapter_generation_trace(tmp_path, monkeypatch):
         assert len(result["forward_trace"]) > 0
         if len(result["forward_trace"]) > 1:
             assert result["incremental_cache_observed"] is True
+    off = traced_generation(predictor, row, use_cache=False)
+    assert off["generation_use_cache"] is False
+    assert off["uncached_full_prefix_observed"] is True
+    assert off["batch_size"] == 1 and off["padding_tokens"] == 0
+    on = traced_generation(predictor, row, use_cache=True)
+    assert on["generation_use_cache"] is True
+    assert on["prompt_token_ids"] == off["prompt_token_ids"]
+    assert predictor.engine.generation_config.use_cache is True
     # Exercise the complete reporting workflow on CPU with this disposable small model.
     # Only bypass the server-GPU preflight; all model/template/adapter computations are real.
     from types import SimpleNamespace
-    from scripts.evaluation.diagnose_act import run
+    from scripts.evaluation.ancient.diagnostics.checks import run
     dev = tmp_path / "dev.metadata.jsonl"
     dev.write_text("".join(json.dumps(dict(row, task=task)) + "\n" for task in ("c2m", "m2c", "punctuate")))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
@@ -133,3 +141,20 @@ def test_actual_swift_adapter_generation_trace(tmp_path, monkeypatch):
     assert status == 0 and report["passed"]
     assert report["eos_supervision"]["counts"] == dict.fromkeys(("c2m", "m2c", "punctuate"), 1)
     assert len(report["cache_consistency"]["cases"]) == 3
+    # Follow-up uses exactly the six prior cases and compares EOS with a real single token.
+    from scripts.evaluation.ancient.diagnostics.followup import run as run_followup
+    cases = [dict(row, task=task, id=str(i)) for i, task in enumerate(
+        ("c2m", "c2m", "m2c", "m2c", "punctuate", "punctuate"))]
+    dev.write_text("".join(json.dumps(c) + "\n" for c in cases))
+    selected = tmp_path / "selected.json"
+    selected.write_text(json.dumps([dict(c, index=i) for i, c in enumerate(cases)]))
+    checks = iter([True])
+    with patch.object(torch.cuda, "is_available", side_effect=first_preflight_only):
+        run_followup(SimpleNamespace(model=base_path, adapter=adapter_path, dev=dev, cases=selected,
+                                     output=tmp_path / "followup", candidate="word2", max_new_tokens=3))
+    followup = json.loads((tmp_path / "followup/report.json").read_text())
+    assert followup["status"] == "completed"
+    assert len(followup["end_probability"]) == 6 and len(followup["cache_on_off"]) == 3
+    assert all(x["cpt"]["target_label"] == x["act"]["im_end"]["id"] == 14
+               for x in followup["end_probability"])
+    assert all(x["off"]["uncached_full_prefix_observed"] for x in followup["cache_on_off"])

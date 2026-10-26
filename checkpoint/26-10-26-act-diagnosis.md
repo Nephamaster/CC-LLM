@@ -5,9 +5,9 @@
 
 ## 交付与检查范围
 
-- `scripts/evaluation/diagnose.sh`：将原来的 Dev 生成脚本扩充为三项诊断入口，默认绑定第二轮
+- `scripts/evaluation/ancient/diagnostics/run.sh`（原公共目录 diagnose.sh 已迁移）：将原来的 Dev 生成脚本扩充为三项诊断入口，默认绑定第二轮
   CPT checkpoint-12500 与 ACT checkpoint-1000，使用服务器训练环境；每次新建时间戳输出目录。
-- `diagnose_act.py`：全 Dev 结束符 labels、LoRA 开关 logits/实际生成、真实加载模型的全前缀与增量
+- `ancient/diagnostics/checks.py`：全 Dev 结束符 labels、LoRA 开关 logits/实际生成、真实加载模型的全前缀与增量
   logits 对比。生成阶段挂载观测 hook，保留原始特殊 token 和 backbone/feature cache 长度。
 - 读取 checkpoint 实际运行代码，报告其路径／依赖版本／dtype，不对源码或权重做哈希。
   不改训练参数、正式评估协议、权重、原数据；`temp.sh` 的既有用户修改保留。
@@ -23,8 +23,14 @@
 
 ## 下一步
 
-服务器运行 `CUDA_VISIBLE_DEVICES=2 bash scripts/evaluation/diagnose.sh`，同步
-`outputs/diagnostics/act_checks_<时间戳>/` 下 report、eos_labels、generations、selected_dev。
+服务器运行 `CUDA_VISIBLE_DEVICES=2 MODE=baseline bash scripts/evaluation/ancient/diagnostics/run.sh`，同步
+`outputs/diagnostics/act_baseline_<时间戳>/` 下 report、eos_labels、generations、selected_dev。
 缓存默认比较三个有 padding 的短输入对，atol=0.05/rtol=0.01，数值超限需先核查 dtype 与误差分布。
 标签失败检查编码／监督；adapter 无效检查加载；缓存不一致检查 cache 实现。
 这些检查均通过后，再依据训练内任务的实际生成表现决定是否重训 SFT。
+
+## 后续服务器证据（更新此前“未执行”状态）
+
+已收到 `outputs/diagnostics/act_checks_20261026-115931/`：全 1,800 条 EOS label 通过、
+六条 adapter logits 变化及恢复检查通过；三对 BF16 cache 数值检查不通过，最大差值 1.5/1.5/2.125。
+这些结果不能直接说明 cache 是重复根因。继续执行 followup 的无 padding Cache On/Off 和结束位置概率。

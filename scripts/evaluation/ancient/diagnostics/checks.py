@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import inspect
 import json
 import random
@@ -17,7 +18,7 @@ def save(path, value):
 
 
 def read_contract(model, adapter):
-    from .inference import TEMPLATE_KEYS
+    from ...inference import TEMPLATE_KEYS
 
     path = adapter / "args.json"
     if not path.exists():
@@ -146,7 +147,7 @@ def compare_cache(model, inputs, atol, rtol):
             "atol": atol, "rtol": rtol, "steps": steps}
 
 
-def traced_generation(predictor, row):
+def traced_generation(predictor, row, *, use_cache=None):
     """Observe the production engine without replacing its generation or stopping logic."""
     engine = predictor.engine
     model = engine.model
@@ -163,13 +164,22 @@ def traced_generation(predictor, row):
                        "use_cache": kwargs.get("use_cache"), **cache_lengths(result.past_key_values)})
 
     def generate_with_trace(model, *args, **kwargs):
-        config = kwargs.get("generation_config")
+        config = deepcopy(kwargs["generation_config"])
+        if use_cache is not None:
+            # Set the final call, not engine defaults: Swift may rebuild GenerationConfig per request.
+            config.use_cache = use_cache
+            kwargs["use_cache"] = use_cache
+        kwargs["generation_config"] = config
         result = original(model, *args, **kwargs)
         ids = kwargs.get("input_ids")
         if ids is None:
             raise RuntimeError("Expected input_ids in actual template.generate call")
+        mask = kwargs.get("attention_mask")
         tokens = result.sequences[0, ids.shape[1]:].tolist()
         generations.append({"raw_token_ids": tokens,
+                            "prompt_token_ids": ids[0].tolist(),
+                            "batch_size": int(ids.shape[0]),
+                            "padding_tokens": int((mask == 0).sum().item()) if mask is not None else 0,
                             "raw_text_with_special_tokens": template.tokenizer.decode(tokens, skip_special_tokens=False),
                             "im_end_positions": [i for i, x in enumerate(tokens)
                                                  if x == template.tokenizer.convert_tokens_to_ids("<|im_end|>")],
@@ -191,14 +201,19 @@ def traced_generation(predictor, row):
         x["use_cache"] is True and x["backbone"] is not None and x["feature"] == x["backbone"]
         and (i == 0 or x["input_tokens"] == 1 and x["backbone"] == traces[i - 1]["backbone"] + 1)
         for i, x in enumerate(traces))
+    cache_off_ok = bool(traces) and all(
+        x["use_cache"] is False and x["backbone"] is None and x["feature"] is None
+        and (i == 0 or x["input_tokens"] == traces[i - 1]["input_tokens"] + 1)
+        for i, x in enumerate(traces))
     return {**response, **generations[0], "forward_trace": traces,
-            "incremental_cache_observed": cache_ok if len(traces) > 1 else None}
+            "incremental_cache_observed": cache_ok if len(traces) > 1 else None,
+            "uncached_full_prefix_observed": cache_off_ok}
 
 
 def run(args):
     import torch
     from swift.template import get_template
-    from .inference import TrainingTemplatePredictor
+    from ...inference import TrainingTemplatePredictor
 
     if not torch.cuda.is_available():
         raise RuntimeError("Run this diagnostic in the server GPU training environment")
