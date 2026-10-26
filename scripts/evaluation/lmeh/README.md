@@ -20,7 +20,7 @@ CLUE 范围为 AFQMC、TNEWS、IFLYTEK、CMNLI、CLUEWSC2020、CSL、CMRC2018、
 
 ## 环境
 
-`run.sh` 默认调用已有 `scripts/evaluation/lmeh/env/bin/python`，不用重新创建 env。如果 `STAGE=inspect` 提示 harness 源码不匹配，在该独立环境普通安装固定依赖：
+`run.sh` 默认调用已有 `scripts/evaluation/lmeh/env/bin/python`。直接从 PyPI 或可访问的 pip 镜像安装：
 
 ```bash
 # 先确认此 env 的 PyTorch 与服务器 GPU/CUDA 匹配。
@@ -28,13 +28,15 @@ scripts/evaluation/lmeh/env/bin/python -m pip install -r scripts/evaluation/lmeh
 scripts/evaluation/lmeh/env/bin/python -m pip check
 ```
 
-固定 upstream commit `d6de81643928d653435c431bae19945d41d32520`（`0.4.14.dev0`），与本地 Nepham 仓库 `0d3003be...` 的 harness Python/task 源码相同，后者仅多了 gitignore 改动。Transformers 固定 `5.12.1`；其它实际版本记录到 manifest。版本字符串不足以识别 dev 快照，入口还校验 150 个相关源码/任务文件 SHA256；不匹配时明确报错，不静默换协议。不使用 editable 安装、外部仓库 PYTHONPATH 或外部 `lm_eval` 命令。
+依赖为普通 `lm_eval[hf]` 包，不要求 GitHub、Git commit 或特定包版本。
+运行入口不检查包版本、不扫描框架源码、不做源码哈希匹配。实际安装版本仅随结果记录，不作为启动条件。
+不使用 editable 安装、外部仓库 PYTHONPATH 或外部 `lm_eval` 命令。
 
 可以显式 `PYTHON=/path/to/python` 用另一个兼容环境测试，但默认仍绑定本目录 env。代码不会自动安装依赖、读取仓库 HF_TOKEN 文件或改动现有环境。
 
 ## 数据：通常无需手动准备
 
-除 CMMLU 外，上表数据由 harness/datasets 首次运行自动从 HF 拉取，之后复用缓存；HF 数据 revision 记录在 `protocol.lock.json`。沿用调用环境的 `HF_ENDPOINT`、`HF_HOME` 等配置，不强行指定镜像，也不会在下载失败时偷偷换数据来源。SQuAD v2 的 `evaluate` 官方评分脚本同样固定 revision，首次使用会下载到缓存。
+除 CMMLU 外，上表数据由 harness/datasets 首次运行自动从 HF 拉取，之后复用缓存；既定 HF 数据与评分脚本 revision 记录在 `dataset_revisions.json`，它仅选择评估数据，不校验安装环境。沿用调用环境的 `HF_ENDPOINT`、`HF_HOME` 等配置，不强行指定镜像，也不会在下载失败时偷偷换数据来源。SQuAD v2 的 `evaluate` 官方评分脚本首次使用会下载到缓存。
 
 CMMLU 沿用已确认的 CSV 方案，默认：
 
@@ -91,9 +93,9 @@ outputs/evaluation/{squadv2,gsm8k,cmmlu,clue}/<MODEL_NAME>/<RUN_NAME>/
 
 RUN_NAME 未设置时省略该层。`OUT` 覆盖的是上述 `outputs/evaluation` 根目录，不是某个 benchmark 的最终目录。
 
-每项保存 `results.json`（harness 原生结果/组汇总）、`samples/<task>.jsonl`（题目、prompt、输出及评分）、`tasks/`（本次展开的任务 YAML/辅助文件）和 `manifest.json`。从已安装且锁定的 harness 包展开内置任务，不复制第二套 57/67 学科配置到源码目录；CLUE 自定义源码保存在本仓库 `tasks/clue/`。
+每项保存 `results.json`（harness 原生结果/组汇总）、`samples/<task>.jsonl`（题目、prompt、输出及评分）、`tasks/`（本次展开的任务 YAML/辅助文件）和 `manifest.json`。从已安装的 harness 包展开内置任务，不复制第二套 57/67 学科配置到源码目录；CLUE 自定义源码保存在本仓库 `tasks/clue/`。
 
-manifest 记录数据 revision/Arrow fingerprint、CMMLU 文件 SHA256、任务和代码哈希、模型配置/tokenizer/自定义代码哈希、依赖版本、协议、实际模型开关、产物哈希；大权重只记录大小/mtime，不宣称逐字节权重哈希。不复制可能含凭据的训练 args.json，也不上传结果。
+manifest 记录数据 revision/Arrow fingerprint、CMMLU 文件 SHA256、任务快照、模型元数据、实际依赖版本、协议、模型开关和产物哈希；不记录框架/评估源码哈希或安装版本锁。大权重只记录大小/mtime，不宣称逐字节权重哈希。不复制可能含凭据的训练 args.json，也不上传结果。
 
 已有结果或中断目录不会覆盖或复用；换 RUN_NAME/OUT 后重跑对应 benchmark。失败时 manifest 不标记 complete，不会把部分子任务当完整报告。`complete=true` 仅表示该评估执行完成，不代表模型质量达标；带 LIMIT 的结果始终标记 smoke_only。
 
@@ -105,4 +107,4 @@ PYTHONDONTWRITEBYTECODE=1 scripts/evaluation/lmeh/env/bin/python -B -m pytest -q
 
 测试覆盖全部任务解析/shot/split/提示词、CSV 文本保真、SQuAD 双请求和固定评分器、原生分组汇总、超长拒绝、结果保护、CPU Qwen3 评估、自包含 PGCA 的似然和生成。离线 fixture 测试不等于所有线上数据或服务器 GPU 全量评估完成。
 
-依据：[harness 接口](https://github.com/EleutherAI/lm-evaluation-harness/blob/d6de81643928d653435c431bae19945d41d32520/docs/interface.md)、[MMLU 任务](https://github.com/EleutherAI/lm-evaluation-harness/tree/d6de81643928d653435c431bae19945d41d32520/lm_eval/tasks/mmlu)、[CMMLU 数据源](https://huggingface.co/datasets/haonan-li/cmmlu/tree/main)。迁移版本与验证边界另见本目录 `protocol.lock.json` 和项目 checkpoint。
+依据：[harness 接口](https://github.com/EleutherAI/lm-evaluation-harness/blob/main/docs/interface.md)、[MMLU 任务](https://github.com/EleutherAI/lm-evaluation-harness/tree/main/lm_eval/tasks/mmlu)、[CMMLU 数据源](https://huggingface.co/datasets/haonan-li/cmmlu/tree/main)。评估数据选择见 `dataset_revisions.json`。

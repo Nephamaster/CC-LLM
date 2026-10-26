@@ -13,7 +13,7 @@ import yaml
 from datasets import Dataset, DatasetDict
 
 from scripts.evaluation.lmeh.datasets import load_cmmlu
-from scripts.evaluation.lmeh.protocol import BENCHMARKS, LOCK, build_bundle, harness_identity, select_benchmarks
+from scripts.evaluation.lmeh.protocol import BENCHMARKS, DATA_REVISIONS, build_bundle, select_benchmarks
 from scripts.evaluation.lmeh.run import evaluate_one, load_tasks, output_directory
 
 
@@ -62,7 +62,7 @@ def fixture_rows(path, name):
 def fake_hub(monkeypatch):
     calls = []
     def load(path, name=None, **kwargs):
-        assert kwargs["revision"] == LOCK["datasets"][path]
+        assert kwargs["revision"] == DATA_REVISIONS["datasets"][path]
         calls.append((path, name, kwargs))
         rows = fixture_rows(path, name)
         return DatasetDict({"train": Dataset.from_list(rows * 6), "dev": Dataset.from_list(rows * 5),
@@ -228,7 +228,7 @@ def test_squad_metric_is_revision_pinned(monkeypatch):
     squad.squad_metric.cache_clear()
     squad.squad_metric()
     squad.squad_metric()
-    assert calls == [(("squad_v2",), {"revision": LOCK["squad_metric_revision"]})]
+    assert calls == [(("squad_v2",), {"revision": DATA_REVISIONS["squad_metric_revision"]})]
     squad.squad_metric.cache_clear()
 
 
@@ -278,7 +278,3 @@ def test_launcher_binds_its_environment_without_cwd(tmp_path):
     args = json.loads(proc.stdout)
     assert args[:3] == ["-B", "-m", "scripts.evaluation.lmeh.run"]
     assert args[args.index("--stage") + 1] == "inspect"
-
-
-def test_harness_lock_matches_installed_package():
-    assert harness_identity()["upstream_commit"] == LOCK["harness_commit"]

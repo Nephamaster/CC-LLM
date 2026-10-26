@@ -1,7 +1,6 @@
-"""Resolve locked built-in tasks; retain upstream prompts, groups and metrics."""
+"""Resolve installed built-in tasks; retain upstream prompts, groups and metrics."""
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import shutil
 from pathlib import Path
@@ -12,7 +11,7 @@ from ..common import sha256
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CMMLU_DIR = Path("/share/project/wuhaiming/data/dataset/cmmlu")
-LOCK = json.loads((HERE / "protocol.lock.json").read_text(encoding="utf-8"))
+DATA_REVISIONS = json.loads((HERE / "dataset_revisions.json").read_text(encoding="utf-8"))
 BENCHMARKS = {
     "mmlu": {"task": "mmlu", "shots": 5, "leaves": 57, "output": "mmlu"},
     "arc_easy": {"task": "arc_easy", "shots": 0, "leaves": 1, "output": "arc/easy"},
@@ -36,22 +35,10 @@ def select_benchmarks(value):
     return selected
 
 
-def harness_identity():
-    import lm_eval
-
-    root = Path(lm_eval.__file__).resolve().parent
-    actual = {name: sha256(root / name) for name in LOCK["harness_source_sha256"]}
-    if actual != LOCK["harness_source_sha256"]:
-        raise RuntimeError("installed harness source differs from the validated protocol lock; install lmeh/requirements.txt")
-    return {"version": importlib.metadata.version("lm_eval"), "source_sha256": actual,
-            "upstream_commit": LOCK["harness_commit"]}
-
-
 def build_bundle(destination, benchmark, cmmlu_dir=DEFAULT_CMMLU_DIR):
     """Snapshot only the selected protocol, independent of external checkout/CWD."""
     import lm_eval
 
-    harness_identity()
     source = Path(lm_eval.__file__).resolve().parent / "tasks"
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
@@ -82,7 +69,7 @@ def build_bundle(destination, benchmark, cmmlu_dir=DEFAULT_CMMLU_DIR):
                 config["dataset_path"] = None
                 extra = "custom_dataset: !function scripts.evaluation.lmeh.datasets.load_cmmlu\n"
             else:
-                config["dataset_kwargs"] = {"revision": LOCK["datasets"][config["dataset_path"]]}
+                config["dataset_kwargs"] = {"revision": DATA_REVISIONS["datasets"][config["dataset_path"]]}
             config["num_fewshot"] = BENCHMARKS[benchmark]["shots"]
         if family == "cmmlu" and "dataset_name" in config:
             config["dataset_kwargs"] = {"subject": config["dataset_name"], "data_dir": str(Path(cmmlu_dir).resolve())}

@@ -4,12 +4,12 @@ from functools import lru_cache, partial
 import evaluate
 from lm_eval.tasks.squadv2.task import SQuAD2
 
-from .protocol import LOCK
+from .protocol import DATA_REVISIONS
 
 
 @lru_cache(maxsize=1)
 def squad_metric():
-    return evaluate.load("squad_v2", revision=LOCK["squad_metric_revision"])
+    return evaluate.load("squad_v2", revision=DATA_REVISIONS["squad_metric_revision"])
 
 
 def aggregate_squad(key, items):
@@ -19,7 +19,7 @@ def aggregate_squad(key, items):
 
 class PinnedSQuAD2(SQuAD2):
     def download(self, dataset_kwargs=None, **kwargs):
-        options = dict(dataset_kwargs or {}, revision=LOCK["datasets"][self.DATASET_PATH])
+        options = dict(dataset_kwargs or {}, revision=DATA_REVISIONS["datasets"][self.DATASET_PATH])
         self.config.dataset_kwargs = options
         super().download(options, **kwargs)
 

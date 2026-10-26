@@ -13,8 +13,8 @@ from pathlib import Path
 
 from ..common import ROOT, sha256
 from ..ppl.evaluate import checkpoint_identity, load_model, write_report
-from .protocol import (BENCHMARKS, DEFAULT_CMMLU_DIR, HERE, LOCK, build_bundle,
-                       bundle_hashes, harness_identity, select_benchmarks)
+from .protocol import (BENCHMARKS, DEFAULT_CMMLU_DIR, build_bundle,
+                       bundle_hashes, select_benchmarks)
 
 
 def validate_component(value):
@@ -99,11 +99,7 @@ def evaluate_one(args, benchmark, backend):
     if backend is not None and backend.checkpoint_identity != model_identity:
         raise RuntimeError("checkpoint changed between benchmarks; refusing to relabel an already loaded model")
     manifest = {"complete": False, "benchmark": benchmark, "protocol": BENCHMARKS[benchmark],
-                "model": model_identity, "runtime": runtime_info(), "harness": harness_identity(),
-                "lock_sha256": sha256(HERE / "protocol.lock.json"),
-                "implementation_sha256": {p.name: sha256(p) for p in HERE.glob("*.py")},
-                "shared_source_sha256": {name: sha256(HERE.parent / name)
-                                         for name in ("common.py", "ppl/evaluate.py", "ppl/metrics.py")},
+                "model": model_identity, "runtime": runtime_info(),
                 "max_length": args.max_length, "dtype": args.dtype, "device": args.device,
                 "batch_size": args.batch_size, "limit": args.limit, "smoke_only": args.limit is not None,
                 "seed": 42, "bootstrap_iters": 0 if args.limit else 1000,
@@ -196,7 +192,6 @@ def main(argv=None):
         if args.run_name:
             validate_component(args.run_name)
         checkpoint_identity(args.model)
-    identity = harness_identity()
     backend = None
     summaries = []
     for benchmark in benchmarks:
@@ -206,7 +201,7 @@ def main(argv=None):
             with tempfile.TemporaryDirectory(prefix="ccllm-lmeh-") as temporary:
                 bundle = build_bundle(Path(temporary) / "tasks", benchmark, args.cmmlu_dir)
                 summary = {"benchmark": benchmark, **BENCHMARKS[benchmark],
-                           "task_snapshot_sha256": bundle_hashes(bundle), "harness_version": identity["version"]}
+                           "task_snapshot_sha256": bundle_hashes(bundle)}
                 if args.stage == "check":
                     _, _, summary["datasets"] = load_tasks(bundle, benchmark)
         summaries.append(summary)

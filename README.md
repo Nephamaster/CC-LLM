@@ -75,7 +75,7 @@ PGCA 已包含字符级 tokenizer 与完整音形分支，不再使用 `B-Char-P
 
 ## 本轮审查后仍需注意
 
-- 普通安装不等于版本随意替换。现有训练插件针对已验证的 ms-swift 4.7 开发快照，requirements 固定普通安装来源；lmeh 的 harness 源码、数据 revision、few-shot 和评分器已由其 requirements/protocol.lock.json 固定。
+- 现有训练插件的 ms-swift 安装来源由训练 requirements 指定；lmeh 直接安装普通 PyPI 包，不做版本或框架源码校验。benchmark 的 few-shot 和数据选择由评估脚本配置。
 - 当前 CSC/CGEC/古汉语推理仍使用 ms-swift 的训练模板接口，因此各自评估环境也需要安装 ms-swift；不能只安装评分依赖。通用 benchmark/PPL 不走这个要求 SFT args.json 的入口。
 - 旧 checkpoint 的 `args.json` 可能保存旧插件绝对路径。代码移动后，先核对依赖，再使用正确 checkpoint；本轮不修改已有 checkpoint 元数据来伪装兼容。
 - 当前推理缓存没有把所有框架版本纳入复用身份；切换环境/升级依赖时用新的 `RUN_NAME/OUT`，不能把旧预测当作新环境重跑结果。
