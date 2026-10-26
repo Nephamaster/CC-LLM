@@ -72,6 +72,8 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/ancient-sft DATASET=fuxi \
 
 已有输入和成功预测可复用。输入、checkpoint 路径/元数据/权重文件 stat、训练参数、模板依赖、代码或生成参数改变时，拒绝复用推理结果，应使用新 OUT。权重身份记录的是路径/大小/mtime，而非对全部大权重逐字节哈希；配置、tokenizer、输入按 SHA256 校验。只有本程序 retry journal 的未写完末行允许恢复，原始数据和损坏中间记录不做修复。推理异常保留记录并在重跑时重试，不把异常伪装成模型空答案参与评分。
 
+运行时会打印 prepare/infer/judge/score 阶段的开始与完成状态。推理进度条按样本统计，显示 total/reused/pending、速度、预计剩余时间和当前错误数；断点重跑时从已成功样本数开始，不把复用项重复推理。
+
 当前推理缓存身份尚未把所有框架版本纳入拒绝复用条件；切换 env 或升级 Torch/Transformers/ms-swift 时应另设 RUN_NAME/OUT。评分报告会记录依赖版本，但这不等于旧预测已在新环境重新生成。
 
 只做输入准备，不需要加载模型：

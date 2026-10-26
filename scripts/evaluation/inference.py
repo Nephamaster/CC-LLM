@@ -10,6 +10,8 @@ import os
 import time
 from pathlib import Path
 
+from tqdm.auto import tqdm
+
 from .common import ensure_dir, iter_jsonl, read_journal, sha256, signature, write_json, write_line
 
 TEMPLATE_KEYS = (
@@ -162,6 +164,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
     # Error rows are retried; successful rows retain their exact original outputs.
     pending_ids = [i for i in range(len(rows)) if i >= len(previous) or previous[i].get("error")]
     if not pending_ids:
+        print(f"[evaluation] inference already complete: {len(previous)}/{len(rows)} samples reused", flush=True)
         return {"complete": True, "count": len(previous), "reused": len(previous)}
     merged = {i: record for i, record in enumerate(previous) if not record.get("error")}
     # A separate journal makes retries safe without overwriting the successful prefix.
@@ -174,33 +177,47 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
             if not record.get("error"):
                 merged[i] = record
         pending_ids = [i for i in pending_ids if i not in merged]
+    reused = len(rows) - len(pending_ids)
+    print(f"[evaluation] inference samples: total={len(rows)} reused={reused} pending={len(pending_ids)} "
+          f"batch_size={batch_size}", flush=True)
     if predictor is None and pending_ids:
+        print("[evaluation] loading model and adapter", flush=True)
         predictor = TrainingTemplatePredictor(model_path, adapter_path, contract, batch_size, max_new_tokens)
+        print("[evaluation] model and adapter loaded", flush=True)
     predictor_info = getattr(predictor, "info", manifest.get("predictor", {"backend": "test_fixture"}))
     write_json(manifest_path, {**manifest, "complete": False, "predictor": predictor_info})
-    with journal.open("a", encoding="utf-8") as handle:
-        for start in range(0, len(pending_ids), batch_size):
-            positions = pending_ids[start:start + batch_size]
-            batch = [rows[i] for i in positions]
-            began = time.perf_counter()
-            try:
-                answers = predictor(batch)
-                if len(answers) != len(batch):
-                    raise ValueError("wrong prediction count")
-            except Exception as exc:
-                answers = [{"text": "", "error": f"{type(exc).__name__}: inference failed; inspect stderr"}] * len(batch)
-                import traceback
-                traceback.print_exc()
-            for i, answer in zip(positions, answers):
-                raw = answer["text"]
-                cleaned = clean_prediction(raw, rows[i]["messages"][-1]["content"]) if rows[i]["task"] == "csc" else raw.strip()
-                record = {**rows[i], "row_number": i, "input_sha256": signature(rows[i]),
-                          "predict_raw": raw, "predict_clean": cleaned, "error": answer.get("error"),
-                          "generation_tokens": answer.get("generation_tokens"), "finish_reason": answer.get("finish_reason"),
-                          "elapsed_seconds": (time.perf_counter() - began) / len(batch)}
-                write_line(handle, record)
-                merged[i] = record
-            handle.flush()
+    progress = tqdm(total=len(rows), initial=reused, desc="inference", unit="sample", dynamic_ncols=True)
+    errors = 0
+    try:
+        with journal.open("a", encoding="utf-8") as handle:
+            for start in range(0, len(pending_ids), batch_size):
+                positions = pending_ids[start:start + batch_size]
+                batch = [rows[i] for i in positions]
+                began = time.perf_counter()
+                try:
+                    answers = predictor(batch)
+                    if len(answers) != len(batch):
+                        raise ValueError("wrong prediction count")
+                except Exception as exc:
+                    answers = [{"text": "", "error": f"{type(exc).__name__}: inference failed; inspect stderr"}] * len(batch)
+                    import traceback
+                    traceback.print_exc()
+                for i, answer in zip(positions, answers):
+                    raw = answer["text"]
+                    cleaned = clean_prediction(raw, rows[i]["messages"][-1]["content"]) if rows[i]["task"] == "csc" else raw.strip()
+                    record = {**rows[i], "row_number": i, "input_sha256": signature(rows[i]),
+                              "predict_raw": raw, "predict_clean": cleaned, "error": answer.get("error"),
+                              "generation_tokens": answer.get("generation_tokens"),
+                              "finish_reason": answer.get("finish_reason"),
+                              "elapsed_seconds": (time.perf_counter() - began) / len(batch)}
+                    write_line(handle, record)
+                    merged[i] = record
+                    errors += bool(record["error"])
+                handle.flush()
+                progress.update(len(batch))
+                progress.set_postfix(errors=errors)
+    finally:
+        progress.close()
     temporary = output.with_suffix(".tmp.jsonl")
     with temporary.open("w", encoding="utf-8") as handle:
         for i in range(len(rows)):
@@ -210,6 +227,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
     report = {"identity": identity, "count": len(rows), "errors": failures, "complete": not failures,
               "predictor": predictor_info, "sha256": sha256(output)}
     write_json(manifest_path, report)
+    print(f"[evaluation] inference finished: count={len(rows)} errors={failures}", flush=True)
     return report
 
 

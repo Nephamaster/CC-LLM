@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.evaluation.inference as inference_module
 from scripts.evaluation.common import aligned_predictions, iter_jsonl, prepare_file, read_journal, signature, write_json
 from scripts.evaluation.inference import infer, training_contract
 from scripts.evaluation.cgec.prepare import fcgec_references, fcgec_rows, nacgec_rows
@@ -79,6 +80,31 @@ def test_infer_resume_and_metadata_alignment(model_dir, tmp_path):
     assert "DO_NOT_LEAK" not in output.with_suffix(".manifest.json").read_text()
     with pytest.raises(ValueError, match="identity"):
         infer(source, output, model_dir, max_new_tokens=99, predictor=predictor)
+
+
+def test_inference_progress_counts_reused_and_new_samples(model_dir, tmp_path, monkeypatch):
+    source, output = tmp_path / "input.jsonl", tmp_path / "prediction.jsonl"
+    jsonl(source, [sample("1"), sample("2"), sample("3")])
+    events = {}
+
+    class Progress:
+        def __init__(self, *, total, initial, **kwargs):
+            events.update(total=total, initial=initial, updates=[], closed=False)
+
+        def update(self, count):
+            events["updates"].append(count)
+
+        def set_postfix(self, **kwargs):
+            events["postfix"] = kwargs
+
+        def close(self):
+            events["closed"] = True
+
+    monkeypatch.setattr(inference_module, "tqdm", Progress)
+    predictor = lambda rows: [{"text": "正确句"} for _ in rows]
+    assert infer(source, output, model_dir, batch_size=2, predictor=predictor)["complete"]
+    assert events == {"total": 3, "initial": 0, "updates": [2, 1], "closed": True,
+                      "postfix": {"errors": 0}}
 
 
 def test_inference_errors_are_retried_not_scored(model_dir, tmp_path):
