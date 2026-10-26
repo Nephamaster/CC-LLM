@@ -8,7 +8,7 @@ import pytest
 
 import scripts.evaluation.inference as inference_module
 from scripts.evaluation.common import aligned_predictions, iter_jsonl, prepare_file, read_journal, signature, write_json
-from scripts.evaluation.inference import infer, training_contract
+from scripts.evaluation.inference import enable_generation_cache, infer, training_contract
 from scripts.evaluation.cgec.prepare import fcgec_references, fcgec_rows, nacgec_rows
 from scripts.evaluation.cgec.score import score as score_cgec
 from scripts.evaluation.ancient.metrics import c3_metrics, ci_format, couplet, fuxi_metrics
@@ -52,6 +52,16 @@ def test_lora_uses_adapter_training_args(model_dir, tmp_path):
     assert training_contract(model_dir, adapter)["template"] == "qwen3"
 
 
+def test_generation_cache_is_enabled_for_model_and_generation_config():
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(config=SimpleNamespace(use_cache=False),
+                            generation_config=SimpleNamespace(use_cache=False))
+    enable_generation_cache(model)
+    assert model.config.use_cache is True
+    assert model.generation_config.use_cache is True
+
+
 def test_prepare_is_non_destructive_and_checks_identity(tmp_path):
     source = tmp_path / "source.jsonl"
     jsonl(source, [sample()])
@@ -78,6 +88,7 @@ def test_infer_resume_and_metadata_alignment(model_dir, tmp_path):
     originals, results = aligned_predictions(source, output)
     assert [r["predict_clean"] for r in results] == ["正确句", "正确句"]
     assert "DO_NOT_LEAK" not in output.with_suffix(".manifest.json").read_text()
+    assert json.loads(output.with_suffix(".manifest.json").read_text())["identity"]["use_cache"] is True
     with pytest.raises(ValueError, match="identity"):
         infer(source, output, model_dir, max_new_tokens=99, predictor=predictor)
 

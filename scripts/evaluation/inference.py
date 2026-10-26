@@ -20,6 +20,13 @@ TEMPLATE_KEYS = (
 )
 
 
+def enable_generation_cache(model):
+    model.config.use_cache = True
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is not None:
+        generation_config.use_cache = True
+
+
 def training_contract(model_path, adapter_path=None):
     checkpoint = Path(adapter_path or model_path).resolve()
     choices = [checkpoint / "args.json", checkpoint.parent / "args.json"]
@@ -87,6 +94,7 @@ class TrainingTemplatePredictor:
             import_external_file(path)
         model, processor = get_model_processor(str(Path(model_path).resolve()),
                                                model_type=contract["model_type"], load_model=True)
+        enable_generation_cache(model)
         settings = dict(contract["settings"])
         settings["default_system"] = settings.pop("system", None)
         if isinstance(settings["default_system"], str) and settings["default_system"].endswith(".txt"):
@@ -101,11 +109,13 @@ class TrainingTemplatePredictor:
         self.engine = TransformersEngine(model, template=template,
                                          adapters=[str(Path(adapter_path).resolve())] if adapter_path else None,
                                          max_batch_size=batch_size)
+        enable_generation_cache(self.engine.model)
+        self.engine.generation_config.use_cache = True
         self.request_cls = InferRequest
         self.request_config = RequestConfig(max_tokens=max_new_tokens, temperature=0, stream=False)
         self.info = {"torch": torch.__version__, "transformers": importlib.metadata.version("transformers"),
                      "ms_swift": swift_version,
-                     "model_class": type(model).__name__, "template": contract}
+                     "model_class": type(model).__name__, "template": contract, "use_cache": True}
 
     def __call__(self, rows):
         requests = [self.request_cls(messages=row["messages"]) for row in rows]
@@ -138,7 +148,8 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
     identity = {"input_sha256": sha256(input_path), "model": checkpoint_identity(model_path),
                 "adapter": checkpoint_identity(adapter_path) if adapter_path else None,
                 "training_contract": contract, "max_new_tokens": max_new_tokens,
-                "batch_size": batch_size, "decoder": "greedy", "implementation": sha256(__file__),
+                "batch_size": batch_size, "decoder": "greedy", "use_cache": True,
+                "implementation": sha256(__file__),
                 "cleanup_sha256": signature(inspect.getsource(clean_prediction)), "runtime": runtime_identity(),
                 "pgca_enabled_env": os.getenv("PGCA_ENABLED")}
     previous = []

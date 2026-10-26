@@ -74,6 +74,8 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/ancient-sft DATASET=fuxi \
 
 运行时会打印 prepare/infer/judge/score 阶段的开始与完成状态。推理进度条按样本统计，显示 total/reused/pending、速度、预计剩余时间和当前错误数；断点重跑时从已成功样本数开始，不把复用项重复推理。
 
+推理加载完整模型后会显式将 `model.config.use_cache` 和 `model.generation_config.use_cache` 设为 true，LoRA 加载后再次校正，确保 HF 自回归生成使用 KV cache。该设置写入预测 Manifest；无缓存的旧预测不与新结果复用。
+
 当前推理缓存身份尚未把所有框架版本纳入拒绝复用条件；切换 env 或升级 Torch/Transformers/ms-swift 时应另设 RUN_NAME/OUT。评分报告会记录依赖版本，但这不等于旧预测已在新环境重新生成。
 
 只做输入准备，不需要加载模型：
