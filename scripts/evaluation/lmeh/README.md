@@ -7,8 +7,7 @@
 | BENCHMARK | harness 任务 | few-shot | 数据/评分 split | 指标 |
 | --- | --- | --- | --- | --- |
 | `mmlu` | `mmlu`，57 学科 | 5，dev 中 first_n | HF `cais/mmlu`，test | acc，保留官方分组加权汇总 |
-| `arc_easy` | `arc_easy` | 0 | HF `allenai/ai2_arc`，ARC-Easy/test | acc、acc_norm |
-| `arc_challenge` | `arc_challenge` | 0 | 同上，ARC-Challenge/test | acc、acc_norm |
+| `arc` / `arc_challenge` | `arc_challenge` | 0 | HF `allenai/ai2_arc`，ARC-Challenge/test | acc、acc_norm |
 | `squadv2` | `squadv2` | 0 | HF `lighteval/squad_v2`，validation | EM/F1、HasAns/NoAns、best 阈值指标 |
 | `gsm8k` | `gsm8k`，不是 `gsm8k_cot` | 5，train，seed=42 | HF `openai/gsm8k` main/test | strict-match 与 flexible-extract EM |
 | `cmmlu` | `cmmlu`，67 学科 | 5，dev 中 first_n | 本地官方 CSV，test | acc、acc_norm，保留内置分组加权汇总 |
@@ -67,7 +66,7 @@ STAGE=check BENCHMARK=cmmlu bash scripts/evaluation/lmeh/run.sh
 CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/checkpoint MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
   BENCHMARK=arc LIMIT=10 RUN_NAME=smoke bash scripts/evaluation/lmeh/run.sh
 
-# 正式运行全部六类 benchmark（ARC 两个子集），无 LIMIT。
+# 正式运行全部六项 benchmark（ARC 仅 Challenge），无 LIMIT。
 CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/checkpoint MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
   RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
 
@@ -76,7 +75,7 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/checkpoint MODEL_NAME=Qwen3-1.7B-Base-PGCA
   BENCHMARK=mmlu,cmmlu,gsm8k RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
 ```
 
-环境变量：`BENCHMARK=all`（或逗号分隔；`arc` 同时选两个子集）、`STAGE=run|inspect|check`、`MODEL`、`MODEL_NAME`、`RUN_NAME`、`CMMLU_DIR`、`DEVICE=cuda:0`、`DTYPE=bfloat16`、`BATCH_SIZE=1`（也可 auto）、`MAX_LENGTH=8192`、`LIMIT`（仅冒烟）。随机种子均为 42；正式统计 bootstrap_iters=1000，冒烟关闭 bootstrap。
+环境变量：`BENCHMARK=all`（或逗号分隔；`arc` 仅选择 `arc_challenge`，不再提供 `arc_easy`）、`STAGE=run|inspect|check`、`MODEL`、`MODEL_NAME`、`RUN_NAME`、`CMMLU_DIR`、`DEVICE=cuda:0`、`DTYPE=bfloat16`、`BATCH_SIZE=1`（也可 auto）、`MAX_LENGTH=8192`、`LIMIT`（仅冒烟）。随机种子均为 42；正式统计 bootstrap_iters=1000，冒烟关闭 bootstrap。
 
 默认单进程、单设备，在一次 `all` 调用中复用已加载模型；不要用 torchrun/accelerate launch 启动。多个可见 GPU 不会自动数据并行。CPU 小模型可用 `DEVICE=cpu DTYPE=float32`。PGCA 的 HF 似然评分和带 KV cache 生成均有小模型回归，但服务器大模型 CUDA 仍需冒烟确认。
 
@@ -86,7 +85,6 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/checkpoint MODEL_NAME=Qwen3-1.7B-Base-PGCA
 
 ```text
 outputs/evaluation/mmlu/<MODEL_NAME>/<RUN_NAME>/
-outputs/evaluation/arc/<MODEL_NAME>/easy/<RUN_NAME>/
 outputs/evaluation/arc/<MODEL_NAME>/challenge/<RUN_NAME>/
 outputs/evaluation/{squadv2,gsm8k,cmmlu,clue}/<MODEL_NAME>/<RUN_NAME>/
 ```

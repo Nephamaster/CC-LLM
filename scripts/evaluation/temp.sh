@@ -1,6 +1,6 @@
 CUDA_VISIBLE_DEVICES=2 \
 PYTHON="/share/project/wuhaiming/spaces/CC-LLM/scripts/train/ms_swift/env/bin/python" \
-MODEL="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/training/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500" \
+MODEL="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500" \
 LORA="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/finetune/Qwen3-1.7B-Base-PGCA-CPT-ACT/v0-20261025-232029/checkpoint-1000" \
 MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT \
 RUN_NAME=rnd2 \
@@ -12,10 +12,15 @@ bash scripts/evaluation/ancient/run.sh
 
 CUDA_VISIBLE_DEVICES=0 \
 PYTHON="/share/project/wuhaiming/spaces/CC-LLM/scripts/train/ms_swift/env/bin/python" \
-MODEL="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/training/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500" \
+MODEL="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500" \
 LORA="/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/finetune/Qwen3-1.7B-Base-PGCA-CPT-CSC/v0-20261025-173119/checkpoint-11000" \
 MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CSC \
 RUN_NAME=rnd2 \
 BATCH_SIZE=32 \
 STAGE=all \
 bash scripts/evaluation/csc/run.sh
+
+CUDA_VISIBLE_DEVICES=4 \
+MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+RUN_NAME=full bash scripts/evaluation/lmeh/run.sh

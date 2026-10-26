@@ -14,7 +14,6 @@ DEFAULT_CMMLU_DIR = Path("/share/project/wuhaiming/data/dataset/cmmlu")
 DATA_REVISIONS = json.loads((HERE / "dataset_revisions.json").read_text(encoding="utf-8"))
 BENCHMARKS = {
     "mmlu": {"task": "mmlu", "shots": 5, "leaves": 57, "output": "mmlu"},
-    "arc_easy": {"task": "arc_easy", "shots": 0, "leaves": 1, "output": "arc/easy"},
     "arc_challenge": {"task": "arc_challenge", "shots": 0, "leaves": 1, "output": "arc/challenge"},
     "squadv2": {"task": "squadv2", "shots": 0, "leaves": 1, "output": "squadv2"},
     "gsm8k": {"task": "gsm8k", "shots": 5, "leaves": 1, "output": "gsm8k"},
@@ -26,7 +25,7 @@ BENCHMARKS = {
 def select_benchmarks(value):
     selected = []
     for name in value.split(","):
-        names = list(BENCHMARKS) if name == "all" else ["arc_easy", "arc_challenge"] if name == "arc" else [name]
+        names = list(BENCHMARKS) if name == "all" else ["arc_challenge"] if name == "arc" else [name]
         for item in names:
             if item not in BENCHMARKS:
                 raise ValueError(f"unknown benchmark {item!r}; choose all, arc or {', '.join(BENCHMARKS)}")
@@ -60,9 +59,14 @@ def build_bundle(destination, benchmark, cmmlu_dir=DEFAULT_CMMLU_DIR):
     if family == "gsm8k":
         names = ["gsm8k.yaml"]
     if family == "arc":
-        names = ["arc_easy.yaml", "arc_challenge.yaml"]
+        names = ["arc_challenge.yaml"]
     for name in sorted(names):
         config = yaml.safe_load((folder / name).read_text(encoding="utf-8"))
+        if family == "arc":
+            # Challenge inherits the prompt/scorer from Easy; inline it without registering Easy.
+            common = yaml.safe_load((folder / "arc_easy.yaml").read_text(encoding="utf-8"))
+            config = {**common, **config}
+            config.pop("include", None)
         extra = ""
         if "dataset_path" in config:
             if family == "cmmlu":

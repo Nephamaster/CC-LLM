@@ -64,7 +64,7 @@ CSC/CGEC 当前训练、验证与评估统一使用 source-only user 消息：�
 
 通用 benchmark（MMLU、ARC、SQuAD v2、GSM8K、CMMLU、CLUE）归入 `scripts/evaluation/lmeh/`，Base/Char/语义对齐模型的 PPL 归入 `scripts/evaluation/ppl/`。PPL 直接使用运行前激活环境的 `python`，可复用已有训练环境；其他入口仍按各自环境说明普通安装框架，不再依赖外部框架仓库启动。训练产物为 `outputs/train/<模型名>/`，评估产物为 `outputs/evaluation/<评估项>/<模型名>/`；命名统一使用根 README 的 `B`、`B-Char`、`B-PGCA` 及 `-ALIGN/-CPT/-CSC/-CGEC/-ACT` 规则。
 
-lmeh 当前协议：MMLU（57 学科）、CMMLU（67 学科）、GSM8K 为 5-shot；ARC-Easy/Challenge、SQuAD v2、CLUE 九项为 0-shot，所有对照模型相同。入口绑定 `lmeh/env`，采用 HF 后端和任务原始提示词。除 CMMLU 读取本附录的服务器 CSV 根目录（需同时有 dev/test）外，其他任务自动从 HF 固定 revision 下载/缓存；CLUE 与 SQuAD v2 在公开 validation 评分。详见 `scripts/evaluation/lmeh/README.md`，不沿用旧 mmlu_all、旧 0/5-shot 混用脚本。
+lmeh 当前协议：MMLU（57 学科）、CMMLU（67 学科）、GSM8K 为 5-shot；ARC-Challenge、SQuAD v2、CLUE 九项为 0-shot，所有对照模型相同。ARC 仅使用 Challenge，不运行 Easy。入口绑定 `lmeh/env`，采用 HF 后端和任务原始提示词。除 CMMLU 读取本附录的服务器 CSV 根目录（需同时有 dev/test）外，其他任务自动从 HF 固定 revision 下载/缓存；CLUE 与 SQuAD v2 在公开 validation 评分。详见 `scripts/evaluation/lmeh/README.md`，不沿用旧 mmlu_all、旧 0/5-shot 混用脚本。
 
 其中古汉语训练数据以 [ancient_sft.md](ancient_sft.md) 为准，不再固定按来源 60%/25%/15% 混合：
 

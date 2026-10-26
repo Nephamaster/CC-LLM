@@ -96,6 +96,10 @@ def test_cmmlu_retains_text_and_requires_five_dev_examples(tmp_path):
 @pytest.mark.parametrize("benchmark", list(BENCHMARKS))
 def test_all_task_bundles_load_with_correct_protocol(tmp_path, fake_hub, benchmark):
     bundle = build_bundle(tmp_path / "tasks", benchmark, tmp_path / "data")
+    if benchmark == "arc_challenge":
+        assert {p.name for p in bundle.iterdir()} == {"arc_challenge.yaml"}
+        config = yaml.safe_load((bundle / "arc_challenge.yaml").read_text())
+        assert config["dataset_name"] == "ARC-Challenge" and "include" not in config
     if benchmark == "cmmlu":
         for path in bundle.glob("cmmlu_*.yaml"):
             name = yaml.safe_load(path.read_text())["dataset_name"]
@@ -122,9 +126,12 @@ def test_all_task_bundles_load_with_correct_protocol(tmp_path, fake_hub, benchma
 
 
 def test_task_selection_and_output_paths():
-    assert select_benchmarks("arc,mmlu,arc_easy") == ["arc_easy", "arc_challenge", "mmlu"]
-    assert len(select_benchmarks("all")) == 7
-    assert str(output_directory("/tmp/output", "arc_easy", "Base", "trial")) == "/tmp/output/arc/Base/easy/trial"
+    assert select_benchmarks("arc,mmlu,arc_challenge") == ["arc_challenge", "mmlu"]
+    assert len(select_benchmarks("all")) == 6
+    assert "arc_easy" not in select_benchmarks("all")
+    assert str(output_directory("/tmp/output", "arc_challenge", "Base", "trial")) == "/tmp/output/arc/Base/challenge/trial"
+    with pytest.raises(ValueError):
+        select_benchmarks("arc_easy")
     with pytest.raises(ValueError):
         select_benchmarks("gsm8k_cot")
     with pytest.raises(ValueError):
@@ -153,16 +160,16 @@ def tiny_model(tmp_path):
 def test_real_hf_run_writes_results_and_never_overwrites(tmp_path, tiny_model, fake_hub):
     args = SimpleNamespace(model=tiny_model, model_name="TinyBase", run_name="smoke", output_root=tmp_path / "out",
                            cmmlu_dir=tmp_path / "data", max_length=1024, batch_size="1", device="cpu", dtype="float32", limit=1)
-    backend, summary = evaluate_one(args, "arc_easy", None)
+    backend, summary = evaluate_one(args, "arc_challenge", None)
     output = Path(summary["output"])
     report = json.loads((output / "results.json").read_text())
-    assert "acc,none" in report["results"]["arc_easy"]
+    assert "acc,none" in report["results"]["arc_challenge"]
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["complete"] and manifest["smoke_only"]
     assert manifest["protocol"]["shots"] == 0 and manifest["sample_sha256"]
     assert manifest["actual_model"]["class"] == "Qwen3ForCausalLM"
     with pytest.raises(FileExistsError):
-        evaluate_one(args, "arc_easy", backend)
+        evaluate_one(args, "arc_challenge", backend)
     # Reuse the loaded model but retain 5-shot MMLU groups and aggregation.
     _, summary = evaluate_one(args, "mmlu", backend)
     result = json.loads((Path(summary["output"]) / "results.json").read_text())
@@ -210,15 +217,15 @@ def test_remaining_protocols_end_to_end(tmp_path, tiny_model, fake_hub, monkeypa
     monkeypatch.setattr("lm_eval.evaluator.simple_evaluate", fail)
     args.run_name = "failure"
     with pytest.raises(RuntimeError, match="simulated"):
-        evaluate_one(args, "arc_easy", backend)
-    output = output_directory(args.output_root, "arc_easy", args.model_name, args.run_name)
+        evaluate_one(args, "arc_challenge", backend)
+    output = output_directory(args.output_root, "arc_challenge", args.model_name, args.run_name)
     assert not (output / "results.json").exists()
     assert json.loads((output / "manifest.json").read_text())["complete"] is False
     # Disk metadata cannot silently relabel weights already in memory.
     args.run_name = "changed"
     backend.checkpoint_identity = {"changed": True}
     with pytest.raises(RuntimeError, match="changed between benchmarks"):
-        evaluate_one(args, "arc_easy", backend)
+        evaluate_one(args, "arc_challenge", backend)
 
 
 def test_squad_metric_is_revision_pinned(monkeypatch):
