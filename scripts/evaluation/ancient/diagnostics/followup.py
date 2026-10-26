@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from .checks import TASKS, eos_evidence, make_batch, read_contract, save, traced_generation
+from ...runs import new_run_directory
 
 
 def load_cases(path, dev_path):
@@ -82,7 +83,8 @@ def run(args):
     cases = load_cases(args.cases, args.dev)
     if not torch.cuda.is_available():
         raise RuntimeError("Run P0 on the server GPU with the real 1.7B base and ACT adapter")
-    args.output.mkdir(parents=True, exist_ok=False)
+    args.output = new_run_directory(args.output)
+    print(f"[P0] output={args.output}", flush=True)
     report = {"schema": "act-p0-followup-v1", "status": "running", "model": str(args.model.resolve()),
               "adapter": str(args.adapter.resolve()), "cases_file": str(args.cases.resolve()),
               "reference_quality": "unverified; known mismatch at Dev index 25 retained as supplied",

@@ -137,7 +137,7 @@ def test_actual_swift_adapter_generation_trace(tmp_path, monkeypatch):
         status = run(SimpleNamespace(model=base_path, adapter=adapter_path, dev=dev, output=tmp_path / "diagnosis",
                                      samples_per_task=1, max_new_tokens=3, cache_max_tokens=16,
                                      seed=42, atol=2e-6, rtol=2e-5))
-    report = json.loads((tmp_path / "diagnosis/report.json").read_text())
+    report = json.loads((tmp_path / "diagnosis/v0/report.json").read_text())
     assert status == 0 and report["passed"]
     assert report["eos_supervision"]["counts"] == dict.fromkeys(("c2m", "m2c", "punctuate"), 1)
     assert len(report["cache_consistency"]["cases"]) == 3
@@ -152,7 +152,7 @@ def test_actual_swift_adapter_generation_trace(tmp_path, monkeypatch):
     with patch.object(torch.cuda, "is_available", side_effect=first_preflight_only):
         run_followup(SimpleNamespace(model=base_path, adapter=adapter_path, dev=dev, cases=selected,
                                      output=tmp_path / "followup", candidate="word2", max_new_tokens=3))
-    followup = json.loads((tmp_path / "followup/report.json").read_text())
+    followup = json.loads((tmp_path / "followup/v0/report.json").read_text())
     assert followup["status"] == "completed"
     assert len(followup["end_probability"]) == 6 and len(followup["cache_on_off"]) == 3
     assert all(x["cpt"]["target_label"] == x["act"]["im_end"]["id"] == 14

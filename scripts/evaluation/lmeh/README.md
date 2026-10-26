@@ -84,18 +84,19 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/checkpoint MODEL_NAME=Qwen3-1.7B-Base-PGCA
 ## 输出与可追溯性
 
 ```text
-outputs/evaluation/mmlu/<MODEL_NAME>/<RUN_NAME>/
-outputs/evaluation/arc/<MODEL_NAME>/challenge/<RUN_NAME>/
-outputs/evaluation/{squadv2,gsm8k,cmmlu,clue}/<MODEL_NAME>/<RUN_NAME>/
+outputs/evaluation/mmlu/<MODEL_NAME>/<RUN_NAME>/v0/
+outputs/evaluation/arc/<MODEL_NAME>/challenge/<RUN_NAME>/v0/
+outputs/evaluation/{squadv2,gsm8k,cmmlu,clue}/<MODEL_NAME>/<RUN_NAME>/v0/
 ```
 
-RUN_NAME 未设置时省略该层。`OUT` 覆盖的是上述 `outputs/evaluation` 根目录，不是某个 benchmark 的最终目录。
+RUN_NAME 未设置时省略该层。每次运行自动创建下一个 `v0`、`v1`、`v2` 目录，并在开始时打印实际路径。
+`OUT` 覆盖的是上述 `outputs/evaluation` 根目录，不是某个 benchmark 的最终目录。
 
 每项保存 `results.json`（harness 原生结果/组汇总）、`samples/<task>.jsonl`（题目、prompt、输出及评分）、`tasks/`（本次展开的任务 YAML/辅助文件）和 `manifest.json`。从已安装的 harness 包展开内置任务，不复制第二套 57/67 学科配置到源码目录；CLUE 自定义源码保存在本仓库 `tasks/clue/`。
 
 manifest 记录数据 revision/Arrow fingerprint、CMMLU 文件 SHA256、任务快照、模型元数据、实际依赖版本、协议、模型开关和产物哈希；不记录框架/评估源码哈希或安装版本锁。大权重只记录大小/mtime，不宣称逐字节权重哈希。不复制可能含凭据的训练 args.json，也不上传结果。
 
-已有结果或中断目录不会覆盖或复用；换 RUN_NAME/OUT 后重跑对应 benchmark。失败时 manifest 不标记 complete，不会把部分子任务当完整报告。`complete=true` 仅表示该评估执行完成，不代表模型质量达标；带 LIMIT 的结果始终标记 smoke_only。
+重复执行原命令即可创建新版本，不必修改 RUN_NAME/OUT。已有结果、旧式未分版本的文件和失败目录都保留；失败的版本占用其序号。并发启动通过原子创建目录分配不同版本。失败时 manifest 不标记 complete，不会把部分子任务当完整报告。`complete=true` 仅表示该评估执行完成，不代表模型质量达标；带 LIMIT 的结果始终标记 smoke_only。
 
 ## 验证与来源
 

@@ -11,7 +11,7 @@ LORA="${LORA:-$CC_ROOT/outputs/experiments/rnd2/finetune/Qwen3-1.7B-Base-PGCA-CP
 DEV="${DEV:-$CC_ROOT/data/downstream/ancient/train/final/dev.metadata.jsonl}"
 MODE="${MODE:-baseline}"
 case "$MODE" in baseline|followup) ;; *) echo 'MODE must be baseline or followup' >&2; exit 2 ;; esac
-OUT="${OUT:-$CC_ROOT/outputs/diagnostics/act_${MODE}_$(date +%Y%m%d-%H%M%S)}"
+OUT="${OUT:-$CC_ROOT/outputs/diagnostics/act_${MODE}}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
 SAMPLES_PER_TASK="${SAMPLES_PER_TASK:-2}"
 if [[ "$MODE" == followup ]]; then

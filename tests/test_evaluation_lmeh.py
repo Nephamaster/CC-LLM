@@ -168,8 +168,10 @@ def test_real_hf_run_writes_results_and_never_overwrites(tmp_path, tiny_model, f
     assert manifest["complete"] and manifest["smoke_only"]
     assert manifest["protocol"]["shots"] == 0 and manifest["sample_sha256"]
     assert manifest["actual_model"]["class"] == "Qwen3ForCausalLM"
-    with pytest.raises(FileExistsError):
-        evaluate_one(args, "arc_challenge", backend)
+    original = (output / "results.json").read_bytes()
+    _, repeated = evaluate_one(args, "arc_challenge", backend)
+    assert output.name == "v0" and Path(repeated["output"]).name == "v1"
+    assert (output / "results.json").read_bytes() == original
     # Reuse the loaded model but retain 5-shot MMLU groups and aggregation.
     _, summary = evaluate_one(args, "mmlu", backend)
     result = json.loads((Path(summary["output"]) / "results.json").read_text())
@@ -218,7 +220,7 @@ def test_remaining_protocols_end_to_end(tmp_path, tiny_model, fake_hub, monkeypa
     args.run_name = "failure"
     with pytest.raises(RuntimeError, match="simulated"):
         evaluate_one(args, "arc_challenge", backend)
-    output = output_directory(args.output_root, "arc_challenge", args.model_name, args.run_name)
+    output = output_directory(args.output_root, "arc_challenge", args.model_name, args.run_name) / "v0"
     assert not (output / "results.json").exists()
     assert json.loads((output / "manifest.json").read_text())["complete"] is False
     # Disk metadata cannot silently relabel weights already in memory.

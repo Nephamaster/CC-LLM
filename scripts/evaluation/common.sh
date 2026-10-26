@@ -7,6 +7,12 @@ configure_evaluation() {
     ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
     PYTHON="${PYTHON:-$task_dir/env/bin/python}"
     export PYTHONDONTWRITEBYTECODE=1
+    cd "$ROOT"
+    if [[ -n "${RUN_DIR:-}" ]]; then
+        OUT="$RUN_DIR"
+        [[ -d "$OUT" ]] || { echo "RUN_DIR does not exist: $OUT" >&2; return 2; }
+        return
+    fi
     if [[ -z "${OUT:-}" ]]; then
         : "${MODEL_NAME:?Set MODEL_NAME to the evaluated model name, or supply OUT explicitly}"
         for component in "$benchmark" "$MODEL_NAME" "$protocol" "${RUN_NAME:-}"; do
@@ -18,5 +24,9 @@ configure_evaluation() {
         [[ -z "$protocol" ]] || OUT="$OUT/$protocol"
         [[ -z "${RUN_NAME:-}" ]] || OUT="$OUT/$RUN_NAME"
     fi
-    cd "$ROOT"
+    case "${STAGE:-all}" in
+        all|prepare) OUT="$("$PYTHON" -B -m scripts.evaluation.runs "$OUT")" ;;
+        infer|score|judge) OUT="$("$PYTHON" -B -m scripts.evaluation.runs "$OUT" --latest)" ;;
+        *) echo "Invalid STAGE: $STAGE" >&2; return 2 ;;
+    esac
 }

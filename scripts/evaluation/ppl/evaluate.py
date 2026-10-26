@@ -121,6 +121,7 @@ def write_report(path, value):
 def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
                  dtype="auto", device="auto", attention="sdpa", loss_chunk_size=128):
     from tqdm import tqdm
+    from ..runs import new_run_directory
 
     if not 0 < stride < window or loss_chunk_size < 1:
         raise ValueError("require 0 < stride < window and loss_chunk_size > 0")
@@ -129,13 +130,13 @@ def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
     manifest_path = output.with_suffix(".manifest.json")
     if output in {documents_path, manifest_path}:
         raise ValueError("output must be a distinct metrics JSON filename")
-    for path in (output, documents_path, manifest_path, output.with_suffix(output.suffix + ".tmp"),
-                 manifest_path.with_suffix(manifest_path.suffix + ".tmp")):
-        if path.exists():
-            raise FileExistsError(f"refusing to replace evaluation artifacts: {path}; use a new RUN_NAME/OUT")
     for protected in (Path(input_dir).resolve(), Path(model_path).resolve()):
         if output.is_relative_to(protected):
             raise ValueError("evaluation outputs must be outside source data and model directories")
+    output = new_run_directory(output.parent) / output.name
+    documents_path = output.with_suffix(".documents.jsonl")
+    manifest_path = output.with_suffix(".manifest.json")
+    print(f"[evaluation][ppl] output={output.parent}", flush=True)
     sources = inspect_inputs(input_dir)
     identity = checkpoint_identity(model_path)
     model, tokenizer, loading = load_model(str(Path(model_path).resolve()), dtype, device, attention)
@@ -185,7 +186,7 @@ def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
                 "Equal token windows do not imply equal raw-text context across tokenizers."]
     if overall["no_target_documents"]:
         warnings.append("Some nonempty documents have fewer than two tokens; inspect no_target_documents before comparison.")
-    result = {"complete": True, "model": identity["path"], "protocol": protocol, "domains": domains,
+    result = {"complete": True, "output": str(output), "model": identity["path"], "protocol": protocol, "domains": domains,
               "overall": overall, "warnings": warnings, "elapsed_seconds": time.monotonic() - started,
               "manifest": str(manifest_path), "documents": str(documents_path),
               "documents_sha256": sha256(documents_path)}

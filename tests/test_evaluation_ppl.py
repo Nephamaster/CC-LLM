@@ -169,12 +169,15 @@ def test_real_hf_checkpoint_end_to_end(tmp_path, tiny_checkpoint):
     assert result["overall"]["document_count"] == 3
     assert result["overall"]["token_ppl"] > 1
     assert inspect_inputs(source) == before
-    manifest = json.loads(output.with_suffix(".manifest.json").read_text())
+    actual = Path(result["output"])
+    manifest = json.loads(actual.with_suffix(".manifest.json").read_text())
     assert manifest["complete"] and manifest["protocol"]["prepend_bos"] is False
     assert manifest["runtime"]["tokenizer_backend_sha256"]
-    assert len(output.with_suffix(".documents.jsonl").read_text().splitlines()) == 3
-    with pytest.raises(FileExistsError):
-        evaluate_ppl(tiny_checkpoint, source, output, window=4, stride=2, device="cpu")
+    assert len(actual.with_suffix(".documents.jsonl").read_text().splitlines()) == 3
+    before = actual.read_bytes()
+    repeated = evaluate_ppl(tiny_checkpoint, source, output, window=4, stride=2, device="cpu")
+    assert actual.parent.name == "v0" and Path(repeated["output"]).parent.name == "v1"
+    assert actual.read_bytes() == before
     with pytest.raises(ValueError, match="outside source"):
         evaluate_ppl(tiny_checkpoint, source, source / "metrics.json")
 
@@ -222,7 +225,7 @@ def test_context_pgca_logits_can_be_scored_without_auxiliary_loss(tmp_path, tiny
     write_input(tmp_path / "data/zh_test.jsonl", [{"text": "a b c d a b c"}])
     report = evaluate_ppl(path, tmp_path / "data", tmp_path / "out/metrics.json", 4, 2, device="cpu")
     assert report["overall"]["token_count"] == 6
-    manifest = json.loads((tmp_path / "out/metrics.manifest.json").read_text())
+    manifest = json.loads(Path(report["manifest"]).read_text())
     assert manifest["runtime"]["model_settings"]["pgca_context_enabled"] is True
     assert manifest["model"]["runtime_code_sha256"]
 
@@ -244,11 +247,13 @@ def test_interrupted_evaluation_leaves_diagnostics_not_success(tmp_path, tiny_ch
     output = tmp_path / "out/metrics.json"
     with pytest.raises(RuntimeError, match="simulated"):
         evaluate_ppl(tiny_checkpoint, source, output, 4, 2, device="cpu")
-    assert not output.exists()
-    assert json.loads(output.with_suffix(".manifest.json").read_text())["complete"] is False
-    assert len(output.with_suffix(".documents.jsonl").read_text().splitlines()) == 1
-    with pytest.raises(FileExistsError):
-        evaluate_ppl(tiny_checkpoint, source, output, 4, 2, device="cpu")
+    failed = output.parent / "v0" / output.name
+    assert not failed.exists()
+    assert json.loads(failed.with_suffix(".manifest.json").read_text())["complete"] is False
+    assert len(failed.with_suffix(".documents.jsonl").read_text().splitlines()) == 1
+    repeated = evaluate_ppl(tiny_checkpoint, source, output, 4, 2, device="cpu")
+    assert Path(repeated["output"]).parent.name == "v1"
+    assert json.loads(failed.with_suffix(".manifest.json").read_text())["complete"] is False
 
 
 @pytest.mark.parametrize("overrides,relative", [

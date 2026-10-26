@@ -11,6 +11,7 @@ import random
 import unicodedata
 
 from .checks import TASKS, save
+from ...runs import new_run_directory
 
 
 def unpunctuated(value):
@@ -115,7 +116,8 @@ def structural_flags(row):
 
 
 def run(args):
-    args.output.mkdir(parents=True, exist_ok=False)
+    args.output = new_run_directory(args.output)
+    print(f"[P1] output={args.output}", flush=True)
     rows, populations = [], {}
     for split in ("train", "dev"):
         sampled, populations[split] = sample_split(args.data, split, args.per_task, args.seed)

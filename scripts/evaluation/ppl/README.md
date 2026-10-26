@@ -40,7 +40,7 @@ MODEL=/path/to/Qwen3-1.7B-Base MODEL_NAME=Qwen3-1.7B-Base \
 bash scripts/evaluation/ppl/run.sh
 ```
 
-脚本可从任意工作目录通过绝对路径启动。默认结果位于 `outputs/evaluation/ppl/<MODEL_NAME>/`，可用 `RUN_NAME=checkpoint-2000` 增加实验子目录，或用 `OUT` 显式指定。已有报告或中断产物不会被覆盖/复用；重跑设新的 RUN_NAME/OUT。当前不实现断点续算，中断时保留逐文档诊断，manifest 的 complete 保持 false。
+脚本可从任意工作目录通过绝对路径启动。默认结果位于 `outputs/evaluation/ppl/<MODEL_NAME>/v0/`，可用 `RUN_NAME=checkpoint-2000` 在版本目录之前增加实验子目录，或用 `OUT` 指定父目录。同一命令再次运行自动创建 `v1/`、`v2/`，已有报告与中断产物保留，不必手动改目录。Python 的 `--output parent/metrics.json` 同样实际写入 `parent/vN/metrics.json`，运行时打印路径并在结果 `output` 字段记录。当前不实现断点续算，中断时保留逐文档诊断，manifest 的 complete 保持 false。
 
 可调环境变量：
 

@@ -22,6 +22,9 @@ def recorder(tmp_path):
     program.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
+if args[:3] == ["-B", "-m", "scripts.evaluation.runs"]:
+    print(Path(args[3]) / "v0")
+    raise SystemExit(0)
 with open(os.environ["CAPTURE"], "a") as handle:
     handle.write(json.dumps(args) + "\\n")
 if args[:4] == ["-B", "-m", "scripts.train.ms_swift.smoke_check", "prepare"]:
@@ -54,7 +57,7 @@ if args[:4] == ["-B", "-m", "swift.cli.main", "pt"]:
 def environment(**overrides):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     for key in ("MODEL", "MODEL_NAME", "BASE_MODEL_NAME", "CC_ROOT", "PYTHON", "PYTHON_CMD", "OUT", "ALIGN_OUT",
-                "TRAIN_ROOT", "DATA_DIR", "CACHE_DIR", "CPT_ROOT", "ADAPTATION_OUT", "RUN_NAME", "LORA",
+                "TRAIN_ROOT", "DATA_DIR", "CACHE_DIR", "CPT_ROOT", "ADAPTATION_OUT", "RUN_NAME", "RUN_DIR", "LORA",
                 "RESUME_FROM_CHECKPOINT", "DATASET", "SPLIT", "FEWSHOT", "STAGE",
                 "CUDA_VISIBLE_DEVICES", "NPROC_PER_NODE", "TRAIN_BATCH_SIZE", "EVAL_BATCH_SIZE",
                 "GRAD_ACCUMULATION", "DATASET_NUM_PROC", "TORCH_DTYPE", "GRADIENT_CHECKPOINTING",
@@ -285,15 +288,15 @@ def test_evaluation_defaults_isolate_model_and_protocol(tmp_path, recorder, task
     program, capture = recorder
     env = environment(STAGE="prepare", MODEL_NAME="ExampleBase-PGCA-CPT-CSC", PYTHON=program, CAPTURE=capture, **variables)
     subprocess.run(["bash", str(ROOT / "scripts/evaluation" / task / "run.sh")], cwd=tmp_path, env=env, check=True)
-    assert option(captured(capture)[0], "--output") == str(ROOT / "outputs/evaluation" / relative / "input.jsonl")
+    assert option(captured(capture)[0], "--output") == str(ROOT / "outputs/evaluation" / relative / "v0/input.jsonl")
 
 
 def test_evaluation_env_is_task_local(tmp_path):
     task = ROOT / "scripts/evaluation/csc"
     command = 'source "$1"; configure_evaluation "$2" csc; printf "%s\\n" "$PYTHON" "$OUT"'
     result = subprocess.run(["bash", "-c", command, "_", str(task.parent / "common.sh"), str(task)],
-                            cwd=tmp_path, env=environment(MODEL_NAME="ExampleBase-CSC"), check=True, capture_output=True, text=True)
-    assert result.stdout.splitlines() == [str(task / "env/bin/python"), str(ROOT / "outputs/evaluation/csc/ExampleBase-CSC")]
+                            cwd=tmp_path, env=environment(MODEL_NAME="ExampleBase-CSC", RUN_DIR=tmp_path), check=True, capture_output=True, text=True)
+    assert result.stdout.splitlines() == [str(task / "env/bin/python"), str(tmp_path)]
 
 
 def test_evaluation_requires_a_model_name_for_default_outputs(tmp_path, recorder):

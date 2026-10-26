@@ -10,6 +10,8 @@ from collections import Counter
 from importlib.metadata import version
 from pathlib import Path
 
+from ...runs import new_run_directory
+
 TASKS = ("c2m", "m2c", "punctuate")
 
 
@@ -217,7 +219,8 @@ def run(args):
 
     if not torch.cuda.is_available():
         raise RuntimeError("Run this diagnostic in the server GPU training environment")
-    args.output.mkdir(parents=True, exist_ok=False)
+    args.output = new_run_directory(args.output)
+    print(f"[diagnose] output={args.output}", flush=True)
     report = {"status": "running", "model": str(args.model.resolve()), "adapter": str(args.adapter.resolve()),
               "versions": {p: version(p) for p in ("torch", "transformers", "ms-swift", "peft")},
               "gpu": torch.cuda.get_device_name(), "seed": args.seed,

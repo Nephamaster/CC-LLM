@@ -63,7 +63,7 @@ def test_data_audit_preserves_pending_semantics_even_when_raw_pair_matches(tmp_p
     (raw / "chinese-classical-corpus/translate.jsonl").write_text("".join(json.dumps(r) + "\n" for r in raw_rows))
     out = tmp_path / "audit"
     run(SimpleNamespace(data=data, raw=raw, output=out, per_task=1, seed=42))
-    report = json.loads((out / "report.json").read_text())
+    report = json.loads((out / "v0/report.json").read_text())
     assert len(report["groups"]) == 6
     assert all(v["source_pair_mismatch"] == 0 and v["semantic_pending"] == 1 for v in report["groups"].values())
     broken = dict(rows[-1], modern="甲丙。")

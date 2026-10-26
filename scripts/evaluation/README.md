@@ -32,13 +32,13 @@ python -m scripts.data_factory.strip_correction_prompts --apply  # 备份并替�
 
 它覆盖 CSC 的 `sft/*.jsonl`（当前训练/验证文件就在此处）及 `sft/final/`，以及 CGEC 的 `sft/final/`，不改 raw/test 原始数据。原文件保存在同目录 `*.jsonl.with-prompts.bak`，不匹配训练常用的 `*.jsonl`；不可把这些备份作为训练输入。CGEC 生成器也已改为直接输出 source-only，重新构建不会加回提示词。
 
-CSC/CGEC 评估输入协议已升至 v2，旧 prepare/prediction 产物不可复用：请设置新的 RUN_NAME/OUT。现有 checkpoint 不会因为数据文件修改而改变行为，需使用新数据重新或继续微调后再评估；训练时重新编码数据，不复用旧 tokenized/cache 文件。去提示词是输入协议调整，不保证自动消除所有额外输出。
+CSC/CGEC 评估输入协议已升至 v2，旧 prepare/prediction 产物不可复用；默认全流程启动会自动创建新版本。现有 checkpoint 不会因为数据文件修改而改变行为，需使用新数据重新或继续微调后再评估；训练时重新编码数据，不复用旧 tokenized/cache 文件。去提示词是输入协议调整，不保证自动消除所有额外输出。
 
 评估不沿用训练时的截断策略：限制在模型位置容量减去生成预算内，超长请求报错而不是切掉题目。默认 greedy，参数和训练模板写入推理 Manifest；需要与其他论文推理设置比较时另行说明。
 
 ## 启动
 
-所有脚本可在任意工作目录通过绝对路径调用；下面示例在本仓库根目录。`MODEL` 是真实 checkpoint 路径；`MODEL_NAME` 是评估模型的规范名称，不能用 `checkpoint-1000` 代替模型名。默认结果写入 `outputs/evaluation/<评估项>/<MODEL_NAME>/`，split/few-shot 在其下继续分目录。下方使用占位 checkpoint 路径：
+所有脚本可在任意工作目录通过绝对路径调用；下面示例在本仓库根目录。`MODEL` 是真实 checkpoint 路径；`MODEL_NAME` 是评估模型的规范名称，不能用 `checkpoint-1000` 代替模型名。默认结果写入 `outputs/evaluation/<评估项>/<MODEL_NAME>/[split或shot]/[RUN_NAME]/vN/`。每次全流程启动自动递增版本，不必修改 RUN_NAME，实际目录在启动时打印。下方使用占位 checkpoint 路径：
 
 ```bash
 # CSC：CSCD-NS + LEMON
@@ -70,13 +70,18 @@ CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/ancient-sft DATASET=fuxi \
 
 公共环境变量：`PYTHON`（默认各任务子目录的 `env/bin/python`）、`MODEL_NAME`、`RUN_NAME`（可选模型内实验子目录）、`OUT`（可显式覆盖默认路径）、`BATCH_SIZE`（默认 8）、`MAX_NEW_TOKENS`（CSC/CGEC 1024，古汉语 2048）、`STAGE=all|prepare|infer|score`。古汉语额外支持 `STAGE=judge`，Fùxì 可设 `FEWSHOT=5`，默认 0。LoRA 的 MODEL_NAME 应描述 adapter 所属模型，不是基座；同一模型不同 checkpoint 比较时设置不同 RUN_NAME，避免结果身份冲突。
 
-已有输入和成功预测可复用。输入、checkpoint 路径/元数据/权重文件 stat、训练参数、模板依赖、代码或生成参数改变时，拒绝复用推理结果，应使用新 OUT。权重身份记录的是路径/大小/mtime，而非对全部大权重逐字节哈希；配置、tokenizer、输入按 SHA256 校验。只有本程序 retry journal 的未写完末行允许恢复，原始数据和损坏中间记录不做修复。推理异常保留记录并在重跑时重试，不把异常伪装成模型空答案参与评分。
+`STAGE=all|prepare` 自动创建下一个版本；`STAGE=infer|score|judge` 默认接续该父目录中序号最大的版本。
+需要恢复指定版本或评分历史结果时，设置 `RUN_DIR=/完整路径/v0`，此时不分配新版本。
+例如 `RUN_DIR=/完整路径/v0 STAGE=all ...` 可复用同一运行中已经完成的输入和预测。
+版本分配是原子操作，并发启动使用不同目录；后续阶段并发时请显式指定 RUN_DIR。
+输入、模型或生成参数变化时同一版本仍拒绝复用；不设置 RUN_DIR 重启全流程即可获得新版本。
+权重身份记录路径/大小/mtime；配置、tokenizer、输入按 SHA256 校验。只有本程序 retry journal 的未写完末行允许恢复，原始数据和损坏中间记录不做修复。推理异常保留记录并在重跑时重试，不把异常伪装成模型空答案参与评分。
 
 运行时会打印 prepare/infer/judge/score 阶段的开始与完成状态。推理进度条按样本统计，显示 total/reused/pending、速度、预计剩余时间和当前错误数；断点重跑时从已成功样本数开始，不把复用项重复推理。
 
 推理加载完整模型后会显式将 `model.config.use_cache` 和 `model.generation_config.use_cache` 设为 true，LoRA 加载后再次校正，确保 HF 自回归生成使用 KV cache。该设置写入预测 Manifest；无缓存的旧预测不与新结果复用。
 
-当前推理缓存身份尚未把所有框架版本纳入拒绝复用条件；切换 env 或升级 Torch/Transformers/ms-swift 时应另设 RUN_NAME/OUT。评分报告会记录依赖版本，但这不等于旧预测已在新环境重新生成。
+当前推理缓存身份尚未把所有框架版本纳入拒绝复用条件；切换 env 或升级 Torch/Transformers/ms-swift 后，使用默认新版本全流程重新运行即可。评分报告会记录依赖版本，但这不等于旧预测已在新环境重新生成。
 
 只做输入准备，不需要加载模型：
 
@@ -132,7 +137,7 @@ DATASET=fuxi STAGE=score MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT \
 
 ## 产物与验证
 
-OUT 下保存 input.jsonl/manifest、predictions.jsonl/manifest、retry journal、metrics.json，以及评分所需的中间 M2/分词文件。例如 `outputs/evaluation/fcgec/Qwen3-1.7B-Base-PGCA-CPT-CGEC/valid/`。原始回答与清理后回答分别保存，报告统计空输出、finish_reason 和依赖/评分代码哈希；代码指纹排除 env/.venv，不扫描或绑定整套虚拟环境。
+实际版本目录下保存 input.jsonl/manifest、predictions.jsonl/manifest、retry journal、metrics.json，以及评分所需的中间 M2/分词文件。例如 `outputs/evaluation/fcgec/Qwen3-1.7B-Base-PGCA-CPT-CGEC/valid/v0/`。原始回答与清理后回答分别保存，报告统计空输出、finish_reason 和依赖/评分代码哈希；代码指纹排除 env/.venv，不扫描或绑定整套虚拟环境。
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q \

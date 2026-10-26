@@ -20,7 +20,38 @@ BATCH_SIZE=32 \
 STAGE=all \
 bash scripts/evaluation/csc/run.sh
 
-CUDA_VISIBLE_DEVICES=4 \
+HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=4 \
 MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \
 MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+BENCHMARK=mmlu \
+RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
+
+HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=5 \
+MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+BENCHMARK=arc \
+RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
+
+HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=6 \
+MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+BENCHMARK=squad \
+RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
+
+HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=7 \
+MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+BENCHMARK=gsm8k \
+RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
+
+HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=2 \
+MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+BENCHMARK=cmmlu \
+RUN_NAME=full bash scripts/evaluation/lmeh/run.sh
+
+HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=3 \
+MODEL=/share/project/wuhaiming/spaces/CC-LLM/outputs/experiments/rnd2/cpt/Qwen3-1.7B-Base-PGCA-CPT/joint/v0-20261023-114945/checkpoint-12500 \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+BENCHMARK=clue \
 RUN_NAME=full bash scripts/evaluation/lmeh/run.sh

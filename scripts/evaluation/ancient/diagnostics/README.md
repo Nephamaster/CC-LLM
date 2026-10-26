@@ -16,7 +16,7 @@ CUDA_VISIBLE_DEVICES=2 MODE=followup MAX_NEW_TOKENS=96 \
 `outputs/diagnostics/act_checks_20261026-115931/selected_dev.json`。
 该文件与当前 Dev 的 ID/messages 必须相符，固定复用六条，不重新抽样。
 可覆盖 `MODEL`、`LORA`、`DEV`、`PYTHON`、`CASES`、`OUT`。
-每次默认新建 `outputs/diagnostics/act_followup_<时间戳>/`，显式 `OUT` 必须尚不存在。
+每次默认新建 `outputs/diagnostics/act_followup/v0/`、`v1/` 等版本；显式 `OUT` 作为版本父目录，允许已经存在。
 
 1. 用实际 `cc_llm_ancient` 与保存的 loss_scale 编码六条 Dev。
    正确因果位置是 EOS 之前：输入包含参考答案但不包含目标 EOS，取最后位置的 logits。
@@ -43,7 +43,7 @@ python -B -m scripts.evaluation.ancient.diagnostics.audit_data \
   --data data/downstream/ancient/train/final \
   --raw data/downstream/ancient/raw \
   --per-task 100 --seed 42 \
-  --output "outputs/diagnostics/act_data_audit_$(date +%Y%m%d-%H%M%S)"
+  --output outputs/diagnostics/act_data_audit
 ```
 
 逐 task/split 随机抽取，共 600 条，不按长度／质量预筛。
@@ -65,7 +65,7 @@ CUDA_VISIBLE_DEVICES=2 MODE=baseline \
 baseline 全 Dev 检查最终 assistant EOS labels；三类各选 2 条，LoRA On/Off 比较 logits、生成、恢复；
 三对左 padding 输入比较完整前向与逐 token 前向全词表 logits（默认只取前 128 tokens）。
 默认 ATOL=0.05/RTOL=0.01，报告记录数值误差；BF16 超限需复核，不能自动判定需要重训。
-输出到 `outputs/diagnostics/act_baseline_<时间戳>/`；`report.json`、`eos_labels.jsonl`、
+输出到 `outputs/diagnostics/act_baseline/vN/`；`report.json`、`eos_labels.jsonl`、
 `generations.jsonl`、`selected_dev.json` 保留证据。失败返回非零，异常尽量保留部分结果。
 
 ## 决策

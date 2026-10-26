@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from ..common import ROOT, sha256
+from ..runs import new_run_directory
 from ..ppl.evaluate import checkpoint_identity, load_model, write_report
 from .protocol import (BENCHMARKS, DEFAULT_CMMLU_DIR, build_bundle,
                        bundle_hashes, select_benchmarks)
@@ -93,8 +94,8 @@ def evaluate_one(args, benchmark, backend):
     output = output_directory(args.output_root, benchmark, args.model_name, args.run_name).resolve()
     if output.is_relative_to(args.model.resolve()) or output.is_relative_to(args.cmmlu_dir.resolve()):
         raise ValueError("evaluation output must not be inside model or source data")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.mkdir(exist_ok=False)  # Never reuse old scores, partial outputs or a different environment.
+    output = new_run_directory(output)
+    print(f"[evaluation][{benchmark}] output={output}", flush=True)
     model_identity = checkpoint_identity(args.model)
     if backend is not None and backend.checkpoint_identity != model_identity:
         raise RuntimeError("checkpoint changed between benchmarks; refusing to relabel an already loaded model")
