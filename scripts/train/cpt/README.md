@@ -17,7 +17,7 @@ data/pretrain/phase1/{train,validation}
 data/pretrain/phase2/{train,validation}
 ```
 
-数据缓存写入 `outputs/cache/`，不会改动下载的数据。A/B 使用同一数据、token 预算、长度和随机种子，保证监督区间不重叠。
+数据包中的 `train/*.tar.xz` 必须先按根目录 README 给出的命令原地解压；训练脚本不会自动解压或删除压缩包。训练缓存写入 `outputs/cache/`。A/B 使用同一数据、token 预算、长度和随机种子，保证监督区间不重叠。
 
 断点恢复：
 

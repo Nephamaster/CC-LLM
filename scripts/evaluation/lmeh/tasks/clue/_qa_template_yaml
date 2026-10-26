@@ -1,4 +1,4 @@
-dataset_path: null
+dataset_path: clue/clue
 output_type: generate_until
 training_split: train
 validation_split: validation

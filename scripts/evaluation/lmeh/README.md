@@ -7,7 +7,13 @@ BENCHMARK=all bash scripts/evaluation/lmeh/run.sh
 
 可选任务：`mmlu`、`arc`、`squadv2`、`gsm8k`、`cmmlu`、`clue`。MMLU、CMMLU、GSM8K 使用 5-shot，其余使用 0-shot；ARC 仅运行 Challenge。
 
-全部数据从 `data/evaluation/lmeh` 的本地 Parquet/CSV 加载。SQuAD v2 评分实现在仓库内，不下载在线 metric。GSM8K 最多生成 512 token，SQuAD v2 最多生成 256 token。
+任务数据和 SQuAD v2 评分器通过 `HF_ENDPOINT=https://hf-mirror.com` 获取，下载后复用 Hugging Face 缓存。代码不固定数据 revision，也不要求在项目数据包中保存通用 benchmark。GSM8K 最多生成 512 token，SQuAD v2 最多生成 256 token。
+
+只检查任务数据能否通过镜像加载：
+
+```bash
+STAGE=check BENCHMARK=all bash scripts/evaluation/lmeh/run.sh
+```
 
 常用参数：
 

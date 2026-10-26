@@ -12,7 +12,7 @@ from pathlib import Path
 from ..common import ROOT
 from ..runs import new_run_directory
 from ..ppl.evaluate import checkpoint_identity, load_model, write_report
-from .protocol import BENCHMARKS, DEFAULT_DATA_DIR, build_bundle, select_benchmarks
+from .protocol import BENCHMARKS, build_bundle, select_benchmarks
 
 
 def validate_component(value):
@@ -85,8 +85,8 @@ def evaluate_one(args, benchmark, backend):
     from lm_eval import evaluator
 
     output = output_directory(args.output_root, benchmark, args.model_name, args.run_name).resolve()
-    if output.is_relative_to(args.model.resolve()) or output.is_relative_to(args.data_dir.resolve()):
-        raise ValueError("evaluation output must not be inside model or source data")
+    if output.is_relative_to(args.model.resolve()):
+        raise ValueError("evaluation output must not be inside the model directory")
     output = new_run_directory(output)
     print(f"[evaluation][{benchmark}] output={output}", flush=True)
     model_identity = checkpoint_identity(args.model)
@@ -105,7 +105,7 @@ def evaluate_one(args, benchmark, backend):
     manifest_path = output / "manifest.json"
     write_report(manifest_path, manifest)
     started = time.monotonic()
-    bundle = build_bundle(output / "tasks", benchmark, args.data_dir)
+    bundle = build_bundle(output / "tasks", benchmark)
     manager, loaded, inventory = load_tasks(bundle, benchmark)
     manifest["datasets"] = inventory
     write_report(manifest_path, manifest)
@@ -171,7 +171,6 @@ def main(argv=None):
     parser.add_argument("--model-name")
     parser.add_argument("--run-name")
     parser.add_argument("--output-root", type=Path, default=ROOT / "outputs/evaluation")
-    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dtype", choices=("auto", "float32", "bfloat16", "float16"), default="bfloat16")
     parser.add_argument("--batch-size", default="1")
@@ -203,7 +202,7 @@ def main(argv=None):
             backend, summary = evaluate_one(args, benchmark, backend)
         else:
             with tempfile.TemporaryDirectory(prefix="ccllm-lmeh-") as temporary:
-                bundle = build_bundle(Path(temporary) / "tasks", benchmark, args.data_dir)
+                bundle = build_bundle(Path(temporary) / "tasks", benchmark)
                 summary = {"benchmark": benchmark, **BENCHMARKS[benchmark]}
                 if args.stage == "check":
                     _, _, summary["datasets"] = load_tasks(bundle, benchmark)

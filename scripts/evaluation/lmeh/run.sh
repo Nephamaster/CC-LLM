@@ -14,6 +14,5 @@ args=(--benchmark "${BENCHMARK:-all}" --stage "${STAGE:-run}"
 [[ -z "${MODEL:-}" ]] || args+=(--model "$MODEL")
 [[ -z "${MODEL_NAME:-}" ]] || args+=(--model-name "$MODEL_NAME")
 [[ -z "${RUN_NAME:-}" ]] || args+=(--run-name "$RUN_NAME")
-[[ -z "${DATA_DIR:-}" ]] || args+=(--data-dir "$DATA_DIR")
 [[ -z "${LIMIT:-}" ]] || args+=(--limit "$LIMIT")
 "$PYTHON" -B -m scripts.evaluation.lmeh.run "${args[@]}"

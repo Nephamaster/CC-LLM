@@ -88,8 +88,13 @@ prepare_args=(
 )
 shopt -s nullglob
 train_files=("$DATA_DIR"/train/*.jsonl)
+archives=("$DATA_DIR"/train/*.tar.xz)
 validation_files=("$DATA_DIR"/validation/*.jsonl)
 shopt -u nullglob
+if [[ ${#train_files[@]} -eq 0 && ${#archives[@]} -gt 0 ]]; then
+    echo "Compressed pretraining shards are not extracted; run the mandatory extraction command in README.md" >&2
+    exit 1
+fi
 [[ -f "$MODEL/config.json" && ${#train_files[@]} -gt 0 && ${#validation_files[@]} -gt 0 ]] || {
     echo "Model config or train/validation JSONL files missing" >&2; exit 1;
 }

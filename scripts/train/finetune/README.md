@@ -8,7 +8,7 @@ bash scripts/train/finetune/cgec.sh
 bash scripts/train/finetune/ancient.sh
 ```
 
-数据分别位于 `data/finetune/{csc,cgec,ancient}`。任务脚本顶部直接设置长度、学习率和 epoch；GPU、batch、LoRA 和优化器公共参数位于 `common.sh` 顶部。
+数据分别位于 `data/finetune/{csc,cgec,ancient}`。CSC 默认读取 `csc_mix_dedup.jsonl` 和 `cscd_dev.jsonl`；其余任务使用各目录下的 train/validation 或 train/dev。任务脚本顶部直接设置长度、学习率和 epoch；GPU、batch、LoRA 和优化器公共参数位于 `common.sh` 顶部。
 
 默认读取完成的 CPT 指针。显式固定基座时同时传入名称：
 

@@ -5,8 +5,8 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 # ==================== CSC 参数 ====================
 # MODEL 优先；留空时读取 MODEL_NAME 对应训练根目录的完成指针，再尝试 models/MODEL_NAME。
 MODEL="${MODEL:-}"
-TRAIN="${TRAIN:-$CC_ROOT/data/finetune/csc/train.jsonl}"
-DEV="${DEV:-$CC_ROOT/data/finetune/csc/validation.jsonl}"
+TRAIN="${TRAIN:-$CC_ROOT/data/finetune/csc/csc_mix_dedup.jsonl}"
+DEV="${DEV:-$CC_ROOT/data/finetune/csc/cscd_dev.jsonl}"
 OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME%-ALIGN}-CSC}"
 MAX_LENGTH="${MAX_LENGTH:-768}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"

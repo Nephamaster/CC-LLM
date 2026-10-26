@@ -31,13 +31,17 @@ data/
 │   │   ├── structure.tsv
 │   │   └── rare_high_freq.txt          # 可选
 │   └── unihan/
-│       ├── Unihan.zip                  # 与下面的解压文件二选一
+│       ├── Unihan.zip                  # 可选
 │       └── Unihan_*.txt
 ├── pretrain/
-│   ├── phase1/{train,validation}/*.jsonl
-│   └── phase2/{train,validation}/*.jsonl
+│   ├── phase1/
+│   │   ├── train/*.tar.xz              # 每个压缩包内一个同名 JSONL
+│   │   └── validation/*.jsonl
+│   └── phase2/
+│       ├── train/*.tar.xz
+│       └── validation/*.jsonl
 ├── finetune/
-│   ├── csc/{train,validation}.jsonl
+│   ├── csc/{csc_mix_dedup,cscd_dev}.jsonl
 │   ├── cgec/{train,validation}.jsonl
 │   └── ancient/
 │       ├── train.jsonl
@@ -48,17 +52,28 @@ data/
     ├── ppl/*.jsonl
     ├── csc/*.jsonl
     ├── cgec/{FCGEC,NaCGEC}/...
-    ├── ancient/{c3bench,FuxiBench}/...
-    └── lmeh/
-        ├── mmlu/<subject>/{dev,test}*.parquet
-        ├── arc_challenge/ARC-Challenge/{train,validation,test}*.parquet
-        ├── gsm8k/main/{train,test}*.parquet
-        ├── squadv2/{train,validation}*.parquet
-        ├── cmmlu/{dev,test}/*.csv
-        └── clue/<task>/{train,validation}*.parquet
+    └── ancient/{c3bench,FuxiBench}/...
 ```
 
-预训练文件必须是可直接读取的 JSONL，不能只放仍需二次解压的分片。通用 benchmark 全部从上述本地目录读取，不会在线下载数据或评分脚本。
+### 训练前必须解压预训练分片
+
+数据包保留 `tar.xz`。首次训练前必须在仓库根目录执行以下命令，将 JSONL 原子解压到压缩包所在目录；原压缩包不会删除：
+
+```bash
+set -euo pipefail
+find data/pretrain -type f -path '*/train/*.tar.xz' -print0 |
+while IFS= read -r -d '' archive; do
+  jsonl="${archive%.tar.xz}.jsonl"
+  [[ -s "$jsonl" ]] && continue
+  temporary="${jsonl}.tmp"
+  tar -xJOf "$archive" "$(basename "$jsonl")" > "$temporary"
+  mv -- "$temporary" "$jsonl"
+done
+```
+
+Phase1/2 脚本只读取同目录下的 `*.jsonl`；如果只检测到压缩包，会停止并提示先执行上述命令。
+
+MMLU、ARC-Challenge、GSM8K、SQuAD v2、CMMLU 和 CLUE 由 lm-evaluation-harness 通过 `HF_ENDPOINT=https://hf-mirror.com` 获取并复用 Hugging Face 缓存，因此不放入数据包，也不固定数据 revision。
 
 Base 模型也必须是本地完整 Hugging Face 模型。默认放在 `models/base/`，也可以在构建时传入 `BASE_MODEL=/path/to/model`。
 
@@ -83,7 +98,7 @@ bash scripts/environment/run.sh
 HF_ENDPOINT=https://hf-mirror.com
 ```
 
-如果机器完全无法访问任何网络，先在可联网机器准备 wheel 目录，然后执行：
+如果目标机器连国内 pip 镜像也无法访问，先在可联网机器准备 wheel 目录，然后执行：
 
 ```bash
 WHEELHOUSE=/path/to/wheels bash scripts/environment/run.sh
