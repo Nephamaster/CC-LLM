@@ -366,8 +366,6 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
     output_path = output_path.resolve()
     if model_path == output_path:
         raise ValueError("model_path and output_path must be different")
-    if output_path.exists():
-        raise FileExistsError("PGCA output already exists; use a new directory to preserve old feature/weight mappings")
     if model_path in output_path.parents:
         raise ValueError("output_path must not be inside model_path")
     original_config = read_json(model_path / "config.json")
@@ -381,7 +379,7 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
     if embedding != expected:
         raise ValueError("stale embedding_config.json; regenerate from the current feature artifacts")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(model_path, output_path)
+    shutil.copytree(model_path, output_path, dirs_exist_ok=True)
 
     config_path = output_path / "config.json"
     embedding_config_path = output_path / "embedding_config.json"
@@ -415,7 +413,7 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
 
     config = Qwen3PGCAConfig.from_pretrained(output_path)
     model, loading_info = Qwen3PGCAForCausalLM.from_pretrained(
-        output_path,
+        model_path,
         config=config,
         output_loading_info=True,
         torch_dtype="auto",

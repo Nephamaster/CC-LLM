@@ -22,10 +22,6 @@ done
 [[ -f "$UNIHAN_PATH" || -f "$UNIHAN_DIR/Unihan_Readings.txt" ]] || {
     echo "Missing Unihan.zip or extracted Unihan files under $UNIHAN_DIR" >&2; exit 1;
 }
-[[ ! -e "$CHAR_MODEL" && ! -e "$PGCA_MODEL" ]] || {
-    echo "CHAR_MODEL or PGCA_MODEL already exists; choose new output paths" >&2; exit 1;
-}
-
 mkdir -p "$ROOT/models"
 mkdir -p "$BUILD_RESOURCES"
 cp -- "$HANZI_SOURCE_DIR/tghz2013.txt" "$BUILD_RESOURCES/tghz2013.txt"
