@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 TORCH_INDEX_BASE="${TORCH_INDEX_BASE:-https://mirrors.nju.edu.cn/pytorch/whl}"
 WHEELHOUSE="${WHEELHOUSE:-}"
@@ -17,6 +17,13 @@ unset PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX
 die() {
     echo "ERROR: $*" >&2
     exit 1
+}
+
+check_python() {
+    local python="$1" version
+    version="$("$python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" \
+        || die "Cannot run Python interpreter: $python"
+    [[ "$version" == "3.12" ]] || die "$python uses Python $version; Python 3.12 is required. Use a Python 3.12 interpreter and move the existing incompatible environment aside before recreating it."
 }
 
 select_torch() {
@@ -62,6 +69,7 @@ install_environment() {
     if [[ ! -x "$target/bin/python" ]]; then
         "$PYTHON_BIN" -m venv "$target"
     fi
+    check_python "$target/bin/python"
     constraints="$target/.torch-constraints.txt"
     printf 'torch==%s+%s\n' "$TORCH_VERSION" "$CHANNEL" > "$constraints"
 
@@ -122,16 +130,18 @@ PY
 }
 
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Only Linux x86_64 is supported."
-read -r pymajor pyminor < <("$PYTHON_BIN" -c 'import sys; print(*sys.version_info[:2])')
-(( pymajor == 3 && pyminor >= 9 && pyminor <= 13 )) || die "Requires Python 3.9–3.13."
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "Python 3.12 not found: $PYTHON_BIN. Install it or set PYTHON_BIN to its path."
+check_python "$PYTHON_BIN"
+for target in "$ROOT/.venv/train" "$ROOT/.venv/evaluation"; do
+    if [[ -e "$target" ]]; then
+        [[ -x "$target/bin/python" ]] || die "Existing environment is incomplete: $target; move it aside before recreating it."
+        check_python "$target/bin/python"
+    fi
+done
 select_torch
-if (( pyminor == 13 )) && [[ "$TORCH_VERSION" != 2.8.0 ]]; then
-    die "PyTorch $TORCH_VERSION may not provide Python 3.13 wheels for $CHANNEL; use Python 3.12."
-fi
 printf 'Selected: torch==%s+%s\n' "$TORCH_VERSION" "$CHANNEL"
 
-# Comment out this line to resume ONLY evaluation environment installation.
-# install_environment "$ROOT/.venv/train" "$ROOT/requirements/train.txt"
+install_environment "$ROOT/.venv/train" "$ROOT/requirements/train.txt"
 install_environment "$ROOT/.venv/evaluation" "$ROOT/requirements/evaluation.txt"
 
 printf '\nTraining environment:   %s\nEvaluation environment: %s\nHF endpoint:            %s\n' \

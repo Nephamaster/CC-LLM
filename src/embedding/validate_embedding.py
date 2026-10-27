@@ -55,17 +55,21 @@ class EmbeddingValidator:
         )
         input_weight = model.get_input_embeddings().weight
         output_weight = model.get_output_embeddings().weight
+        tied_embeddings = input_weight.data_ptr() == output_weight.data_ptr()
+        expected_tied = bool(getattr(model.config, "tie_word_embeddings", False))
         checks = {
             "vocab_size_matches": input_weight.shape[0] == len(tokenizer) == int(model.config.vocab_size),
             "hidden_size_matches": input_weight.shape[1] == int(model.config.hidden_size),
             "output_shape_matches": output_weight.shape == input_weight.shape,
-            "tied_embeddings": input_weight.data_ptr() == output_weight.data_ptr(),
+            "tied_embeddings": tied_embeddings,
+            "tied_embeddings_expected": expected_tied,
+            "tied_embeddings_match_config": tied_embeddings == expected_tied,
             "bos_token_id": model.config.bos_token_id,
             "pad_token_id_matches": model.config.pad_token_id == tokenizer.pad_token_id,
             "eos_token_id_matches": model.config.eos_token_id == tokenizer.eos_token_id,
             "bos_token_id_matches": model.config.bos_token_id == tokenizer.bos_token_id,
         }
-        bool_keys = [key for key in checks if key != "bos_token_id"]
+        bool_keys = [key for key in checks if key not in {"bos_token_id", "tied_embeddings", "tied_embeddings_expected"}]
         return {"passed": all(checks[key] is True for key in bool_keys), "checks": checks}
 
     def _validate_feature_memory(self) -> dict:

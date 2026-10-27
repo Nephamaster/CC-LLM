@@ -22,7 +22,7 @@ CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
 OUT="${OUT:-$CPT_ROOT/adaptation}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase2}"
 MAX_LENGTH="${MAX_LENGTH:-4096}"
-CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/phase2_${MAX_LENGTH}}"
+CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/$MODEL_NAME/phase2_${MAX_LENGTH}}"
 # A/B 的数据、长度、DATA_SEED 和以下两项预算应保持一致，保证监督区间不重叠。
 PHASE2_TOKENS="${PHASE2_TOKENS:-10000000000}"      # A+B 总上限；不足时用实际量
 ADAPTATION_TOKENS="${ADAPTATION_TOKENS:-100000000}"

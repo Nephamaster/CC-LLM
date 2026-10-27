@@ -81,6 +81,8 @@ Base 模型也必须是本地完整 Hugging Face 模型。默认放在 `models/b
 
 ### 1. 环境
 
+先安装 Python 3.12。环境脚本默认使用 `python3.12` 创建虚拟环境；若解释器不在 PATH，可设置 `PYTHON_BIN=/path/to/python3.12`。已有的 `.venv/train` 和 `.venv/evaluation` 也必须使用 Python 3.12；其他版本的虚拟环境需先移到其他目录，再重新创建。
+
 ```bash
 bash scripts/environment/run.sh
 ```
