@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import unicodedata
@@ -29,14 +28,6 @@ POLYPHONE_EXPECTATIONS = {
     "还": {"hai2", "huan2"}, "和": {"he2", "he4"},
     "得": {"de2", "dei3", "de0"}, "了": {"le0", "liao3"},
 }
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def require_pypinyin():
@@ -328,19 +319,12 @@ class FeatureVocabBuilder:
 
         if not self.config.allow_missing_features and any(missing.values()):
             raise ValueError(f"missing features are disabled: {missing}")
-        source_paths = [self.config.hanzi_set_path, self.config.structure_path]
-        if self.config.unihan_path.is_file():
-            source_paths.append(self.config.unihan_path)
-        else:
-            directory = self.config.unihan_path if self.config.unihan_path.is_dir() else self.config.fallback_unihan_dir
-            source_paths.extend(sorted(directory.glob("Unihan*.txt")))
         manifest = {
             "schema_version": FEATURE_SCHEMA_VERSION,
             "split_convention": "pypinyin-strict; v=ü; syllabic m/n/ng/hm/hng use zero initial",
             "candidate_distribution": dict(candidate_counts),
             "max_observed_candidates": max(map(int, candidate_counts)),
             "pronunciation_source_char_counts": dict(source_counts),
-            "source_sha256": {str(path): sha256_file(path) for path in source_paths if path.is_file()},
             "auxiliary_ignore_index": -100,
             "generated_at": _utc_now_iso(),
             "hanzi_set_path": str(self.config.hanzi_set_path),
@@ -373,10 +357,6 @@ class FeatureVocabBuilder:
         write_json(vocab_dir / "radical_stroke_vocab.json", result.feature_vocabs["radical_stroke"])
         write_json(vocab_dir / "structure_vocab.json", result.feature_vocabs["structure"])
         write_json(output_dir / "char_features.json", result.char_features)
-        result.manifest["artifact_sha256"] = {
-            str(path.relative_to(output_dir)): sha256_file(path)
-            for path in [*sorted(vocab_dir.glob("*_vocab.json")), output_dir / "char_features.json"]
-        }
         write_json(output_dir / "feature_vocab_manifest.json", result.manifest)
         return result
 

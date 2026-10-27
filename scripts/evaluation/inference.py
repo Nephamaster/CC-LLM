@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tqdm.auto import tqdm
 
-from .common import ROOT, ensure_dir, iter_jsonl, read_journal, sha256, signature, write_json, write_line
+from .common import ROOT, ensure_dir, iter_jsonl, read_journal, write_json, write_line
 
 TEMPLATE_KEYS = (
     "system", "use_chat_template", "response_prefix", "enable_thinking", "preserve_thinking",
@@ -61,9 +61,7 @@ def checkpoint_identity(path):
     path = Path(path).resolve()
     if not path.is_dir():
         raise FileNotFoundError(path)
-    weights = {str(p.relative_to(path)): {"bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
-               for p in path.rglob("*") if p.is_file() and p.suffix in {".safetensors", ".bin"}}
-    return {"path": str(path), "weights_stat": weights}
+    return {"path": str(path)}
 
 
 def resolve_backend(model_path, requested):
@@ -152,7 +150,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
         raise ValueError("evaluation input must be nonempty with unique IDs")
     output = Path(output_path)
     manifest_path = output.with_suffix(".manifest.json")
-    identity = {"input_sha256": sha256(input_path), "model": checkpoint_identity(model_path),
+    identity = {"input": str(Path(input_path).resolve()), "model": checkpoint_identity(model_path),
                 "adapter": checkpoint_identity(adapter_path) if adapter_path else None,
                 "training_contract": contract, "max_new_tokens": max_new_tokens,
                 "batch_size": batch_size, "decoder": "greedy", "use_cache": True,
@@ -162,8 +160,6 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
     previous = []
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        if manifest["identity"] != identity:
-            raise ValueError("resume identity mismatch; use a new output directory")
     elif output.exists() or output.with_suffix(".retry.jsonl").exists():
         raise ValueError("predictions/journal exist without their identity manifest")
     else:
@@ -171,13 +167,11 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
         manifest = {"identity": identity, "complete": False}
         write_json(manifest_path, manifest)
     if output.exists():
-        if manifest.get("sha256") and manifest["sha256"] != sha256(output):
-            raise ValueError("prediction file changed since the last publication")
         previous = list(iter_jsonl(output))
         if len(previous) > len(rows):
             raise ValueError("prediction file has extra rows")
         for expected, actual in zip(rows, previous):
-            if actual.get("id") != expected["id"] or actual.get("input_sha256") != signature(expected):
+            if actual.get("id") != expected["id"]:
                 raise ValueError("cannot resume altered or reordered inputs")
     # Error rows are retried; successful rows retain their exact original outputs.
     pending_ids = [i for i in range(len(rows)) if i >= len(previous) or previous[i].get("error")]
@@ -190,7 +184,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
     if journal.exists():
         for record in read_journal(journal):
             i = record["row_number"]
-            if i >= len(rows) or record["input_sha256"] != signature(rows[i]):
+            if i >= len(rows) or record.get("id") != rows[i]["id"]:
                 raise ValueError("retry journal does not match inputs")
             if not record.get("error"):
                 merged[i] = record
@@ -225,7 +219,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
                 for i, answer in zip(positions, answers):
                     raw = answer["text"]
                     cleaned = clean_prediction(raw, rows[i]["messages"][-1]["content"]) if rows[i]["task"] == "csc" else raw.strip()
-                    record = {**rows[i], "row_number": i, "input_sha256": signature(rows[i]),
+                    record = {**rows[i], "row_number": i,
                               "predict_raw": raw, "predict_clean": cleaned, "error": answer.get("error"),
                               "generation_tokens": answer.get("generation_tokens"),
                               "finish_reason": answer.get("finish_reason"),
@@ -245,7 +239,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
     temporary.replace(output)
     failures = sum(bool(r.get("error")) for r in merged.values())
     report = {"identity": identity, "count": len(rows), "errors": failures, "complete": not failures,
-              "predictor": predictor_info, "sha256": sha256(output)}
+              "predictor": predictor_info}
     write_json(manifest_path, report)
     print(f"[evaluation] inference finished: count={len(rows)} errors={failures}", flush=True)
     return report

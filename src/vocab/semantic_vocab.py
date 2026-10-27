@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -40,14 +39,6 @@ class SemanticVocabResult:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def load_hanzi_set(path: Path) -> set[str]:
@@ -416,9 +407,7 @@ class SemanticVocabBuilder:
             {
                 "alignment_metadata_generated_at": _utc_now_iso(),
                 "removed_multi_hanzi_tokens_file": removed_path.name,
-                "removed_multi_hanzi_tokens_sha256": _file_sha256(removed_path),
                 "new_hanzi_token_ids_file": new_hanzi_path.name,
-                "new_hanzi_token_ids_sha256": _file_sha256(new_hanzi_path),
             }
         )
 

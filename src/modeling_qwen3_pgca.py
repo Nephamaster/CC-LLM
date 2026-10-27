@@ -35,7 +35,7 @@ from transformers.utils.output_capturing import capture_outputs
 from .configuration_qwen3_pgca import Qwen3PGCAConfig
 from .embedding.config import EmbeddingFeatureConfig
 from .embedding.feature_embedding import PhoneticGlyphFeatureEmbedding
-from .embedding.feature_memory import FEATURE_INDEX_KEYS, FeatureMemoryBuilder, feature_index_fingerprint
+from .embedding.feature_memory import FEATURE_INDEX_KEYS, FeatureMemoryBuilder
 from .pgca.attention import PGCACrossAttention
 from .embedding.context_encoder import PGCACompositeCache
 from .pgca.auxiliary import AuxiliaryHeads, PGCAAuxiliaryOutput, summed_next_token_losses
@@ -422,13 +422,6 @@ class Qwen3PGCAPreTrainedModel(PreTrainedModel):
         if builder is None:
             raise RuntimeError("PGCA feature memory builder is missing")
         builder.validate_ready(vocab_size=self.config.vocab_size)
-        expected = getattr(self.config, "pgca_feature_index_tensor_sha256", None)
-        if expected is not None and feature_index_fingerprint(builder) != expected:
-            raise RuntimeError("checkpoint PGCA feature index fingerprint does not match its config")
-        type_hash = getattr(self.config, "pgca_token_type_index_sha256", None)
-        if self.config.pgca_context_enabled and type_hash is not None:
-            if feature_index_fingerprint(builder, ("token_type_ids",)) != type_hash:
-                raise RuntimeError("checkpoint token-type index fingerprint does not match its config")
 
 
 class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):

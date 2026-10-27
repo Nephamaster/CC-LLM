@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .bpe_state import bytes_to_unicode, decode_bpe_piece, write_json
-from .feature_vocab import FEATURE_SCHEMA_VERSION, NONE_TOKEN, sha256_file
+from .feature_vocab import FEATURE_SCHEMA_VERSION, NONE_TOKEN
 from .feature_validation import check_vocab_binding, validate_char_features
 
 
@@ -165,8 +165,6 @@ class FeatureIndexBuilder:
 
         manifest = {
             "schema_version": FEATURE_SCHEMA_VERSION,
-            "semantic_vocab_sha256": sha256_file(self.config.tokenizer_dir / "vocab.json"),
-            "feature_vocab_manifest_sha256": sha256_file(self.config.features_dir / "feature_vocab_manifest.json"),
             "tokenizer_dir": str(self.config.tokenizer_dir),
             "features_dir": str(self.config.features_dir),
             "vocab_size": len(id_to_token),
@@ -183,10 +181,6 @@ class FeatureIndexBuilder:
         write_jsonl(self.config.output_jsonl, result.jsonl_rows)
         if self.config.write_torch_tensor:
             self._write_torch_tensor(result.jsonl_rows)
-        paths = [self.config.output_jsonl]
-        if self.config.write_torch_tensor:
-            paths.append(self.config.output_pt)
-        result.manifest["artifact_sha256"] = {str(path.relative_to(self.config.features_dir)): sha256_file(path) for path in paths}
         write_json(self.config.features_dir / "feature_index_manifest.json", result.manifest)
         return result
 

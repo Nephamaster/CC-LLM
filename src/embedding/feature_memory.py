@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import torch
@@ -31,17 +30,6 @@ SEQUENCE_FEATURE_KEYS = (
     "pinyin_mask",
 )
 BOOLEAN_FEATURE_KEYS = {"is_hanzi", "pinyin_mask"}
-
-
-def feature_index_fingerprint(feature_index, keys=FEATURE_INDEX_KEYS) -> str:
-    """Fingerprint persistent lookup tensors independently of the torch.save container."""
-    digest = hashlib.sha256()
-    for key in keys:
-        value = feature_index[key] if isinstance(feature_index, dict) else getattr(feature_index, key)
-        value = value.detach().cpu().contiguous()
-        digest.update(f"{key}:{value.dtype}:{tuple(value.shape)}:".encode())
-        digest.update(value.numpy().tobytes())
-    return digest.hexdigest()
 
 
 def load_feature_index(path: str | Path, map_location: str | torch.device = "cpu") -> dict[str, torch.Tensor]:

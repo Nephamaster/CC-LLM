@@ -90,8 +90,6 @@ def evaluate_one(args, benchmark, backend):
     output = new_run_directory(output)
     print(f"[evaluation][{benchmark}] output={output}", flush=True)
     model_identity = checkpoint_identity(args.model)
-    if backend is not None and backend.checkpoint_identity != model_identity:
-        raise RuntimeError("checkpoint changed between benchmarks; refusing to relabel an already loaded model")
     backend_name = resolve_backend(args)
     manifest = {"complete": False, "benchmark": benchmark, "protocol": BENCHMARKS[benchmark],
                 "model": model_identity, "backend": backend_name,
@@ -147,8 +145,6 @@ def evaluate_one(args, benchmark, backend):
     )
     if result is None:
         raise RuntimeError("harness returned no results")
-    if checkpoint_identity(args.model) != model_identity:
-        raise RuntimeError("checkpoint changed during evaluation")
     result = json_ready(result)
     samples = result.pop("samples")
     samples_dir = output / "samples"

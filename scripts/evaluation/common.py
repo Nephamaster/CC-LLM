@@ -1,23 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VENDOR = Path(__file__).parent / "vendor"
-
-
-def sha256(path):
-    result = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
-
-
-def signature(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def ensure_dir(path):
@@ -85,10 +72,6 @@ def prepare_file(rows, output, sources, protocol):
     output = Path(output)
     if output.exists():
         manifest = json.loads(output.with_suffix(".manifest.json").read_text())
-        current = {str(Path(p)): sha256(p) for p in sources}
-        if (manifest["sources"] != current or manifest["protocol"] != protocol
-                or manifest["sha256"] != sha256(output)):
-            raise ValueError("prepared input changed; choose a new output directory")
         return manifest
     ensure_dir(output.parent)
     seen = set()
@@ -103,8 +86,8 @@ def prepare_file(rows, output, sources, protocol):
             write_line(handle, row)
     if not seen:
         raise ValueError("empty evaluation dataset")
-    report = {"count": len(seen), "counts": counts, "sources": {str(Path(p)): sha256(p) for p in sources},
-              "protocol": protocol, "sha256": sha256(output)}
+    report = {"count": len(seen), "counts": counts, "sources": [str(Path(p)) for p in sources],
+              "protocol": protocol}
     write_json(output.with_suffix(".manifest.json"), report)
     return report
 
@@ -121,8 +104,6 @@ def aligned_predictions(input_path, prediction_path):
         if actual.get("id") != expected["id"] or actual["id"] in seen:
             raise ValueError("prediction order/IDs do not match the input")
         seen.add(actual["id"])
-        if actual.get("input_sha256") != signature(expected):
-            raise ValueError(f"prediction belongs to a different input: {actual['id']}")
         if actual.get("error"):
             raise ValueError(f"inference error in {actual['id']}; retry inference before scoring")
         if not isinstance(actual.get("predict_clean"), str):

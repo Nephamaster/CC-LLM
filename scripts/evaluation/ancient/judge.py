@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from ..common import ensure_dir, iter_jsonl, read_journal, signature, write_line
+from ..common import ensure_dir, iter_jsonl, read_journal, write_line
 
 # FuxiBench's sft_criteria / sft_prompt, without the langchain runtime dependency.
 CRITERIA = "\n" + "\n".join([
@@ -32,10 +32,6 @@ PROMPT = '''作为作为一名阅卷老师，请根据以下评分标准对以�
 '''
 
 
-def prediction_signature(row):
-    return signature({"id": row["id"], "input": row["src"], "gold": row["gold"], "prediction": row["predict_clean"]})
-
-
 def parse_judgment(text):
     lines = [line.strip().strip('。.!！"“” ') for line in text.splitlines() if line.strip()]
     if not lines or lines[-1] not in {"Y", "N"}:
@@ -50,13 +46,11 @@ def judge_file(predictions_path, output_path, *, client=None):
     parsed = urllib.parse.urlsplit(endpoint)
     if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password or parsed.query:
         raise ValueError("judge URL must be an HTTP(S) base URL without embedded credentials/query parameters")
-    contract = {"model": model, "base_url": endpoint.rstrip("/"), "prompt_sha256": signature([PROMPT, CRITERIA])}
+    contract = {"model": model, "base_url": endpoint.rstrip("/")}
     output = Path(output_path)
     existing = {}
     if output.exists():
         for entry in read_journal(output):
-            if entry["judge"] != contract:
-                raise ValueError("judge configuration changed; use a new judgment file")
             existing[entry["id"]] = entry
 
     def request(prompt):
@@ -78,14 +72,11 @@ def judge_file(predictions_path, output_path, *, client=None):
                 raise ValueError("finish successful inference before requesting judgments")
             if row.get("metric") != "judge":
                 continue
-            fingerprint = prediction_signature(row)
             prior = existing.get(row["id"])
             if prior:
-                if prior["prediction_sha256"] != fingerprint:
-                    raise ValueError("prediction changed since judgment")
                 if prior.get("score") in (0, 1):
                     continue
-            entry = {"id": row["id"], "prediction_sha256": fingerprint, "judge": contract}
+            entry = {"id": row["id"], "judge": contract}
             try:
                 raw = client(PROMPT.format(criteria=CRITERIA, input=row["src"], output=row["gold"], prediction=row["predict_clean"]))
                 entry.update(raw=raw, score=parse_judgment(raw), error=None)

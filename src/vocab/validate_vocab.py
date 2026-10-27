@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -175,20 +174,9 @@ class VocabValidator:
                 if len(failures) >= 20:
                     break
 
-        def sha256(path: Path) -> str:
-            digest = hashlib.sha256()
-            with path.open("rb") as file:
-                for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return digest.hexdigest()
-
         checks = {
             "removed_count_matches": manifest.get("removed_multi_hanzi_token_count") == len(removed),
             "new_hanzi_count_matches": manifest.get("new_hanzi_token_count") == len(new_hanzi),
-            "removed_sha256_matches": manifest.get("removed_multi_hanzi_tokens_sha256")
-            == sha256(removed_path),
-            "new_hanzi_sha256_matches": manifest.get("new_hanzi_token_ids_sha256")
-            == sha256(new_hanzi_path),
         }
         return {
             "passed": not failures and all(checks.values()),

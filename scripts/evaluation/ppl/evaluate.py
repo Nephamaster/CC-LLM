@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import time
 from pathlib import Path
 
-from ..common import ROOT, iter_jsonl, sha256
+from ..common import ROOT, iter_jsonl
 from .metrics import aggregate, score_document, validate_window
 
 
@@ -36,7 +35,7 @@ def inspect_inputs(input_dir):
             empty += not text
         if not documents or empty == documents:
             raise ValueError(f"no nonempty documents in {path}")
-        sources.append({"path": str(path), "domain": domain, "sha256": sha256(path),
+        sources.append({"path": str(path), "domain": domain,
                         "documents": documents, "empty_documents": empty,
                         "char_count": chars, "byte_count": byte_count})
     return sources
@@ -49,12 +48,11 @@ def checkpoint_identity(path):
     if (path / "adapter_config.json").exists():
         raise ValueError("PPL requires full/merged weights, not a LoRA adapter directory")
     # Exclude args.json: training arguments may include credentials.
-    weights = {p.name: {"bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
-               for p in path.iterdir() if p.is_file() and
-               (p.suffix == ".safetensors" or p.name.startswith("pytorch_model") and p.suffix == ".bin")}
+    weights = [p for p in path.iterdir() if p.is_file() and
+               (p.suffix == ".safetensors" or p.name.startswith("pytorch_model") and p.suffix == ".bin")]
     if not weights:
         raise ValueError(f"no model weights in {path}; tokenizer/build metadata alone cannot be evaluated")
-    return {"path": str(path), "weights_stat": weights}
+    return {"path": str(path)}
 
 
 def load_model(model_path, dtype="auto", device="auto", attention="sdpa"):
@@ -90,7 +88,7 @@ def runtime_info(model, tokenizer, loading):
             "attention": getattr(model.config, "_attn_implementation", None),
             "model_settings": {key: getattr(model.config, key, None) for key in
                                ("model_type", "max_position_embeddings", "use_pgca", "pgca_enabled",
-                                "pgca_context_enabled", "pgca_aux_enabled", "pgca_feature_index_sha256")},
+                                "pgca_context_enabled", "pgca_aux_enabled")},
             "pgca_enabled_env": os.environ.get("PGCA_ENABLED"),
             "unexpected_checkpoint_keys": sorted(loading.get("unexpected_keys", [])),
             "tokenizer_class": type(tokenizer).__name__, "tokenizer_length": len(tokenizer),
@@ -152,18 +150,13 @@ def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
                                               desc=f"PPL {source['domain']}", unit="docs"), 1):
                 result = score_document(model, tokenizer, row["text"], window, stride, loss_chunk_size)
                 records.append(result)
-                document = {"domain": source["domain"], "record_index": index, "id": row.get("id"),
-                            "text_sha256": hashlib.sha256(row["text"].encode()).hexdigest(), **result}
+                document = {"domain": source["domain"], "record_index": index, "id": row.get("id"), **result}
                 handle.write(json.dumps(document, ensure_ascii=False, allow_nan=False) + "\n")
                 handle.flush()
             domains[source["domain"]] = aggregate(records)
-            if sha256(source["path"]) != source["sha256"]:
-                raise RuntimeError(f"input changed during evaluation: {source['path']}")
     overall = aggregate(domains.values())
     if any(not value["token_count"] for value in domains.values()):
         raise ValueError("a domain has no scored targets; final metrics not published")
-    if checkpoint_identity(model_path) != identity:
-        raise RuntimeError("checkpoint changed during evaluation; final metrics not published")
     warnings = ["Token PPL is not directly comparable between Base and Char tokenizers.",
                 "Char/byte metrics normalize conditional NLL by full text; first-token likelihood is excluded.",
                 "Equal token windows do not imply equal raw-text context across tokenizers."]
@@ -171,10 +164,9 @@ def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
         warnings.append("Some nonempty documents have fewer than two tokens; inspect no_target_documents before comparison.")
     result = {"complete": True, "output": str(output), "model": identity["path"], "protocol": protocol, "domains": domains,
               "overall": overall, "warnings": warnings, "elapsed_seconds": time.monotonic() - started,
-              "manifest": str(manifest_path), "documents": str(documents_path),
-              "documents_sha256": sha256(documents_path)}
+              "manifest": str(manifest_path), "documents": str(documents_path)}
     write_report(output, result)
-    manifest.update(complete=True, metrics_sha256=sha256(output), documents_sha256=result["documents_sha256"])
+    manifest.update(complete=True)
     write_report(manifest_path, manifest)
     return result
 

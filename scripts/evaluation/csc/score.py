@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from ..common import VENDOR, aligned_predictions, prediction_health, scoring_environment, sha256, write_json
+from ..common import VENDOR, aligned_predictions, prediction_health, scoring_environment, write_json
 from .metrics import evaluate_files
 
 
@@ -14,8 +14,7 @@ def main():
     _, rows = aligned_predictions(args.input, args.predictions)
     report = evaluate_files([args.predictions], args.output, VENDOR / "cherrant",
                             args.output.with_name("predictions_cherrant.jsonl"))
-    report.update(input_sha256=sha256(args.input), predictions_sha256=sha256(args.predictions),
-                  inference=prediction_health(rows), environment=scoring_environment())
+    report.update(inference=prediction_health(rows), environment=scoring_environment())
     write_json(args.output, report)
 
 

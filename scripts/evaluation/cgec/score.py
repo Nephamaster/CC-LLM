@@ -2,7 +2,7 @@ import argparse
 import csv
 from pathlib import Path
 
-from ..common import aligned_predictions, ensure_dir, prediction_health, scoring_environment, sha256, write_json
+from ..common import aligned_predictions, ensure_dir, prediction_health, scoring_environment, write_json
 from ..gec_metrics import cherrant_score, maxmatch_score, normalized
 
 
@@ -14,7 +14,6 @@ def score(input_path, predictions_path, output_path):
     dataset = next(iter(datasets))
     destination = ensure_dir(Path(output_path).parent)
     report = {"dataset": dataset, "split": rows[0]["split"], "count": len(rows),
-              "input_sha256": sha256(input_path), "predictions_sha256": sha256(predictions_path),
               "inference": prediction_health(rows), "environment": scoring_environment()}
     if any(row["references"] is None for row in rows):
         if dataset != "fcgec" or any(row["references"] is not None for row in rows):

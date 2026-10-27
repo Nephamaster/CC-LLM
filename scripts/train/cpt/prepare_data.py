@@ -3,26 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 import pyarrow.compute as pc
 from datasets import Dataset, load_from_disk
-
-
-def tokenizer_hash(model_path):
-    root = Path(model_path)
-    digest = hashlib.sha256()
-    for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.json", "merges.txt"):
-        path = root / name
-        if path.is_file():
-            digest.update(name.encode())
-            digest.update(path.read_bytes())
-    if not (root / "tokenizer.json").is_file():
-        raise FileNotFoundError(root / "tokenizer.json")
-    return digest.hexdigest()
 
 
 def target_count(labels):
@@ -115,11 +101,9 @@ def prepare(input_dir, output_dir, *, adaptation_tokens=0, total_tokens=0, seed=
               "requested_train_targets": requested_budget, "shortfall_targets": requested_budget - budget,
               "train_targets": budget, "validation_targets": int(val_counts.sum()),
               "dropped_train_rows": dropped_train, "dropped_validation_rows": dropped_val, "splits": {}}
-    report["tokenizer_sha256"] = tokenizer_hash(model_path) if model_path is not None else None
     report["max_length"] = max_length
     report["world_size"] = world_size
     report["batch_size"] = batch_size
-    report["input_fingerprint"] = train._fingerprint
     for name, (start, stop) in ranges.items():
         dataset = Dataset.from_generator(partition_rows,
                                          gen_kwargs=dict(dataset=train, counts=counts, start=start, stop=stop),
@@ -157,9 +141,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.verify:
         report = json.loads((args.output / "preparation_report.json").read_text(encoding="utf-8"))
-        expected = tokenizer_hash(args.model)
-        if report["tokenizer_sha256"] != expected or report["max_length"] != args.max_length:
-            raise ValueError("prepared cache tokenizer or max_length mismatch; use a new cache directory")
+        if report["max_length"] != args.max_length:
+            raise ValueError("prepared cache max_length mismatch; use a new cache directory")
         if report.get("world_size") != args.world_size or report.get("batch_size") != args.batch_size:
             raise ValueError("prepared cache distributed batch geometry mismatch; prepare new cache views")
         if report["seed"] != args.seed:

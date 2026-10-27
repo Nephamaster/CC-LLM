@@ -78,7 +78,7 @@ class EmbeddingValidator:
                 self.config.char_model_path, d_model=feature_config.d_model,
                 d_feat=feature_config.d_feat, initializer_range=feature_config.initializer_range,
             )
-            if expected != feature_config:
+            if expected.to_dict() != feature_config.to_dict():
                 raise ValueError("stale embedding_config.json; rebuild it from current features")
         else:
             feature_config = EmbeddingFeatureConfig.from_artifacts(self.config.char_model_path)

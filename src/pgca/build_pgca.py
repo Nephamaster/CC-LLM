@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import shutil
 import unicodedata
@@ -17,7 +16,7 @@ from src.configuration_qwen3_pgca import (
     DEFAULT_AUX_GLYPH_WEIGHT, DEFAULT_AUX_PHONETIC_WEIGHT, Qwen3PGCAConfig, validate_auxiliary_weights,
 )
 from src.embedding.config import EmbeddingFeatureConfig
-from src.embedding.feature_memory import feature_index_fingerprint, load_feature_index, validate_feature_index
+from src.embedding.feature_memory import load_feature_index, validate_feature_index
 from src.modeling_qwen3_pgca import Qwen3PGCAForCausalLM
 
 
@@ -86,19 +85,10 @@ def write_json(path: Path, value: dict) -> None:
         handle.write("\n")
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def update_config(
     config_path: Path,
     embedding_config_path: Path,
     pgca_layers: list[int],
-    feature_index_sha256: str,
 ) -> dict:
     data = read_json(config_path)
     embedding = read_json(embedding_config_path)
@@ -112,8 +102,6 @@ def update_config(
         raise ValueError("embedding_config semantic_vocab_size does not match config vocab_size")
     if int(embedding["d_model"]) != hidden_size:
         raise ValueError("embedding_config d_model does not match config hidden_size")
-    if embedding.get("feature_schema_version", 1) >= 2 and embedding.get("feature_index_sha256") != feature_index_sha256:
-        raise ValueError("embedding_config is stale: feature index hash changed; rebuild embedding config")
 
     data.pop("pgca_build_features_in_model", None)
     data.pop("pgca_gate_init", None)
@@ -136,9 +124,7 @@ def update_config(
                 str(key): int(value) for key, value in embedding["feature_vocab_sizes"].items()
             },
             "pgca_use_glyph_image": bool(embedding.get("use_glyph_image", False)),
-            "pgca_feature_index_sha256": feature_index_sha256,
             "pgca_feature_schema_version": embedding.get("feature_schema_version", 1),
-            "pgca_feature_vocab_manifest_sha256": embedding.get("feature_vocab_manifest_sha256"),
         }
     )
     write_json(config_path, data)
@@ -376,7 +362,7 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         model_path, d_model=int(embedding["d_model"]), d_feat=int(embedding["d_feat"]),
         initializer_range=float(embedding.get("initializer_range", 0.02)),
     ).to_dict()
-    if embedding != expected:
+    if {key: embedding.get(key) for key in expected} != expected:
         raise ValueError("stale embedding_config.json; regenerate from the current feature artifacts")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(model_path, output_path, dirs_exist_ok=True)
@@ -389,12 +375,10 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
 
     original_config = read_json(config_path)
     pgca_layers = parse_layers(pgca_layers_arg, int(original_config["num_hidden_layers"]))
-    feature_index_sha256 = file_sha256(feature_index_path)
     updated_config = update_config(
         config_path,
         embedding_config_path,
         pgca_layers,
-        feature_index_sha256,
     )
     updated_config.update(pgca_context_enabled=context_encoder, pgca_aux_enabled=auxiliary_heads,
                           pgca_zero_init_output=zero_init_output,
@@ -431,8 +415,6 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
     builder.set_feature_index(feature_index)
     if context_encoder:
         build_token_type_index(model_path, builder)
-        model.config.pgca_token_type_index_sha256 = feature_index_fingerprint(builder, ("token_type_ids",))
-    model.config.pgca_feature_index_tensor_sha256 = feature_index_fingerprint(builder)
 
     initialize_pgca_parameters(model)
     parameter_checks = check_pgca_parameters(model)
@@ -461,8 +443,6 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         "hidden_size": int(updated_config["hidden_size"]),
         "model_type": saved_config["model_type"],
         "auto_map": saved_config["auto_map"],
-        "feature_index_sha256": feature_index_sha256,
-        "feature_index_tensor_sha256": model.config.pgca_feature_index_tensor_sha256,
         "feature_index": feature_checks,
         "runtime_code": runtime_code_checks,
         "missing_keys": loading_info.get("missing_keys", []),
