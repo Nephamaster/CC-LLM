@@ -336,7 +336,6 @@ class FeatureVocabBuilder:
             source_paths.extend(sorted(directory.glob("Unihan*.txt")))
         manifest = {
             "schema_version": FEATURE_SCHEMA_VERSION,
-            "pypinyin_version": PYPINYIN_VERSION,
             "split_convention": "pypinyin-strict; v=ü; syllabic m/n/ng/hm/hng use zero initial",
             "candidate_distribution": dict(candidate_counts),
             "max_observed_candidates": max(map(int, candidate_counts)),
