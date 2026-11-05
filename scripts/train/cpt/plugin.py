@@ -6,6 +6,7 @@ import os
 import json
 import math
 from copy import deepcopy
+from functools import wraps
 from pathlib import Path
 
 import torch
@@ -13,10 +14,23 @@ import torch.distributed as dist
 from transformers import Trainer as HFTrainer
 
 from swift.callbacks import TrainerCallback, callbacks_map
+from swift.dataset import EncodePreprocessor
 from swift.loss import BaseLoss, loss_map
 from swift.optimizers import OptimizerCallback, optimizers_map
 from swift.template import Template, register_template
 from swift.template.register import TEMPLATE_MAPPING
+
+
+def _single_process_encoding(preprocess):
+    @wraps(preprocess)
+    def encode(self, dataset, *, num_proc=1, **kwargs):
+        return preprocess(self, dataset, num_proc=None if num_proc == 1 else num_proc, **kwargs)
+
+    return encode
+
+
+# Pool(1) still serializes inputs; keep single-worker encoding in the calling process.
+EncodePreprocessor.__call__ = _single_process_encoding(EncodePreprocessor.__call__)
 
 
 GLYPH_NAMES = ("stroke_count", "radical_stroke", "structure")

@@ -10,6 +10,8 @@ bash scripts/train/cpt/phase2_b.sh
 
 每个脚本顶部直接列出该阶段全部训练参数。Phase1 训练主干并冻结 PGCA；Phase2-A 训练音形分支和辅助头；Phase2-B 进行全参数联合训练。
 
+`DATASET_NUM_PROC=1` 时，CPT 插件仅将编码预处理的 `num_proc` 转为 `None`，让编码在当前进程执行，避免额外的进程池数据传递。数据读取与字段转换仍使用原进程设置，编码 batch 保持原值；显式设置大于 1 时仍使用所选并发数。
+
 默认数据：
 
 ```text
