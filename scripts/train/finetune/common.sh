@@ -45,6 +45,7 @@ LOGGING_STEPS="${LOGGING_STEPS:-10}"
 EVAL_STEPS="${EVAL_STEPS:-500}"
 SAVE_STEPS="${SAVE_STEPS:-500}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-5}"
+SAVE_ONLY_MODEL="${SAVE_ONLY_MODEL:-false}"
 MAX_STEPS="${MAX_STEPS:--1}"                    # 正数用于短跑；默认按任务脚本的 epoch 数
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
 METRIC_FOR_BEST_MODEL="${METRIC_FOR_BEST_MODEL:-eval_loss}"
@@ -135,7 +136,7 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
         --use_liger_kernel false --use_logits_to_keep false
         --logging_steps "$LOGGING_STEPS" --logging_nan_inf_filter false --eval_on_start true
         --eval_strategy steps --eval_steps "$EVAL_STEPS" --save_strategy steps --save_steps "$SAVE_STEPS"
-        --save_total_limit "$SAVE_TOTAL_LIMIT" --save_only_model false --load_best_model_at_end true
+        --save_total_limit "$SAVE_TOTAL_LIMIT" --save_only_model "$SAVE_ONLY_MODEL" --load_best_model_at_end true
         --metric_for_best_model "$METRIC_FOR_BEST_MODEL" --greater_is_better false --max_new_tokens "$MAX_NEW_TOKENS"
         --seed "$SEED" --data_seed "$DATA_SEED" --add_version "$add_version" --output_dir "$output"
     )

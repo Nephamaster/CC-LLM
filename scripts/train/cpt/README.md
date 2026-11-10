@@ -27,6 +27,8 @@ data/pretrain/phase2/{train,validation}
 
 所有参数仍在阶段脚本顶部。共享的 `scripts/train/runtime.py` 只负责启动、阶段日志和检查点发布；单机默认自动分配通信端口，显式 `MASTER_PORT` 优先。启动时显示日志位置，训练版本目录的 `checkpoint_selection.json` 记录 best/last 及原因，Phase2-A 仍选择 last。
 
+集中冒烟入口见 `scripts/smoke/run.sh`。CPT 支持 `MAX_STEPS`（默认 -1，仍按单遍数据训练）与 `SAVE_ONLY_MODEL`（默认 false）；冒烟用少步、只存模型来减少运行时间，后者不保存恢复所需的优化器状态。
+
 断点恢复：
 
 ```bash

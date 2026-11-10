@@ -79,6 +79,14 @@ Base 模型必须是本地完整 Hugging Face 模型（包含配置、tokenizer 
 
 ## 四步运行
 
+需要先快速检查完整流程时，准备两套环境与 `data/` 后执行：
+
+```bash
+bash scripts/smoke/run.sh /path/to/your/Qwen3-Base
+```
+
+该入口从 Base 实际构建 Char/PGCA，跑三条路线的少步训练和全部少量评估，结果集中写入 `outputs/smoke/vN/summary.md`。GPU 分配、覆盖范围及 Fuxi 裁判待测状态见 [集中冒烟说明](scripts/smoke/README.md)。
+
 ### 1. 环境
 
 先安装 Python 3.12。环境脚本默认使用 `python3.12` 创建虚拟环境；若解释器不在 PATH，可设置 `PYTHON_BIN=/path/to/python3.12`。已有的 `.venv/train` 和 `.venv/evaluation` 也必须使用 Python 3.12；其他版本的虚拟环境需先移到其他目录，再重新创建。

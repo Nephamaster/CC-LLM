@@ -52,6 +52,8 @@ LOGGING_STEPS="${LOGGING_STEPS:-10}"
 EVAL_STEPS="${EVAL_STEPS:-500}"
 SAVE_STEPS="${SAVE_STEPS:-500}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
+SAVE_ONLY_MODEL="${SAVE_ONLY_MODEL:-false}"
+MAX_STEPS="${MAX_STEPS:--1}"  # 正数用于集中冒烟；默认按完整数据单遍训练
 SEED="${SEED:-42}"
 DATA_SEED="${DATA_SEED:-42}"                      # 同时控制准备缓存时的样本打乱
 
@@ -146,7 +148,7 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
     --average_tokens_across_devices true \
     --packing false --padding_free false --sequence_parallel_size 1 \
     --use_liger_kernel false --use_logits_to_keep false --attn_impl sdpa \
-    --num_train_epochs 1 \
+    --num_train_epochs 1 --max_steps "$MAX_STEPS" \
     --learning_rate "$LEARNING_RATE" \
     --per_device_train_batch_size "$TRAIN_BATCH_SIZE" \
     --per_device_eval_batch_size "$EVAL_BATCH_SIZE" \
@@ -161,7 +163,7 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
     --logging_steps "$LOGGING_STEPS" --logging_nan_inf_filter false \
     --eval_on_start true --eval_strategy steps --eval_steps "$EVAL_STEPS" \
     --save_strategy steps --save_steps "$SAVE_STEPS" --save_total_limit "$SAVE_TOTAL_LIMIT" \
-    --save_only_model false --load_best_model_at_end "true" \
+    --save_only_model "$SAVE_ONLY_MODEL" --load_best_model_at_end "true" \
     --metric_for_best_model eval_clm_loss --greater_is_better false \
     --add_version "$add_version" --output_dir "$training_output" \
     --freeze_parameters_ratio 0 \
