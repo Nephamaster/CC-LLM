@@ -83,7 +83,13 @@ def c3_metrics(rows):
         else:
             raise ValueError(f"unknown C3 task: {task}")
         result[task] = {"count": len(samples), **score}
-    return {"tasks": result, "protocol": "paper-based reconstruction; micro set NER, typed-position punctuation F1, hierarchical prefix retrieval, corpus SacreBLEU zh",
+    table = {"classification_acc": result.get("classification", {}).get("accuracy"),
+             "retrieval_level1_acc": result.get("retrieval", {}).get("levels", {}).get("1", {}).get("accuracy"),
+             "ner_f1": result.get("ner", {}).get("f1"),
+             "punctuation_f1": result.get("punctuation", {}).get("f1"),
+             "translation_bleu": result.get("translation", {}).get("bleu")}
+    return {"tasks": result, "table_metrics": table,
+            "protocol": "paper-based reconstruction; micro set NER, typed-position punctuation F1, hierarchical prefix retrieval, corpus SacreBLEU zh",
             "official_code_equivalence": False}
 
 

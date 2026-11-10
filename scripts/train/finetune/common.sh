@@ -89,6 +89,9 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
         add_version=false
         resume_args=(--resume_from_checkpoint "$RESUME_FROM_CHECKPOINT")
     fi
+    if [[ -z "$model" && "${MODEL_VARIANT:-}" == base ]]; then
+        model="$CC_ROOT/models/$MODEL_NAME"
+    fi
     if [[ -z "$model" ]]; then
         local pointer="${CPT_ROOT:-$TRAIN_ROOT/$MODEL_NAME}/next_stage_model.txt"
         if [[ -f "$pointer" ]]; then

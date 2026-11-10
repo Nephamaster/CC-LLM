@@ -3,7 +3,14 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_CMD="${PYTHON_CMD:-$ROOT/.venv/train/bin/python}"
-STAGES="${STAGES:-phase1,phase2_a,phase2_b,csc,cgec,ancient}"
+MODEL_VARIANT="${MODEL_VARIANT:-pgca}"  # base / char / pgca
+case "$MODEL_VARIANT" in
+    base) default_stages=csc,cgec,ancient ;;
+    char) default_stages=phase1,cpt,csc,cgec,ancient ;;
+    pgca) default_stages=phase1,phase2_a,phase2_b,csc,cgec,ancient ;;
+    *) echo "MODEL_VARIANT must be base, char or pgca" >&2; exit 2 ;;
+esac
+STAGES="${STAGES:-$default_stages}"
 FORCE="${FORCE:-false}"
 TRAIN_ROOT="${TRAIN_ROOT:-$ROOT/outputs/train}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
@@ -12,12 +19,16 @@ export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 if [[ -z "${MODEL_NAME:-}" ]]; then
     [[ -s "$ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run scripts/model_build/run.sh" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$ROOT/models/model_name.txt"
+    case "$MODEL_VARIANT" in
+        base) MODEL_NAME="${MODEL_NAME%-PGCA}" ;;
+        char) MODEL_NAME="${MODEL_NAME%-PGCA}-Char" ;;
+    esac
 fi
 [[ "$MODEL_NAME" != */* ]] || { echo "MODEL_NAME must be a name, not a path" >&2; exit 1; }
 IFS=, read -r -a requested_stages <<< "$STAGES"
 for stage in "${requested_stages[@]}"; do
-    case "$stage" in
-        phase1|phase2_a|phase2_b|csc|cgec|ancient) ;;
+    case "$MODEL_VARIANT:$stage" in
+        pgca:phase1|pgca:phase2_a|pgca:phase2_b|char:phase1|char:cpt|*:csc|*:cgec|*:ancient) ;;
         *) echo "Unknown training stage: $stage" >&2; exit 2 ;;
     esac
 done
@@ -42,7 +53,7 @@ run_stage() {
         echo "[train] stage $name has a stale completion pointer; run it again"
     fi
     echo "[train] start $name input=${input:-previous stage} output=$output"
-    env MODEL_NAME="$model_name" MODEL="$input" PYTHON_CMD="$PYTHON_CMD" \
+    env MODEL_VARIANT="$MODEL_VARIANT" MODEL_NAME="$model_name" MODEL="$input" PYTHON_CMD="$PYTHON_CMD" \
         TRAIN_ROOT="$TRAIN_ROOT" CPT_ROOT="$CPT_ROOT" ALIGN_OUT="$ALIGN_ROOT" \
         ADAPTATION_OUT="$ADAPTATION_OUT" OUT="$output" bash "$script"
     [[ -s "$stage_pointer" ]] || { echo "Stage $name finished without publishing $stage_pointer" >&2; return 1; }
@@ -54,6 +65,11 @@ ALIGN_ROOT="${ALIGN_OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
 CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
 ADAPTATION_OUT="${ADAPTATION_OUT:-$CPT_ROOT/adaptation}"
 FINETUNE_MODEL_NAME="${MODEL_NAME}-CPT"
+BASE_INPUT=""
+if [[ "$MODEL_VARIANT" == base ]]; then
+    FINETUNE_MODEL_NAME="$MODEL_NAME"
+    BASE_INPUT="${BASE_MODEL:-}"
+fi
 align_updated=false
 adaptation_updated=false
 cpt_updated=false
@@ -61,6 +77,10 @@ cpt_updated=false
 if selected phase1; then
     run_stage phase1 "$ALIGN_ROOT" "${PHASE1_MODEL:-}" false "$MODEL_NAME" "$ROOT/scripts/train/cpt/phase1.sh"
     align_updated="$stage_ran"
+fi
+if selected cpt; then
+    run_stage cpt "$CPT_ROOT" "${CPT_MODEL:-}" "$align_updated" "$MODEL_NAME" "$ROOT/scripts/train/cpt/char.sh"
+    cpt_updated="$stage_ran"
 fi
 if selected phase2_a; then
     run_stage phase2_a "$ADAPTATION_OUT" "${PHASE2_A_MODEL:-}" "$align_updated" "$MODEL_NAME" "$ROOT/scripts/train/cpt/phase2_a.sh"
@@ -77,11 +97,11 @@ if selected phase2_b; then
     fi
 fi
 if selected csc; then
-    run_stage csc "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CSC" "${CSC_MODEL:-}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/csc.sh"
+    run_stage csc "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CSC" "${CSC_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/csc.sh"
 fi
 if selected cgec; then
-    run_stage cgec "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CGEC" "${CGEC_MODEL:-}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/cgec.sh"
+    run_stage cgec "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CGEC" "${CGEC_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/cgec.sh"
 fi
 if selected ancient; then
-    run_stage ancient "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-ACT" "${ANCIENT_MODEL:-}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/ancient.sh"
+    run_stage ancient "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-ACT" "${ANCIENT_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/ancient.sh"
 fi

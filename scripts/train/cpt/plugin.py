@@ -1,4 +1,4 @@
-"""PGCA pretraining losses, templates and lifecycle callbacks for ms-swift."""
+"""Char/PGCA pretraining losses, templates and lifecycle callbacks for ms-swift."""
 
 from __future__ import annotations
 
@@ -46,9 +46,13 @@ BRANCH_GRAD_GROUPS = (
 
 def stage():
     value = os.environ.get("CC_LLM_STAGE", "phase1")
-    if value not in {"phase1", "phase2a", "phase2b"}:
+    if value not in {"phase1", "phase2a", "phase2b", "char_cpt"}:
         raise ValueError(f"invalid CC_LLM_STAGE: {value}")
     return value
+
+
+def auxiliary_enabled():
+    return stage() in {"phase2a", "phase2b"}
 
 
 def is_branch_parameter(name):
@@ -139,7 +143,11 @@ class CCLLMTemplate(Template):
 
     def compute_sft_loss(self, model, inputs, num_items_in_batch=None, trainer=None):
         inputs = dict(inputs)
-        inputs["return_aux_logits"] = stage() != "phase1"
+        if stage() == "char_cpt":
+            # The custom loss below handles the shift and all-masked padding rows.
+            inputs.pop("labels", None)
+        else:
+            inputs["return_aux_logits"] = auxiliary_enabled()
         inputs["use_cache"] = False
         return model(**inputs)
 
@@ -151,7 +159,17 @@ class CCLLMLoss(BaseLoss):
         trainer = self.trainer
         model = trainer.accelerator.unwrap_model(trainer.model)
         mode = "train" if model.training else "eval"
-        sums = model.multitask_loss_sums(outputs, labels, per_example=mode == "eval")
+        if stage() == "char_cpt":
+            targets = labels[:, 1:]
+            logits = outputs.logits[:, :-1].float()
+            nll = torch.nn.functional.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]), targets.reshape(-1),
+                ignore_index=-100, reduction="none").reshape(targets.shape).sum(-1)
+            sums = {"clm_sum": nll, "token_count": targets.ne(-100).sum(-1)}
+            if mode == "train":
+                sums = {key: value.sum() for key, value in sums.items()}
+        else:
+            sums = model.multitask_loss_sums(outputs, labels, per_example=mode == "eval")
         if mode == "eval":
             keys = list(sums)
             # Remove Accelerate's repeated tail examples before accumulating token-level metrics.
@@ -164,7 +182,7 @@ class CCLLMLoss(BaseLoss):
         total = sums["clm_sum"]
         record(trainer, mode, "clm_loss", total, count)
         record_count(trainer, mode, "clm_tokens", count)
-        if stage() != "phase1":
+        if auxiliary_enabled():
             if outputs.phonetic_logits is None:
                 raise RuntimeError("auxiliary forward was not executed")
             completed = int(model.auxiliary_trained_tokens.item())
@@ -227,7 +245,10 @@ class CCLLMCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, model=None, **kwargs):
         model = self.trainer.accelerator.unwrap_model(model)
-        if bool(model.config.pgca_enabled) != (stage() != "phase1"):
+        baseline = stage() == "char_cpt"
+        if baseline and getattr(model.config, "model_type", None) != "qwen3":
+            raise ValueError("Char CPT requires the standard Qwen3 Char model, without a PGCA branch")
+        if not baseline and bool(model.config.pgca_enabled) != auxiliary_enabled():
             raise ValueError("PGCA_ENABLED disagrees with CC_LLM_STAGE")
         unsupported = (args.use_liger_kernel or self.trainer.template.padding_free
                        or self.trainer.template.sequence_parallel_size != 1
@@ -237,7 +258,7 @@ class CCLLMCallback(TrainerCallback):
         size = len(self.trainer.train_dataset)
         if size % (self.trainer.accelerator.num_processes * args.per_device_train_batch_size):
             raise ValueError("prepare cache with the actual world size and batch size to avoid duplicated training targets")
-        if not hasattr(model, "auxiliary_trained_tokens"):
+        if not baseline and not hasattr(model, "auxiliary_trained_tokens"):
             raise ValueError("build a checkpoint with --auxiliary-heads before using this plugin")
         for name, parameter in model.named_parameters():
             expected = (not is_branch_parameter(name) if stage() == "phase1"
@@ -280,9 +301,10 @@ class CCLLMCallback(TrainerCallback):
     def on_save(self, args, state, control, model=None, **kwargs):
         if state.is_world_process_zero:
             model = self.trainer.accelerator.unwrap_model(model)
-            report = {"stage": stage(), "global_step": state.global_step,
-                      "auxiliary_trained_tokens": int(model.auxiliary_trained_tokens.item()),
-                      "feature_schema_version": getattr(model.config, "pgca_feature_schema_version", None)}
+            report = {"stage": stage(), "global_step": state.global_step}
+            if hasattr(model, "auxiliary_trained_tokens"):
+                report.update(auxiliary_trained_tokens=int(model.auxiliary_trained_tokens.item()),
+                              feature_schema_version=getattr(model.config, "pgca_feature_schema_version", None))
             path = Path(args.output_dir) / f"checkpoint-{state.global_step}" / "cc_llm_state.json"
             path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 

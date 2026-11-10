@@ -15,6 +15,11 @@ def main():
     report = evaluate_files([args.predictions], args.output, VENDOR / "cherrant",
                             args.output.with_name("predictions_cherrant.jsonl"))
     report.update(inference=prediction_health(rows), environment=scoring_environment())
+    report["table_metrics"] = {
+        name: {metric: value["mean"]["table"][f"correct-{short}"]
+               for metric, short in (("precision", "p"), ("recall", "r"), ("f1", "f1"))}
+        for name, value in report["datasets"].items()
+    }
     write_json(args.output, report)
 
 

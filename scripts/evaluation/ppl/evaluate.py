@@ -165,6 +165,12 @@ def evaluate_ppl(model_path, input_dir, output_path, window=2048, stride=1024,
     result = {"complete": True, "output": str(output), "model": identity["path"], "protocol": protocol, "domains": domains,
               "overall": overall, "warnings": warnings, "elapsed_seconds": time.monotonic() - started,
               "manifest": str(manifest_path), "documents": str(documents_path)}
+    result["table_metrics"] = {
+        "domain_token_ppl": {name: value["token_ppl"] for name, value in domains.items()},
+        "avg_domain_token_ppl": (sum(value["token_ppl"] for value in domains.values()) / len(domains)
+                                 if all(value["token_ppl"] is not None for value in domains.values()) else None),
+        "corpus_token_ppl": overall["token_ppl"], "bpc": overall["bpc"], "bpb": overall["bpb"],
+    }
     write_report(output, result)
     manifest.update(complete=True)
     write_report(manifest_path, manifest)

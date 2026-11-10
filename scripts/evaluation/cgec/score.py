@@ -28,6 +28,7 @@ def score(input_path, predictions_path, output_path):
                       note="No local test gold. UUID-indexed correction export; check current official submission packaging. No upload performed.")
     else:
         report["cherrant"] = cherrant_score(rows, destination / "cherrant", remove_punctuation=dataset == "fcgec")
+        report["table_metrics"] = {key: report["cherrant"][key] for key in ("precision", "recall", "f1")}
         if dataset == "nacgec":
             report["maxmatch"] = maxmatch_score(rows, destination / "maxmatch")
             report["score"] = (report["cherrant"]["f0.5"] + report["maxmatch"]["f0.5"]) / 2

@@ -12,7 +12,7 @@ from pathlib import Path
 from ..common import ROOT
 from ..runs import new_run_directory
 from ..ppl.evaluate import checkpoint_identity, load_model, write_report
-from .protocol import BENCHMARKS, build_bundle, select_benchmarks
+from .protocol import BENCHMARKS, build_bundle, select_benchmarks, table_metrics
 
 
 def validate_component(value):
@@ -154,6 +154,7 @@ def evaluate_one(args, benchmark, backend):
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
     write_report(output / "results.json", result)
+    write_report(output / "table_metrics.json", table_metrics(benchmark, result["results"]))
     manifest.update(complete=True, elapsed_seconds=time.monotonic() - started)
     write_report(manifest_path, manifest)
     return backend, {"benchmark": benchmark, "output": str(output), "smoke_only": args.limit is not None}

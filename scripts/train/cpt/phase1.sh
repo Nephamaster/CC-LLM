@@ -12,10 +12,13 @@ PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/.venv/train/bin/python}"
 MODEL_NAME="${MODEL_NAME:-}"
 if [[ -z "$MODEL_NAME" && -s "$CC_ROOT/models/model_name.txt" ]]; then
     IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
+    if [[ "${MODEL_VARIANT:-pgca}" == char ]]; then
+        MODEL_NAME="${MODEL_NAME%-PGCA}-Char"
+    fi
 fi
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 
-# 本阶段输入、输出及训练参数。MODEL 是未做 ALIGN 的初始 PGCA 模型。
+# MODEL 是初始 PGCA 模型；MODEL_VARIANT=char 时使用标准 Char 模型。
 MODEL="${MODEL:-}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase1}"
 OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
@@ -60,8 +63,12 @@ DATA_SEED="${DATA_SEED:-42}"                      # 同时控制准备缓存时�
 
 # ==================== 1. 初始化与输入模型 ====================
 if [[ -z "$MODEL" ]]; then
-    [[ -s "$CC_ROOT/models/next_stage_model.txt" ]] || { echo "Set MODEL or run model_build/run.sh" >&2; exit 1; }
-    IFS= read -r MODEL < "$CC_ROOT/models/next_stage_model.txt"
+    if [[ "${MODEL_VARIANT:-pgca}" == char ]]; then
+        MODEL="$CC_ROOT/models/$MODEL_NAME"
+    else
+        [[ -s "$CC_ROOT/models/next_stage_model.txt" ]] || { echo "Set MODEL or run model_build/run.sh" >&2; exit 1; }
+        IFS= read -r MODEL < "$CC_ROOT/models/next_stage_model.txt"
+    fi
 fi
 [[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
     echo "MODEL_NAME must be a model name, not a checkpoint path" >&2; exit 2;
@@ -72,6 +79,9 @@ IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE MASTER_PORT
 export CC_LLM_STAGE=phase1 PGCA_ENABLED=false
+if [[ "${MODEL_VARIANT:-pgca}" == char ]]; then
+    export CC_LLM_STAGE=char_cpt
+fi
 
 # ==================== 2. 准备或校验训练数据 ====================
 RAW_CACHE="${RAW_CACHE:-${CACHE_DIR}.raw}"

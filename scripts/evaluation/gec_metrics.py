@@ -41,8 +41,10 @@ def cherrant_score(rows, output_dir, *, remove_punctuation=False):
     if not matches:
         raise RuntimeError("cannot parse official ChERRANT report")
     tp, fp, fn, p, r, f = matches[-1]
-    return {"tp": int(tp), "fp": int(fp), "fn": int(fn), "precision": float(p) * 100,
+    tp, fp, fn = int(tp), int(fp), int(fn)
+    return {"tp": tp, "fp": fp, "fn": fn, "precision": float(p) * 100,
             "recall": float(r) * 100, "f0.5": float(f) * 100,
+            "f1": 200 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0,
             "normalization": "remove whitespace; simplify targets (upstream default)",
             "punctuation_removed": remove_punctuation}
 

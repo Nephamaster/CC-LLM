@@ -17,6 +17,37 @@ BENCHMARKS = {
 }
 
 
+def table_metrics(benchmark, results):
+    """Explicit metrics for the experiment sheet; never mix score scales."""
+    def metric(task, name, filter_name="none"):
+        return results.get(task, {}).get(f"{name},{filter_name}")
+
+    if benchmark == "clue":
+        members = {
+            "semantic_inference": [("clue_afqmc", "acc"), ("clue_cmnli", "acc"), ("clue_wsc2020", "acc")],
+            "text_classification": [("clue_tnews", "acc"), ("clue_iflytek", "acc")],
+            "semantic_consistency": [("clue_csl", "acc")],
+            "word_comprehension": [("clue_chid", "acc")],
+            "reading_comprehension": [("clue_c3", "acc"), ("clue_cmrc2018", "f1")],
+        }
+        scores = {}
+        for group, tasks in members.items():
+            values = [metric(task, name) for task, name in tasks]
+            scores[group] = sum(values) / len(values) if all(v is not None for v in values) else None
+        return {"scores": scores, "scale": "0..1", "aggregation": "equal-weight task mean within each group",
+                "members": members, "note": "Reading combines C3 accuracy and CMRC2018 F1; not an official CLUE total."}
+    task, name, filter_name, scale = {
+        "mmlu": ("mmlu", "acc", "none", 1),
+        "arc_challenge": ("arc_challenge", "acc_norm", "none", 1),
+        "squadv2": ("squadv2", "f1", "none", 100),
+        "gsm8k": ("gsm8k", "exact_match", "strict-match", 1),
+        "cmmlu": ("cmmlu", "acc", "none", 1),
+    }[benchmark]
+    value = metric(task, name, filter_name)
+    return {"score": value / scale if value is not None else None, "scale": "0..1",
+            "task": task, "metric": name, "filter": filter_name}
+
+
 def select_benchmarks(value):
     selected = []
     for name in value.split(","):

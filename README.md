@@ -224,13 +224,35 @@ CPT 原生编码缓存完成后，准备失败可直接重试，脚本会复用�
 
 每次训练在其版本目录写入 `checkpoint_selection.json`，说明下阶段使用的是 best 还是 last、选择理由、选优指标及有效监督统计。没有可用的有限 best 指标时，明确记录回退到 last；Phase2-A 按原设计选择 last。`next_stage_model.txt` 继续记录实际所选检查点路径。
 
+### Base、Char 与 PGCA 三条实验路线
+
+`MODEL_VARIANT=base|char|pgca` 选择路线，默认 `pgca`。设原基座名为 `B`，例如将下面的 `Qwen3-Base` 替换成实际模型名称：
+
+```bash
+# Base：保持原基座权重，直接训练三项下游 LoRA。
+MODEL_VARIANT=base MODEL_NAME=Qwen3-Base \
+BASE_MODEL=/path/to/Qwen3-Base bash scripts/train/run.sh
+
+# Char：Phase1 主干训练 → Phase2 主干 CPT → 三项下游 LoRA；无 PGCA/辅助任务。
+MODEL_VARIANT=char MODEL_NAME=Qwen3-Base-Char \
+PHASE1_MODEL="$PWD/models/Qwen3-Base-Char" bash scripts/train/run.sh
+
+# PGCA：Phase1 → Phase2-A/B → 三项下游 LoRA。
+MODEL_VARIANT=pgca MODEL_NAME=Qwen3-Base-PGCA \
+PHASE1_MODEL="$PWD/models/Qwen3-Base-PGCA" bash scripts/train/run.sh
+```
+
+Char 的默认阶段为 `phase1,cpt,csc,cgec,ancient`。Phase1 复用 `cpt/phase1.sh`，Phase2 使用 `cpt/char.sh`，默认分别使用相同的 Phase1 1B 上限与 Phase2 10B 上限，后者全程训练主干；PGCA 的 Phase2-A 只训练新增分支。两条路线使用相同语料与单遍预算，但更新参数、辅助目标和优化器阶段不同。若要接续 Char 的 Phase2，可用 `STAGES=cpt`，通过 `CPT_MODEL` 指定 Char-ALIGN checkpoint；省略时读取其 ALIGN 指针。
+
+Base 的微调产物为 `B-{CSC,CGEC,ACT}`，Char 为 `B-Char-CPT-{CSC,CGEC,ACT}`，PGCA 为 `B-PGCA-CPT-{CSC,CGEC,ACT}`。三个任务都使用同一套下游 LoRA 脚本；Base/Char 无音形分支时自动使用普通主干。
+
 ### 4. 评估
 
 在当前模型训练完成后，评估入口默认读取模型构建名称与 CPT 完成指针。多模型实验建议明确指定模型名称：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-PGCA_MODEL_NAME=Qwen3-Base-PGCA \
+MODEL_NAME=Qwen3-Base-PGCA-CPT \
 bash scripts/evaluation/run.sh
 ```
 
@@ -238,12 +260,14 @@ bash scripts/evaluation/run.sh
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-PGCA_MODEL_NAME=Qwen3-Base-PGCA \
+MODEL_NAME=Qwen3-Base-PGCA-CPT \
 MODEL=/path/to/cpt/checkpoint-N \
 bash scripts/evaluation/run.sh
 ```
 
 下游评估默认读取对应任务的 LoRA 完成指针。评估具体 adapter 时，可直接使用 [下游评估入口](scripts/evaluation/README.md)。
+
+总入口也接受 Base 与 Char-CPT：`MODEL_NAME` 填实际输入模型名称，`MODEL` 填其完整权重路径。例如 `MODEL_NAME=Qwen3-Base MODEL=/path/to/base bash scripts/evaluation/run.sh` 评估 Base 及其三项下游 adapter；Char-CPT 使用 `MODEL_NAME=Qwen3-Base-Char-CPT`。`TRAIN_ROOT` 可指定完成指针所在的训练根目录。
 
 要评估 Base、Char 或 ALIGN 等对照模型，可以直接调用单项入口，并为每个模型指定真实路径和名称：
 
@@ -284,6 +308,8 @@ bash scripts/evaluation/run.sh
 
 ```text
 B-Char                 单汉字模型
+B-Char-ALIGN           Char 的 Phase1 主干训练
+B-Char-CPT             Char 的 Phase2 主干训练
 B-PGCA                 完整 PGCA 模型
 B-PGCA-ALIGN           Phase1
 B-PGCA-CPT             Phase2
@@ -293,3 +319,5 @@ B-PGCA-CPT-ACT         古汉语 LoRA
 ```
 
 模型规模只体现在用户选择的 Base 名称与权重中，不写死在源码、脚本或实验文档里。
+
+实验表的取数口径及 `table_metrics` 输出见 [评估说明](scripts/evaluation/README.md)。Phase1 后 PPL 比较原 Base、刚构建的 Char、PGCA-ALIGN；Base 与 Char tokenizer 的 token PPL 不直接可比，跨 tokenizer 需同时查看 BPC/BPB。
