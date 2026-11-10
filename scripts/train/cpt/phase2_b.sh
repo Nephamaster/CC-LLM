@@ -33,6 +33,7 @@ RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 # 单机 GPU 与 batch；有效 batch = 卡数 × TRAIN_BATCH_SIZE × GRAD_ACCUMULATION。
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-}"              # 留空时按可见 GPU 数推导
+MASTER_PORT="${MASTER_PORT:-}"                  # 留空时由 torchrun 自动分配
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"         # 每卡训练 batch
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"           # 每卡验证 batch
 GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-32}"
@@ -70,7 +71,7 @@ export PYTHONDONTWRITEBYTECODE=1
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
-export CUDA_VISIBLE_DEVICES NPROC_PER_NODE
+export CUDA_VISIBLE_DEVICES NPROC_PER_NODE MASTER_PORT
 export CC_LLM_STAGE=phase2b PGCA_ENABLED=true
 export PHASE2_B_BRANCH_LR
 if [[ -z "$MODEL" ]]; then
@@ -81,7 +82,7 @@ if [[ -z "$MODEL" ]]; then
 fi
 
 # ==================== 2. 准备或校验训练数据 ====================
-RAW_CACHE="${CACHE_DIR}.raw"
+RAW_CACHE="${RAW_CACHE:-${CACHE_DIR}.raw}"
 prepare_args=(
     --input "$RAW_CACHE" --output "$CACHE_DIR"
     --model "$MODEL" --max-length "$MAX_LENGTH"
@@ -101,20 +102,24 @@ fi
     echo "Model config or train/validation JSONL files missing" >&2; exit 1;
 }
 if [[ -f "$CACHE_DIR/preparation_report.json" ]]; then
-    "$PYTHON_CMD" -B "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}" --verify
+    "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase2b/cache python \
+        "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}" --verify
 else
-    [[ ! -e "$CACHE_DIR" && ! -e "$RAW_CACHE" ]] || {
-        echo "Partial cache exists; inspect it and choose a new CACHE_DIR" >&2; exit 1;
-    }
-    env -u NPROC_PER_NODE "$PYTHON_CMD" -B -m swift.cli.main export \
-        --external_plugins "$CC_PLUGIN_DIR/plugin.py" \
-        --model "$MODEL" --model_type qwen3 --template cc_llm_multitask --load_args false \
-        --dataset "${train_files[@]}" --val_dataset "${validation_files[@]}" \
-        --dataset_num_proc "$DATASET_NUM_PROC" --data_seed "$DATA_SEED" --to_cached_dataset true \
-        --strict true --load_from_cache_file "$LOAD_FROM_CACHE_FILE" --split_dataset_ratio 0 \
-        --truncation_strategy split --max_length "$MAX_LENGTH" \
-        --use_chat_template false --loss_scale all --disable_ignore_empty_think true --output_dir "$RAW_CACHE"
-    "$PYTHON_CMD" -B "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}"
+    if [[ -e "$RAW_CACHE" ]]; then
+        "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase2b/cache python \
+            "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}" --check-raw
+    else
+        "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase2b/export export \
+            --external_plugins "$CC_PLUGIN_DIR/plugin.py" \
+            --model "$MODEL" --model_type qwen3 --template cc_llm_multitask --load_args false \
+            --dataset "${train_files[@]}" --val_dataset "${validation_files[@]}" \
+            --dataset_num_proc "$DATASET_NUM_PROC" --data_seed "$DATA_SEED" --to_cached_dataset true \
+            --strict true --load_from_cache_file "$LOAD_FROM_CACHE_FILE" --split_dataset_ratio 0 \
+            --truncation_strategy split --max_length "$MAX_LENGTH" \
+            --use_chat_template false --loss_scale all --disable_ignore_empty_think true --output_dir "$RAW_CACHE"
+    fi
+    "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase2b/prepare python \
+        "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}"
 fi
 
 # ==================== 3. 本阶段训练 / 断点恢复 ====================
@@ -136,7 +141,7 @@ if [[ -n "$RESUME_FROM_CHECKPOINT" ]]; then
 fi
 
 CC_LLM_OUTPUT_ROOT="$OUT" \
-"$PYTHON_CMD" -B -m swift.cli.main pt \
+"$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase2b pt \
     --external_plugins "$CC_PLUGIN_DIR/plugin.py" \
     --model "$MODEL" --model_type qwen3 --template cc_llm_multitask \
     --check_model false --load_args false --tuner_type full \
@@ -172,4 +177,6 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
 
 # 发布最终 CPT 结果，供下游微调自动读取。
 mkdir -p -- "$CPT_ROOT"
-cp -- "$OUT/next_stage_model.txt" "$CPT_ROOT/next_stage_model.txt"
+if [[ ! "$OUT/next_stage_model.txt" -ef "$CPT_ROOT/next_stage_model.txt" ]]; then
+    cp -- "$OUT/next_stage_model.txt" "$CPT_ROOT/next_stage_model.txt"
+fi

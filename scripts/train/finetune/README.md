@@ -18,3 +18,7 @@ bash scripts/train/finetune/csc.sh
 ```
 
 产物是 LoRA adapter，并在任务输出根目录发布 `next_stage_model.txt`。
+
+单机训练默认通过 torchrun 自动分配通信端口；指定端口时在原命令前加 `MASTER_PORT=23457`。启动时打印模型、输出路径、world size、每卡 batch、梯度累积及有效 batch，并显示阶段日志文件路径。
+
+每个版本目录的 `checkpoint_selection.json` 说明最终选择 best 还是 last。验证日志增加有效监督 token 总数；没有可用的有限 best 指标时，会明确记录回退到最后检查点的原因。原有 LoRA、辅助损失与数据编码并发设置保持原值。

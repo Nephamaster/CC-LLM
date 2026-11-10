@@ -12,4 +12,4 @@ MAX_LENGTH="${MAX_LENGTH:-768}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-5}"
 
-run_finetuning
+run_finetuning cgec

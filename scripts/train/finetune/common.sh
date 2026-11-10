@@ -13,6 +13,7 @@ RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-}"
+MASTER_PORT="${MASTER_PORT:-}"                  # 留空时由 torchrun 自动分配
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"
 GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-1}"
@@ -61,11 +62,11 @@ fi
 }
 IFS=, read -r -a finetune_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#finetune_devices[@]}}"
-export CUDA_VISIBLE_DEVICES NPROC_PER_NODE PYTHONDONTWRITEBYTECODE=1
+export CUDA_VISIBLE_DEVICES NPROC_PER_NODE MASTER_PORT PYTHONDONTWRITEBYTECODE=1
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 run_finetuning() {
-    local model="$MODEL" output="$OUT" add_version=true
+    local task="$1" model="$MODEL" output="$OUT" add_version=true
     local -a resume_args=()
     if [[ -n "$RESUME_FROM_CHECKPOINT" ]]; then
         [[ -f "$RESUME_FROM_CHECKPOINT/trainer_state.json" && -f "$RESUME_FROM_CHECKPOINT/adapter_config.json" ]] || {
@@ -89,7 +90,7 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
         resume_args=(--resume_from_checkpoint "$RESUME_FROM_CHECKPOINT")
     fi
     if [[ -z "$model" ]]; then
-        local pointer="$TRAIN_ROOT/$MODEL_NAME/next_stage_model.txt"
+        local pointer="${CPT_ROOT:-$TRAIN_ROOT/$MODEL_NAME}/next_stage_model.txt"
         if [[ -f "$pointer" ]]; then
             IFS= read -r model < "$pointer"
         else
@@ -137,5 +138,5 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
     )
     # 不导出 .raw、不另建准备缓存，直接使用 ms-swift 原生 JSONL 加载/缓存机制。
     PGCA_ENABLED=true CC_LLM_SFT_OUTPUT_ROOT="$OUT" \
-    "$PYTHON_CMD" -B -m swift.cli.main sft "${args[@]}" "${resume_args[@]}"
+    "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" "$task" sft "${args[@]}" "${resume_args[@]}"
 }

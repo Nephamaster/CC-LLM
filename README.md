@@ -193,9 +193,9 @@ STAGES=csc \
 bash scripts/train/run.sh
 ```
 
-阶段产物写入 `outputs/train/M-ALIGN/`、`outputs/train/M-CPT/{adaptation,joint}/` 和 `outputs/train/M-CPT-{CSC,CGEC,ACT}/`；训练缓存默认位于 `outputs/cache/M/`。多个模型请使用各自的 `MODEL_NAME`，不要共用缓存。
+阶段产物写入 `outputs/train/M-ALIGN/`、`outputs/train/M-CPT/{adaptation,joint}/` 和 `outputs/train/M-CPT-{CSC,CGEC,ACT}/`；设置 `TRAIN_ROOT=/path/to/train` 可统一修改训练产物根目录。单阶段也可用 `OUT` 指定输出目录；多阶段使用各自的默认子目录。训练缓存默认位于 `outputs/cache/M/`。多个模型请使用各自的 `MODEL_NAME`，不要共用缓存。
 
-总入口只检查对应阶段的完成指针是否存在：存在时默认跳过该阶段，即使传入了新的模型路径也不会重新训练。`FORCE=true` 会重新执行本次 `STAGES` 选择的所有阶段；它不会自动清除已有训练缓存。断点恢复应调用相应的单阶段脚本并设置 `RESUME_FROM_CHECKPOINT`，例如：
+总入口在没有显式指定本阶段输入、上游也没有重跑且完成指针仍指向有效目录时跳过该阶段。显式传入 `PHASE1_MODEL`、`CSC_MODEL` 等阶段输入会启动新版本；上游重跑后，本次选中的依赖阶段也会重跑。`FORCE=true` 会重新执行本次 `STAGES` 选择的所有阶段，已有训练缓存保留。要接续之前中断的流水线，可只选择尚未完成的阶段，或不再显式传入已完成阶段的输入。断点恢复应调用相应的单阶段脚本并设置 `RESUME_FROM_CHECKPOINT`，例如：
 
 ```bash
 MODEL_NAME=Qwen3-Base-PGCA \
@@ -217,6 +217,12 @@ scripts/train/finetune/{csc,cgec,ancient}.sh
 ```
 
 `CUDA_VISIBLE_DEVICES` 选择 GPU；脚本默认按可见 GPU 数推导进程数。训练的有效 batch size = GPU 数 × 每卡 batch size × 梯度累积步数。显存不足时先调整相应阶段的 batch、长度及卡数，再进行小规模冒烟。
+
+单机训练未设置 `MASTER_PORT` 时，启动器使用 torchrun 原生自动端口；并发任务各自建立 rendezvous。也可在命令前加 `MASTER_PORT=23457` 指定端口。启动时会打印模型、输入/缓存、输出路径、实际 world size 和有效 batch；导入、数据加载、编码及训练分别计时。阶段 stdout/stderr 保存到启动时显示的 `.log` 文件：训练日志在对应模型输出根目录，缓存步骤日志在缓存父目录。异常退出会记录退出码/信号和容器范围的 OOM kill 增量。
+
+CPT 原生编码缓存完成后，准备失败可直接重试，脚本会复用原生缓存；原有未完成的准备目录在新结果完成后保留为 `.incomplete-*`。原生编码缓存本身不完整时会指出对应 split，并保留原文件；可用 `RAW_CACHE=/path/to/new/raw` 指定新的导出位置。GPU 数或每卡 batch 改变后的缓存几何校验仍保持原逻辑。
+
+每次训练在其版本目录写入 `checkpoint_selection.json`，说明下阶段使用的是 best 还是 last、选择理由、选优指标及有效监督统计。没有可用的有限 best 指标时，明确记录回退到 last；Phase2-A 按原设计选择 last。`next_stage_model.txt` 继续记录实际所选检查点路径。
 
 ### 4. 评估
 

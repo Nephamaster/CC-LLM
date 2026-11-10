@@ -1,10 +1,11 @@
-"""Portable ms-swift 4.7 plugin; no imports from the CC-LLM checkout."""
+"""PGCA pretraining losses, templates and lifecycle callbacks for ms-swift."""
 
 from __future__ import annotations
 
 import os
 import json
 import math
+import sys
 from copy import deepcopy
 from functools import wraps
 from pathlib import Path
@@ -19,6 +20,9 @@ from swift.loss import BaseLoss, loss_map
 from swift.optimizers import OptimizerCallback, optimizers_map
 from swift.template import Template, register_template
 from swift.template.register import TEMPLATE_MAPPING
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from scripts.train.runtime import publish_checkpoint, report_validation
 
 
 def _single_process_encoding(preprocess):
@@ -217,6 +221,10 @@ class CCLLMOptimizer(OptimizerCallback):
 
 
 class CCLLMCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if state.is_world_process_zero and logs and "eval_loss" in logs:
+            report_validation(args, logs)
+
     def on_train_begin(self, args, state, control, model=None, **kwargs):
         model = self.trainer.accelerator.unwrap_model(model)
         if bool(model.config.pgca_enabled) != (stage() != "phase1"):
@@ -267,21 +275,7 @@ class CCLLMCallback(TrainerCallback):
     def on_train_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-        checkpoints = list(Path(args.output_dir).glob("checkpoint-*"))
-        last = max(checkpoints, key=lambda path: int(path.name.rsplit("-", 1)[1])) if checkpoints else None
-        selected = state.best_model_checkpoint if stage() != "phase2a" else last
-        selected = selected or last
-        if selected is None:
-            raise RuntimeError("training ended without a saved checkpoint")
-        checkpoint = str(Path(selected).resolve()) + "\n"
-        (Path(args.output_dir) / "next_stage_model.txt").write_text(checkpoint)
-        output_root = os.environ.get("CC_LLM_OUTPUT_ROOT")
-        if output_root:
-            # 只发布已完成训练的结果，不按最大版本号猜测可能尚未完成的 run。
-            pointer = Path(output_root) / "next_stage_model.txt"
-            temporary = pointer.with_name(f".next_stage_model.{os.getpid()}.tmp")
-            temporary.write_text(checkpoint)
-            temporary.replace(pointer)
+        publish_checkpoint(args, state, os.environ.get("CC_LLM_OUTPUT_ROOT"), prefer_last=stage() == "phase2a")
 
     def on_save(self, args, state, control, model=None, **kwargs):
         if state.is_world_process_zero:
