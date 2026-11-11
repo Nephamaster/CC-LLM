@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 import os
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from tqdm.auto import tqdm
 
 from .common import ROOT, ensure_dir, iter_jsonl, read_journal, write_json, write_line
+from .generation import token_budget
 
 TEMPLATE_KEYS = (
     "system", "use_chat_template", "response_prefix", "enable_thinking", "preserve_thinking",
@@ -31,7 +33,8 @@ def relocated_training_plugins(plugins):
         if path.is_file():
             continue
         for stage in ("cpt", "finetune"):
-            if path.parts[-5:] == ("scripts", "train", "ms_swift", stage, "plugin.py"):
+            if (path.parts[-5:] == ("scripts", "train", "ms_swift", stage, "plugin.py")
+                    or path.parts[-4:] == ("scripts", "train", stage, "plugin.py")):
                 relocated = ROOT / "scripts/train" / stage / "plugin.py"
                 if relocated.is_file():
                     paths[index] = str(relocated)
@@ -57,6 +60,21 @@ def training_contract(model_path, adapter_path=None):
             "external_plugins": plugins}
 
 
+def training_template(processor, contract, max_length, truncation_strategy="raise"):
+    """Restore one saved Swift template for labels, generation and benchmark chat."""
+    from swift.template import get_template
+    settings = dict(contract["settings"])
+    args = json.loads(Path(contract["args_path"]).read_text(encoding="utf-8"))
+    for key in ("loss_scale", "is_binary_loss_scale", "padding_side"):
+        if key in args:
+            settings[key] = args[key]
+    settings["default_system"] = settings.pop("system", None)
+    if isinstance(settings["default_system"], str) and settings["default_system"].endswith(".txt"):
+        settings["default_system"] = Path(settings["default_system"]).read_text(encoding="utf-8")
+    return get_template(processor, template_type=contract["template"], max_length=max_length,
+                        truncation_strategy=truncation_strategy, **settings)
+
+
 def checkpoint_identity(path):
     path = Path(path).resolve()
     if not path.is_dir():
@@ -76,7 +94,6 @@ class TrainingTemplatePredictor:
                  backend="auto", tensor_parallel_size=4):
         from swift import InferRequest, RequestConfig, TransformersEngine
         from swift.model import get_model_processor
-        from swift.template import get_template
         from swift.utils import import_external_file
         from transformers import AutoConfig
 
@@ -91,17 +108,11 @@ class TrainingTemplatePredictor:
             str(Path(model_path).resolve()), model_type=contract["model_type"], load_model=load_model)
         if model is not None:
             enable_generation_cache(model)
-        settings = dict(contract["settings"])
-        settings["default_system"] = settings.pop("system", None)
-        if isinstance(settings["default_system"], str) and settings["default_system"].endswith(".txt"):
-            settings["default_system"] = Path(settings["default_system"]).read_text(encoding="utf-8")
         config = model.config if model is not None else AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         context_length = int(config.max_position_embeddings)
         if max_new_tokens >= context_length:
             raise ValueError("generation budget must leave room for input within the model context")
-        template = get_template(processor, template_type=contract["template"],
-                                max_length=context_length - max_new_tokens,
-                                truncation_strategy="raise", **settings)
+        template = training_template(processor, contract, context_length - max_new_tokens)
         adapters = [str(Path(adapter_path).resolve())] if adapter_path else None
         if backend == "vllm":
             from swift import VllmEngine
@@ -116,25 +127,31 @@ class TrainingTemplatePredictor:
             enable_generation_cache(self.engine.model)
             self.engine.generation_config.use_cache = True
         self.request_cls = InferRequest
-        self.request_config = RequestConfig(max_tokens=max_new_tokens, temperature=0, stream=False)
+        self.config_cls = RequestConfig
+        self.max_new_tokens = max_new_tokens
         self.info = {"backend": backend, "model_class": type(model).__name__ if model is not None else None,
                      "template": contract, "use_cache": True,
                      "tensor_parallel_size": tensor_parallel_size}
 
     def __call__(self, rows):
-        requests = [self.request_cls(messages=row["messages"]) for row in rows]
-        results = self.engine.infer(requests, self.request_config, use_tqdm=False)
-        if len(results) != len(rows):
-            raise RuntimeError("generation returned a different number of results")
-        output = []
-        for result in results:
-            if isinstance(result, Exception):
-                raise result
-            text = result.choices[0].message.content
-            if not isinstance(text, str):
-                raise RuntimeError("model response has no text content")
-            output.append({"text": text, "finish_reason": result.choices[0].finish_reason,
-                           "generation_tokens": getattr(result.usage, "completion_tokens", None)})
+        groups = defaultdict(list)
+        for index, row in enumerate(rows):
+            groups[token_budget(row, self.max_new_tokens)].append((index, row))
+        output = [None] * len(rows)
+        for budget, group in groups.items():
+            requests = [self.request_cls(messages=row["messages"]) for _, row in group]
+            results = self.engine.infer(requests, self.config_cls(max_tokens=budget, temperature=0, stream=False), use_tqdm=False)
+            if len(results) != len(group):
+                raise RuntimeError("generation returned a different number of results")
+            for (index, _), result in zip(group, results):
+                if isinstance(result, Exception):
+                    raise result
+                text = result.choices[0].message.content
+                if not isinstance(text, str):
+                    raise RuntimeError("model response has no text content")
+                output[index] = {"text": text, "finish_reason": result.choices[0].finish_reason,
+                                 "generation_budget": budget,
+                                 "generation_tokens": getattr(result.usage, "completion_tokens", None)}
         return output
 
 
@@ -224,6 +241,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=32,
                     record = {**rows[i], "row_number": i,
                               "predict_raw": raw, "predict_clean": cleaned, "error": answer.get("error"),
                               "generation_tokens": answer.get("generation_tokens"),
+                              "generation_budget": answer.get("generation_budget", token_budget(rows[i], max_new_tokens)),
                               "finish_reason": answer.get("finish_reason"),
                               "elapsed_seconds": (time.perf_counter() - began) / len(batch)}
                     write_line(handle, record)

@@ -91,6 +91,11 @@ def prepare(kind, data, output, train_samples, eval_samples):
         return {split: write_rows(output / split / "samples.jsonl", text_samples(
             pretrain_rows(source / split), train_samples if split == "train" else eval_samples))
                 for split in ("train", "validation")}
+    if kind == "instruction_sft":
+        pointer = data / "instruction/prepared/latest.txt"
+        directory = Path(pointer.read_text().strip()) if pointer.is_file() else data / "instruction/final"
+        return {split: write_rows(output / f"{split}.jsonl", islice(iter_jsonl(directory / f"{split}.jsonl"), count))
+                for split, count in (("train", train_samples), ("dev", eval_samples))}
     if kind in {"csc_sft", "cgec_sft"}:
         task = kind.removesuffix("_sft")
         filenames = ("csc_mix_dedup.jsonl", "cscd_dev.jsonl") if task == "csc" else ("train.jsonl", "validation.jsonl")
@@ -116,9 +121,10 @@ def prepare(kind, data, output, train_samples, eval_samples):
         split = kind.removeprefix("fcgec_")
         paths = [evaluation / "cgec/FCGEC" / f"FCGEC_{split}.json"]
         rows = islice(fcgec_rows(paths[0], split), eval_samples)
-    elif kind == "nacgec":
-        paths = [evaluation / "cgec/NaCGEC/data/nacgec.test.ref.para"]
-        rows = islice(nacgec_rows(paths[0], "test"), eval_samples)
+    elif kind in {"nacgec", "nacgec_test"}:
+        labeled = kind == "nacgec"
+        paths = [evaluation / "cgec/NaCGEC/data" / ("nacgec.dev.ref.para" if labeled else "nacgec.test.input")]
+        rows = islice(nacgec_rows(paths[0], "dev" if labeled else "test", labeled=labeled), eval_samples)
     elif kind == "c3":
         paths = [evaluation / "ancient/c3bench/C3_bench.json"]
         rows = islice(c3_rows(paths[0]), eval_samples * len(C3_PROMPTS))

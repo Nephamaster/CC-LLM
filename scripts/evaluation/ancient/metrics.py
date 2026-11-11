@@ -90,7 +90,10 @@ def c3_metrics(rows):
              "translation_bleu": result.get("translation", {}).get("bleu")}
     return {"tasks": result, "table_metrics": table,
             "protocol": "paper-based reconstruction; micro set NER, typed-position punctuation F1, hierarchical prefix retrieval, corpus SacreBLEU zh",
-            "official_code_equivalence": False}
+            "official_code_equivalence": False,
+            "protocol_status": "internal reconstruction; not verified official C3Bench scores",
+            "upstream": "https://github.com/SCUT-DLVCLab/C3bench",
+            "unverified_details": ["NER entity boundaries/type handling", "retrieval title hierarchy/matching", "punctuation positions and character preservation"]}
 
 
 def couplet(prediction, gold):

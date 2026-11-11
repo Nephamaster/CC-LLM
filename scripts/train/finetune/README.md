@@ -10,10 +10,10 @@ bash scripts/train/finetune/ancient.sh
 
 数据分别位于 `data/finetune/{csc,cgec,ancient}`。CSC 默认读取 `csc_mix_dedup.jsonl` 和 `cscd_dev.jsonl`；其余任务使用各目录下的 train/validation 或 train/dev。任务脚本顶部直接设置长度、学习率和 epoch；GPU、batch、LoRA 和优化器公共参数位于 `common.sh` 顶部。
 
-默认读取完成的 CPT 指针。显式固定基座时同时传入名称：
+正式新增路线默认读取合并后的 INS 指针，分别训练独立专项 Adapter。General-SFT 参见 [指令微调](../instruction/README.md)。显式固定完整输入权重时同时传入名称：
 
 ```bash
-MODEL=/path/to/checkpoint MODEL_NAME=Qwen3-Base-PGCA-CPT \
+MODEL=/path/to/merged-ins-model MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
 bash scripts/train/finetune/csc.sh
 ```
 

@@ -22,6 +22,8 @@ class StrictHFLM(HFLM):
         return super()._loglikelihood_tokens(requests, **kwargs)
 
     def generate_until(self, requests, **kwargs):
+        from .chat import chat_stops
+        requests = chat_stops(requests, hasattr(self, "instruct_protocol"))
         for request in requests:
             text, options = request.args
             budget = options.get("max_gen_toks", self.max_gen_toks)
@@ -41,6 +43,8 @@ def build_vllm_backend(model_path, *, dtype, batch_size, max_length, tensor_para
             return super()._loglikelihood_tokens(requests, **kwargs)
 
         def generate_until(self, requests, **kwargs):
+            from .chat import chat_stops
+            requests = chat_stops(requests, hasattr(self, "instruct_protocol"))
             for request in requests:
                 text, options = request.args
                 budget = options.get("max_gen_toks", self.max_gen_toks)

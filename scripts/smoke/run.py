@@ -17,8 +17,8 @@ import time
 from scripts.evaluation.runs import latest_run_directory, new_run_directory
 
 ROOT = Path(__file__).resolve().parents[2]
-KINDS = ("phase1", "phase2", "csc_sft", "cgec_sft", "ancient_sft", "ppl",
-         "csc", "fcgec_valid", "fcgec_test", "nacgec", "c3", "fuxi")
+KINDS = ("phase1", "phase2", "instruction_sft", "csc_sft", "cgec_sft", "ancient_sft", "ppl",
+         "csc", "fcgec_valid", "fcgec_test", "nacgec", "nacgec_test", "c3", "fuxi")
 BENCHMARKS = ("mmlu", "arc", "squadv2", "gsm8k", "cmmlu", "clue")
 
 
@@ -85,7 +85,8 @@ class Smoke:
                     "PHASE1_MODEL", "PHASE2_A_MODEL", "PHASE2_B_MODEL", "CPT_MODEL", "CSC_MODEL", "CGEC_MODEL",
                     "ANCIENT_MODEL", "LORA", "PGCA_ENABLED", "CC_LLM_STAGE", "RANK", "LOCAL_RANK", "WORLD_SIZE",
                     "MASTER_PORT", "MASTER_ADDR", "NODE_RANK", "NNODES", "NPROC_PER_NODE", "CC_LLM_MACRO_CHANNELS",
-                    "DEV_CHECK_DEV", "DEV_CHECK_DEVICE", "DEV_CHECK_REPORT_ROOT"):
+                    "DEV_CHECK_DEV", "DEV_CHECK_DEVICE", "DEV_CHECK_REPORT_ROOT",
+                    "INSTRUCTION_MODEL", "INSTRUCTION_DATA", "INS_OUT", "SUPERVISED_TOKENS"):
             env.pop(key, None)
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_ENDPOINT=env.get("HF_ENDPOINT", "https://hf-mirror.com"),
                    CUDA_VISIBLE_DEVICES="" if gpu is None else gpu, CC_ROOT=str(ROOT), TOKENIZERS_PARALLELISM="false")
@@ -172,16 +173,29 @@ class Smoke:
             raise ValueError("下游辅助损失未关闭")
         return path
 
+    def instruction_checkpoint(self, output):
+        path = Path((output / "next_stage_model.txt").read_text().strip())
+        report = read_json(path.parent / "instruction_selection.json")
+        if not report["complete"] or not (path / "config.json").is_file():
+            raise ValueError("General-SFT 合并模型或验收报告不完整")
+        adapter = Path(report["selected_adapter"])
+        state = read_json(adapter.parent / "checkpoint_selection.json")
+        if (state["global_step"] < self.args.train_steps or not state["valid_evaluations"]
+                or state["valid_evaluations"] != state["evaluations"]):
+            raise ValueError("General-SFT 未完成指定训练步数或验证 loss 不全为有限值")
+        return path
+
     def train(self, variant, gpu, stage, model, prepared):
         name = self.models[variant].name
         root = self.output / "training"
         cpt = root / f"{name}-CPT"
-        outputs = {"phase1": root / f"{name}-ALIGN", "cpt": cpt,
+        ins = root / f"{name if variant == 'base' else name+'-CPT'}-INS"
+        outputs = {"phase1": root / f"{name}-ALIGN", "cpt": cpt, "instruction": ins,
                    "phase2_a": cpt / "adaptation", "phase2_b": cpt / "joint"}
         suffix = {"csc": "CSC", "cgec": "CGEC", "ancient": "ACT"}
         adapter = stage in suffix
         if adapter:
-            outputs[stage] = root / f"{name if variant == 'base' else name+'-CPT'}-{suffix[stage]}"
+            outputs[stage] = root / f"{name if variant == 'base' else name+'-CPT'}-INS-{suffix[stage]}"
         output = outputs[stage]
         values = dict(MODEL_VARIANT=variant, MODEL_NAME=name, PYTHON_CMD=self.args.train_python, TRAIN_ROOT=root,
                       OUT=output, STAGES=stage, FORCE="true", NPROC_PER_NODE=1, TRAIN_BATCH_SIZE=1,
@@ -190,7 +204,11 @@ class Smoke:
                       SAVE_TOTAL_LIMIT=1, SAVE_ONLY_MODEL="true", LOAD_FROM_CACHE_FILE="false",
                       DEV_CHECK_SAMPLES=1, DEV_CHECK_SAVE_SAMPLES=1, DEV_CHECK_MAX_NEW_TOKENS=self.args.max_new_tokens,
                       ALIGN_OUT=root / f"{name}-ALIGN", CPT_ROOT=cpt, ADAPTATION_OUT=cpt / "adaptation")
-        if adapter:
+        if stage == "instruction":
+            values.update(INSTRUCTION_MODEL=model or "", INSTRUCTION_DATA=self.output / "data/instruction_sft",
+                          INS_OUT=ins, SUPERVISED_TOKENS=0, NUM_TRAIN_EPOCHS=1, MAX_LENGTH=4096,
+                          DEV_CHECK_MODE="report")
+        elif adapter:
             values.update({f"{stage.upper()}_MODEL": model or "", "NUM_TRAIN_EPOCHS": 1,
                            "MAX_NEW_TOKENS": self.args.max_new_tokens,
                            "MAX_LENGTH": 2048 if stage == "ancient" else 768})
@@ -207,10 +225,11 @@ class Smoke:
                            "MAX_LENGTH": self.args.cpt_max_length,
                            "CACHE_DIR": self.output / "cache" / variant / phase,
                            "PHASE1_TOKENS": 0, "PHASE2_TOKENS": 0, "ADAPTATION_TOKENS": 512})
+        get_checkpoint = (lambda: self.instruction_checkpoint(output)) if stage == "instruction" else (lambda: self.checkpoint(output, adapter))
         ok = self.step(f"{variant}/train/{stage}", ["bash", str(ROOT / "scripts/train/run.sh")],
                        self.environment(gpu, **values), needs=model is not None and prepared,
-                       check=lambda: self.checkpoint(output, adapter))
-        return self.checkpoint(output, adapter) if ok else None
+                       check=get_checkpoint)
+        return get_checkpoint() if ok else None
 
     def ppl(self, variant, gpu, model, name, available):
         output = self.output / "evaluation/ppl" / name
@@ -232,7 +251,7 @@ class Smoke:
             for name in ("input.jsonl", "input.manifest.json"):
                 shutil.copy2(self.output / "data" / kind / name, output / name)
         task = "csc" if kind == "csc" else "ancient" if kind in {"c3", "fuxi"} else "cgec"
-        model_name = self.models[variant].name + ("" if variant == "base" else "-CPT")
+        model_name = self.models[variant].name + ("" if variant == "base" else "-CPT") + "-INS"
         suffix = {"csc": "CSC", "cgec": "CGEC", "ancient": "ACT"}[task]
         values = dict(MODEL=model or "", LORA=adapter or "", MODEL_NAME=f"{model_name}-{suffix}",
                       PYTHON=self.args.eval_python, RUN_DIR=output, STAGE="all", BATCH_SIZE=1,
@@ -241,8 +260,8 @@ class Smoke:
                       TENSOR_PARALLEL_SIZE=1, FEWSHOT=0)
         if kind.startswith("fcgec_"):
             values.update(DATASET="fcgec", SPLIT=kind.removeprefix("fcgec_"))
-        elif kind == "nacgec":
-            values.update(DATASET="nacgec", SPLIT="test")
+        elif kind in {"nacgec", "nacgec_test"}:
+            values.update(DATASET="nacgec", SPLIT="dev" if kind == "nacgec" else "test")
         elif task == "ancient":
             values.update(DATASET=kind)
         env = self.environment(gpu, **values)
@@ -255,8 +274,8 @@ class Smoke:
             if not read_json(output / "predictions.manifest.json")["complete"]:
                 raise ValueError("推理有失败样本")
             report = read_json(output / "metrics.json")
-            if kind == "fcgec_test" and report.get("status") != "exported_unlabeled_test":
-                raise ValueError("FCGEC 公开 test 应只导出提交文件")
+            if kind in {"fcgec_test", "nacgec_test"} and report.get("status") != "exported_unlabeled_test":
+                raise ValueError("此 test 路线应只导出提交文件")
             if kind == "fuxi" and judge and not report["complete"]:
                 raise ValueError("Fuxi 裁判未完成全部少量样本")
 
@@ -283,6 +302,8 @@ class Smoke:
             final_name = name if variant == "base" else name + "-CPT"
             if stages:
                 self.ppl(variant, gpu, model, final_name, eval_ok and prepared["ppl"])
+            model = self.train(variant, gpu, "instruction", model, train_ok and prepared["instruction_sft"])
+            final_name += "-INS"
             adapters = {task: self.train(variant, gpu, task, model, train_ok and prepared[task + "_sft"])
                         for task in ("csc", "cgec", "ancient")}
             for benchmark in BENCHMARKS:
@@ -300,9 +321,10 @@ class Smoke:
                           self.environment(gpu, MODEL=model or "", MODEL_NAME=final_name, PYTHON=self.args.eval_python,
                                            OUT=self.output / "evaluation/lmeh", BENCHMARK=benchmark, STAGE="run",
                                            LIMIT=self.args.eval_samples, MAX_LENGTH=8192, BATCH_SIZE=1,
+                                           EVAL_MODE="instruct",
                                            INFERENCE_BACKEND=self.args.backend, TENSOR_PARALLEL_SIZE=1),
                           needs=model is not None and eval_ok, check=check)
-            for kind in ("csc", "fcgec_valid", "fcgec_test", "nacgec", "c3", "fuxi"):
+            for kind in ("csc", "fcgec_valid", "fcgec_test", "nacgec", "nacgec_test", "c3", "fuxi"):
                 task = "csc" if kind == "csc" else "ancient" if kind in {"c3", "fuxi"} else "cgec"
                 self.local_evaluation(variant, gpu, model, adapters[task], kind, eval_ok and prepared[kind])
         finally:

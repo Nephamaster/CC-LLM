@@ -45,13 +45,8 @@ class DevPolicy:
         return policy
 
 
-def generation_stats(ids, body, reference, source, budget, im_end, stop_ids):
-    stopped = bool(ids and ids[-1] in stop_ids)
-    tokens = ids[:-1] if stopped else ids
-    grams = [tuple(tokens[i:i + 4]) for i in range(max(0, len(tokens) - 3))]
-    repeated_fraction = 1 - len(set(grams)) / len(grams) if grams else 0.0
+def repeated_text(body):
     compact = re.sub(r"\s+", "", body)
-    tail_loop = False
     for width in range(1, min(64, len(compact) // 4) + 1):
         unit = compact[-width:]
         repeats = 0
@@ -59,8 +54,15 @@ def generation_stats(ids, body, reference, source, budget, im_end, stop_ids):
             repeats += 1
         if (repeats >= (16 if width == 1 else 4)
                 and width * repeats >= len(compact) / 2 and any(c.isalnum() for c in unit)):
-            tail_loop = True
-            break
+            return True
+    return False
+
+
+def generation_stats(ids, body, reference, source, budget, im_end, stop_ids):
+    stopped = bool(ids and ids[-1] in stop_ids)
+    tokens = ids[:-1] if stopped else ids
+    grams = [tuple(tokens[i:i + 4]) for i in range(max(0, len(tokens) - 3))]
+    repeated_fraction = 1 - len(set(grams)) / len(grams) if grams else 0.0
     controls = sorted({c for c in body if unicodedata.category(c) in {"Cc", "Cs", "Co"} and c not in "\n\r\t"})
     content = re.sub(r"<think>\s*</think>", "", body).strip()
     special = bool(re.search(r"<\|(?:im_start|im_end|endoftext)\|>", body))
@@ -69,7 +71,7 @@ def generation_stats(ids, body, reference, source, budget, im_end, stop_ids):
     new_rare = sorted({c for c in body if 0x20000 <= ord(c) <= 0x323AF and c not in source + reference})
     return {"generated_tokens": len(ids), "budget": budget, "stopped": stopped,
             "im_end": bool(ids and ids[-1] == im_end), "hit_limit": len(ids) >= budget and not stopped,
-            "repetition": tail_loop or (len(tokens) >= 32 and repeated_fraction > 0.5),
+            "repetition": repeated_text(body) or (len(tokens) >= 32 and repeated_fraction > 0.5),
             "repeated_4gram_fraction": repeated_fraction, "abnormal": abnormal,
             "abnormal_controls": controls, "new_rare_hanzi": new_rare,
             "last_token_id": ids[-1] if ids else None}

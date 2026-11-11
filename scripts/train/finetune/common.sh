@@ -56,7 +56,7 @@ DATA_SEED="${DATA_SEED:-42}"
 if [[ -z "$MODEL_NAME" ]]; then
     [[ -s "$CC_ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run model_build/run.sh" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
-    MODEL_NAME="${MODEL_NAME}-CPT"
+    MODEL_NAME="${MODEL_NAME}-CPT-INS"
 fi
 [[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
     echo "MODEL_NAME must be the input model name, not a checkpoint path" >&2; exit 2;
@@ -94,7 +94,7 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
         model="$CC_ROOT/models/$MODEL_NAME"
     fi
     if [[ -z "$model" ]]; then
-        local pointer="${CPT_ROOT:-$TRAIN_ROOT/$MODEL_NAME}/next_stage_model.txt"
+        local pointer="${INS_OUT:-$TRAIN_ROOT/$MODEL_NAME}/next_stage_model.txt"
         if [[ -f "$pointer" ]]; then
             IFS= read -r model < "$pointer"
         else

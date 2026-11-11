@@ -4,9 +4,9 @@ CC-LLM 在 Qwen3 Base 上构建单汉字语义词表，并加入音形特征、�
 
 | 路线 | 正式训练顺序 | 下游产物 |
 | --- | --- | --- |
-| Base | 原基座 → 三项 LoRA | `B-CSC`、`B-CGEC`、`B-ACT` |
-| Char | 字符模型 → Phase1 → Char CPT → 三项 LoRA | `B-Char-CPT-{CSC,CGEC,ACT}` |
-| PGCA | 完整模型 → Phase1 → Phase2-A → Phase2-B → 三项 LoRA | `B-PGCA-CPT-{CSC,CGEC,ACT}` |
+| Base | 原基座 → General-SFT → 三项专项 LoRA | `B-INS-{CSC,CGEC,ACT}` |
+| Char | 字符模型 → Phase1 → Char CPT → General-SFT → 三项专项 LoRA | `B-Char-CPT-INS-{CSC,CGEC,ACT}` |
+| PGCA | 完整模型 → Phase1 → Phase2-A → Phase2-B → General-SFT → 三项专项 LoRA | `B-PGCA-CPT-INS-{CSC,CGEC,ACT}` |
 
 `B` 为原基座名称。构建从模型配置推导隐藏维度、注意力头维度和 PGCA 层位置，不绑定参数规模；其他架构需要单独适配。以下以 Qwen3-4B-Base 为例，完成后更换模型变量即可进行 Qwen3-8B-Base 或其他 Qwen3 Base 实验。
 
@@ -121,6 +121,9 @@ data/
 │   └── phase2/
 │       ├── train/*.tar.xz
 │       └── validation/*.jsonl
+├── instruction/
+│   ├── raw/{COIG-CQIA,tulu-3-sft-mixture}/
+│   └── prepared/                  # prepare 命令生成；也可指定外部成品目录
 ├── finetune/
 │   ├── csc/{csc_mix_dedup,cscd_dev}.jsonl
 │   ├── cgec/{train,validation}.jsonl
@@ -209,19 +212,27 @@ bash scripts/smoke/run.sh "$BASE"
 
 ## 6. 三条路线的正式训练
 
-以下三个入口均包含对应的 CSC、CGEC、Ancient LoRA，不需要在完成后再重复训练下游任务。按顺序执行，避免不同路线争用同一组 GPU。
+指令数据准备好后，先执行一次：
 
 ```bash
-# Base：保持原基座，直接做三项 LoRA。
+.venv/train/bin/python -B -m scripts.train.instruction.prepare
+```
+
+它清洗并混合本地 COIG-CQIA/Tulu 3，使用 evaluation 环境收集去污染输入；数据读取格式、许可证记录、混合参数和预算说明见 [General-SFT](scripts/train/instruction/README.md)。数据未下载好时先只运行 CPT 阶段，例如 `STAGES=phase1,phase2_a,phase2_b`，不要把缺数据的 instruction 阶段当作已完成。
+
+以下三个入口均包含 General-SFT、合并、生成验收及 CSC/CGEC/Ancient 专项 LoRA。按顺序执行，避免争用 GPU。
+
+```bash
+# Base：General-SFT → 合并为 B-INS → 三项专项 LoRA。
 MODEL_VARIANT=base MODEL_NAME="$B" BASE_MODEL="$BASE" \
 bash scripts/train/run.sh
 
-# Char：Phase1 → Char CPT → 三项 LoRA。
+# Char：Phase1 → Char CPT → General-SFT → 三项专项 LoRA。
 MODEL_VARIANT=char MODEL_NAME="${B}-Char" \
 PHASE1_MODEL="$PWD/models/${B}-Char" \
 bash scripts/train/run.sh
 
-# PGCA：Phase1 → Phase2-A → Phase2-B → 三项 LoRA。
+# PGCA：Phase1 → Phase2-A → Phase2-B → General-SFT → 三项专项 LoRA。
 MODEL_VARIANT=pgca MODEL_NAME="${B}-PGCA" \
 PHASE1_MODEL="$PWD/models/${B}-PGCA" \
 bash scripts/train/run.sh
@@ -236,6 +247,7 @@ bash scripts/train/run.sh
 | Char CPT | 主干全参数 CLM | `scripts/train/cpt/char.sh` |
 | PGCA-A | 音形分支与辅助头，冻结主干 | `scripts/train/cpt/phase2_a.sh` |
 | PGCA-B | 主干、分支和辅助头联合训练 | `scripts/train/cpt/phase2_b.sh` |
+| General-SFT | 主干及 PGCA 的 LoRA，关闭辅助损失；验收后合并 | `scripts/train/instruction/run.sh` |
 | CSC/CGEC/Ancient | 主干及 PGCA 线性层的 LoRA，关闭辅助损失 | `scripts/train/finetune/{common,csc,cgec,ancient}.sh` |
 
 阶段参数放在各脚本顶部，同名环境变量优先。正式默认 batch 如下，8 卡数值不代表固定使用 8 个进程：
@@ -245,6 +257,7 @@ bash scripts/train/run.sh
 | Phase1 / Char CPT | 8 | 4 | 256 |
 | PGCA-A | 8 | 1 | 64 |
 | PGCA-B | 16 | 2 | 256 |
+| General-SFT | 2 | 8 | 128 |
 | CSC / CGEC | 8 | 1 | 64 |
 | Ancient | 2 | 4 | 64 |
 
@@ -265,6 +278,8 @@ bash scripts/train/run.sh
 
 下游 LoRA 每次保存 checkpoint，还会自动执行每任务 1 条固定 Dev 自由生成，检查结束符监督及生成健康状况，写入 `checkpoint-N/dev_check/vN/`。失败保留报告并继续训练，不改变原有 loss 选模。正式评估前会对选中的模型再做完整验收，见下一节。
 
+General-SFT 的最终选模还要求完整生成验收通过，合并后复验；成功才发布 `outputs/train/M-INS/next_stage_model.txt`，专项训练从该完整权重出发。`SUPERVISED_TOKENS` 可配置，正式预算待数据就绪后确定；以实际标签和训练日志计数，不把相同配置值当作三路实际监督量已经相等。
+
 ## 7. 三条路线的正式评估
 
 vLLM 正式默认 batch 32、TP 4，需要至少四张可见卡。卡数少时显式降低 TP；PGCA 默认 HF，TP 参数不会为 HF 自动启用四卡张量并行。
@@ -273,24 +288,24 @@ vLLM 正式默认 batch 32、TP 4，需要至少四张可见卡。卡数少时�
 # 本例 CUDA_VISIBLE_DEVICES 是四卡。
 export TENSOR_PARALLEL_SIZE=4
 
-MODEL_NAME="$B" MODEL="$BASE" \
+MODEL_NAME="${B}-INS" \
 bash scripts/evaluation/run.sh
 
-MODEL_NAME="${B}-Char-CPT" \
+MODEL_NAME="${B}-Char-CPT-INS" \
 bash scripts/evaluation/run.sh
 
-MODEL_NAME="${B}-PGCA-CPT" \
+MODEL_NAME="${B}-PGCA-CPT-INS" \
 bash scripts/evaluation/run.sh
 ```
 
-入口读取该模型的 CPT 完成指针和三项 adapter 指针。Base 显式使用 `BASE`；Char/PGCA 使用训练阶段发布的权重。每条路线覆盖：
+入口读取合并 INS 模型和三项专项 adapter 指针。LMEH 默认 `EVAL_MODE=instruct`，通过保存的 Swift 非思考模板组织 few-shot 多轮消息，并核对 Prompt IDs；原始 Base/CPT 对照显式使用 `EVAL_MODE=base`，不能与 Chat 协议结果混填。每条路线覆盖：
 
 | 项目 | 数据 / 协议 |
 | --- | --- |
 | PPL | 六个中文领域，原始文本 |
 | LMEH | MMLU、CMMLU、GSM8K 为 5-shot；ARC-Challenge、SQuAD v2、CLUE 为 0-shot |
 | CSC | CSCD-NS、LEMON 七域，句子级纠正 P/R/F1 |
-| CGEC | FCGEC valid、NaCGEC test；公开 FCGEC test 仅导出提交文件 |
+| CGEC | FCGEC valid 主报 F0.5；NaCGEC Dev 主报双评分器 F0.5 平均；默认两项 Test 只导出提交文件 |
 | Ancient | C³Bench 五任务、Fuxi 21 任务 |
 
 如需完成 Fuxi 模型裁判项，在执行对应评估前配置可用接口：
@@ -311,9 +326,11 @@ CSC、CGEC、Ancient 的正式推理会先自动重新加载基座和 adapter，
 
 ## 8. 补齐 Phase1 后 PPL，切换下一个规模
 
-统一评估已经包含 Base、Char-CPT、PGCA-CPT 的 PPL。实验表若比较 Phase1 后模型，还需评估初始 Char 与 PGCA-ALIGN：
+统一评估读取 INS 模型。若比较未指令微调的原始 Base/CPT 或 Phase1 后 PPL，请显式用 PPL 子入口；它始终读取原始文本，不添加 ChatML：
 
 ```bash
+MODEL="$BASE" MODEL_NAME="$B" bash scripts/evaluation/ppl/run.sh
+
 MODEL="$PWD/models/${B}-Char" MODEL_NAME="${B}-Char" \
 bash scripts/evaluation/ppl/run.sh
 
@@ -348,13 +365,14 @@ BASE="$PWD/models/$B"
 
 | 路线 / 阶段 | 输入变量 | 未指定时 |
 | --- | --- | --- |
-| Base 下游 | `BASE_MODEL` 或各任务输入变量 | `models/<MODEL_NAME>` |
+| Base General-SFT | `BASE_MODEL` / `INSTRUCTION_MODEL` | `models/<MODEL_NAME>` |
 | PGCA Phase1 | `PHASE1_MODEL` | 最近一次构建指针 |
 | Char Phase1 | `PHASE1_MODEL` | `models/<MODEL_NAME>` |
 | Char CPT | `CPT_MODEL` | 该 Char 的 ALIGN 指针 |
 | PGCA-A | `PHASE2_A_MODEL` | 该 PGCA 的 ALIGN 指针 |
 | PGCA-B | `PHASE2_B_MODEL` | 该 PGCA 的 adaptation 指针 |
-| CSC / CGEC / Ancient | `CSC_MODEL` / `CGEC_MODEL` / `ANCIENT_MODEL` | 该路线的 CPT 指针 |
+| Char/PGCA General-SFT | `INSTRUCTION_MODEL` | 该路线的 CPT 指针 |
+| CSC / CGEC / Ancient | `CSC_MODEL` / `CGEC_MODEL` / `ANCIENT_MODEL` | 该路线的合并 INS 指针 |
 
 例如跳过已完成的 PGCA Phase1，接着运行 A/B：
 
@@ -363,11 +381,11 @@ MODEL_VARIANT=pgca MODEL_NAME="${B}-PGCA" \
 STAGES=phase2_a,phase2_b bash scripts/train/run.sh
 ```
 
-指定某个 CPT checkpoint 做 CSC：
+指定某个完整 INS 模型做 CSC：
 
 ```bash
 MODEL_VARIANT=pgca MODEL_NAME="${B}-PGCA" \
-CSC_MODEL=/absolute/path/to/cpt/checkpoint-N \
+CSC_MODEL=/absolute/path/to/ins/vN/merged \
 STAGES=csc bash scripts/train/run.sh
 ```
 
@@ -383,7 +401,7 @@ bash scripts/train/cpt/phase2_b.sh
 恢复 CSC LoRA 时，脚本可从 adapter 配置读取原基座：
 
 ```bash
-MODEL_NAME="${B}-PGCA-CPT" \
+MODEL_NAME="${B}-PGCA-CPT-INS" \
 RESUME_FROM_CHECKPOINT=/absolute/path/to/CSC/vN/checkpoint-N \
 bash scripts/train/finetune/csc.sh
 ```
@@ -397,6 +415,7 @@ bash scripts/train/finetune/csc.sh
 | 模型源码、词表、权重 | `models/<B>-Char`、`models/<B>-PGCA` |
 | Char 训练 | `outputs/train/<B>-Char-ALIGN`、`outputs/train/<B>-Char-CPT` |
 | PGCA 训练 | `outputs/train/<B>-PGCA-ALIGN`、`outputs/train/<B>-PGCA-CPT/{adaptation,joint}` |
+| General-SFT 与合并 | `outputs/train/<输入模型名称>-INS/{adapters,inputs,vN/merged}` |
 | 下游 adapter | `outputs/train/<输入模型名称>-{CSC,CGEC,ACT}` |
 | 缓存 | `outputs/cache/<模型名称>/` |
 | 评估 | `outputs/evaluation/` |

@@ -5,9 +5,9 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_CMD="${PYTHON_CMD:-$ROOT/.venv/train/bin/python}"
 MODEL_VARIANT="${MODEL_VARIANT:-pgca}"  # base / char / pgca
 case "$MODEL_VARIANT" in
-    base) default_stages=csc,cgec,ancient ;;
-    char) default_stages=phase1,cpt,csc,cgec,ancient ;;
-    pgca) default_stages=phase1,phase2_a,phase2_b,csc,cgec,ancient ;;
+    base) default_stages=instruction,csc,cgec,ancient ;;
+    char) default_stages=phase1,cpt,instruction,csc,cgec,ancient ;;
+    pgca) default_stages=phase1,phase2_a,phase2_b,instruction,csc,cgec,ancient ;;
     *) echo "MODEL_VARIANT must be base, char or pgca" >&2; exit 2 ;;
 esac
 STAGES="${STAGES:-$default_stages}"
@@ -28,7 +28,7 @@ fi
 IFS=, read -r -a requested_stages <<< "$STAGES"
 for stage in "${requested_stages[@]}"; do
     case "$MODEL_VARIANT:$stage" in
-        pgca:phase1|pgca:phase2_a|pgca:phase2_b|char:phase1|char:cpt|*:csc|*:cgec|*:ancient) ;;
+        pgca:phase1|pgca:phase2_a|pgca:phase2_b|char:phase1|char:cpt|*:instruction|*:csc|*:cgec|*:ancient) ;;
         *) echo "Unknown training stage: $stage" >&2; exit 2 ;;
     esac
 done
@@ -53,9 +53,11 @@ run_stage() {
         echo "[train] stage $name has a stale completion pointer; run it again"
     fi
     echo "[train] start $name input=${input:-previous stage} output=$output"
+    local instruction_output="${INS_ROOT:-${INS_OUT:-}}"
+    if [[ "$name" == instruction ]]; then instruction_output="$output"; fi
     env MODEL_VARIANT="$MODEL_VARIANT" MODEL_NAME="$model_name" MODEL="$input" PYTHON_CMD="$PYTHON_CMD" \
         TRAIN_ROOT="$TRAIN_ROOT" CPT_ROOT="$CPT_ROOT" ALIGN_OUT="$ALIGN_ROOT" \
-        ADAPTATION_OUT="$ADAPTATION_OUT" OUT="$output" bash "$script"
+        ADAPTATION_OUT="$ADAPTATION_OUT" INS_OUT="$instruction_output" OUT="$output" bash "$script"
     [[ -s "$stage_pointer" ]] || { echo "Stage $name finished without publishing $stage_pointer" >&2; return 1; }
     stage_ran=true
     echo "[train] complete $name: $(<"$stage_pointer")"
@@ -96,12 +98,20 @@ if selected phase2_b; then
         fi
     fi
 fi
+INS_ROOT="${INS_OUT:-$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-INS}"
+instruction_updated=false
+if selected instruction; then
+    run_stage instruction "$INS_ROOT" "${INSTRUCTION_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/instruction/run.sh"
+    instruction_updated="$stage_ran"
+fi
+FINETUNE_MODEL_NAME="${FINETUNE_MODEL_NAME}-INS"
+# 专项脚本从 INS_OUT 读取完整权重；只有用户显式传参才覆盖该来源。
 if selected csc; then
-    run_stage csc "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CSC" "${CSC_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/csc.sh"
+    run_stage csc "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CSC" "${CSC_MODEL:-}" "$instruction_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/csc.sh"
 fi
 if selected cgec; then
-    run_stage cgec "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CGEC" "${CGEC_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/cgec.sh"
+    run_stage cgec "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CGEC" "${CGEC_MODEL:-}" "$instruction_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/cgec.sh"
 fi
 if selected ancient; then
-    run_stage ancient "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-ACT" "${ANCIENT_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/ancient.sh"
+    run_stage ancient "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-ACT" "${ANCIENT_MODEL:-}" "$instruction_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/ancient.sh"
 fi

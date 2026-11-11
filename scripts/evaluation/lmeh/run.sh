@@ -6,7 +6,7 @@ PYTHON="${PYTHON:-$ROOT/.venv/evaluation/bin/python}"
 export PYTHONDONTWRITEBYTECODE=1
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 cd "$ROOT"
-args=(--benchmark "${BENCHMARK:-all}" --stage "${STAGE:-run}"
+args=(--benchmark "${BENCHMARK:-all}" --stage "${STAGE:-run}" --mode "${EVAL_MODE:-instruct}"
       --output-root "${OUT:-$ROOT/outputs/evaluation}"
       --device "${DEVICE:-cuda:0}" --dtype "${DTYPE:-bfloat16}"
       --batch-size "${BATCH_SIZE:-32}" --max-length "${MAX_LENGTH:-8192}"

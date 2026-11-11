@@ -26,7 +26,7 @@ def fixed_samples(path, task, count):
     for index, (row, meta) in enumerate(rows):
         if row is None or (metas is not None and (meta is None or meta["messages"] != row["messages"])):
             raise ValueError("Dev messages and metadata do not match")
-        channel = row.get("channel", meta.get("task") if meta else task)
+        channel = row.get("channel", meta.get("task") if meta else task) if task != "instruction" else task
         if channel not in channels:
             raise ValueError(f"Dev has unexpected channel {channel}; ancient Dev needs channel or matching metadata")
         messages = row.get("messages", [])
@@ -75,7 +75,9 @@ def encoded_case(template, row):
     if len(eos) != 1:
         raise ValueError("<|im_end|> must map to exactly one token")
     positions = [i for i, value in enumerate(ids) if value == eos[0]]
-    supervised = bool(positions and full["labels"][positions[-1]] == eos[0])
+    supervised = (bool(positions and full["labels"][positions[-1]] == eos[0])
+                  and sum(full["labels"][i] == eos[0] for i in positions)
+                  == sum(message["role"] == "assistant" for message in row["messages"]))
     aligned = ids[:len(prefix)] == prefix
     return inference, prefix, ids[len(prefix):], eos[0], supervised, aligned
 
@@ -251,7 +253,7 @@ def saved_checkpoint_check(model, template, dev, task, output):
     dev_path = Path(dev).resolve() if dev else None
     try:
         policy = DevPolicy.from_env()
-        if dev_path is None or task not in {"csc", "cgec", "ancient"}:
+        if dev_path is None or task not in {"csc", "cgec", "ancient", "instruction"}:
             raise ValueError("checkpoint Dev check needs CC_LLM_SFT_DEV and CC_LLM_SFT_TASK")
         samples = fixed_samples(dev_path, task, policy.save_samples)
         report = audit(model, template, samples, policy, full=False)
@@ -282,9 +284,8 @@ def validation_source(model_path, adapter_path, contract, explicit):
 def run(args):
     from peft import PeftModel
     from swift.model import get_model_processor
-    from swift.template import get_template
     from swift.utils import import_external_file
-    from scripts.evaluation.inference import training_contract
+    from scripts.evaluation.inference import training_contract, training_template
 
     policy = DevPolicy.from_env()
     contract = training_contract(args.model, args.adapter)
@@ -298,18 +299,10 @@ def run(args):
         model = PeftModel.from_pretrained(model, str(args.adapter), is_trainable=False)
     if getattr(model.config, "model_type", None) == "qwen3_pgca":
         model.config.pgca_enabled = True
-    settings = dict(contract["settings"])
     training_args = json.loads(Path(contract["args_path"]).read_text())
-    for key in ("loss_scale", "is_binary_loss_scale", "padding_side"):
-        if key in training_args:
-            settings[key] = training_args[key]
-    settings["default_system"] = settings.pop("system", None)
-    if isinstance(settings["default_system"], str) and settings["default_system"].endswith(".txt"):
-        settings["default_system"] = Path(settings["default_system"]).read_text()
-    template = get_template(processor, template_type=contract["template"],
-                            max_length=training_args.get("max_length") or model.config.max_position_embeddings,
-                            truncation_strategy={"delete": "raise"}.get(training_args.get("truncation_strategy"),
-                                                training_args.get("truncation_strategy") or "raise"), **settings)
+    template = training_template(processor, contract, training_args.get("max_length") or model.config.max_position_embeddings,
+                                  {"delete": "raise"}.get(training_args.get("truncation_strategy"),
+                                                         training_args.get("truncation_strategy") or "raise"))
     report = audit(model, template, samples, policy, full=True)
     report.update(task=args.task, dev=str(dev), model=str(args.model),
                   adapter_path=str(args.adapter) if args.adapter else None,
@@ -323,7 +316,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--adapter", type=Path)
-    parser.add_argument("--task", choices=("csc", "cgec", "ancient"), required=True)
+    parser.add_argument("--task", choices=("csc", "cgec", "ancient", "instruction"), required=True)
     parser.add_argument("--dev", type=Path, default=os.environ.get("DEV_CHECK_DEV"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default=os.environ.get("DEV_CHECK_DEVICE", "cuda:0"))

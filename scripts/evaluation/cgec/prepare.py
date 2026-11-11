@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-from ..common import ROOT, prepare_file
+from ..common import ROOT, iter_jsonl, prepare_file
 
 
 def fcgec_references(sentence, operation):
@@ -86,33 +86,79 @@ def fcgec_rows(path, split):
                "messages": [{"role": "user", "content": source}]}
 
 
-def nacgec_rows(path, split):
+def nacgec_rows(path, split, labeled=True):
     with path.open(encoding="utf-8-sig") as handle:
-        for line in handle:
+        for index, line in enumerate(handle, 1):
             fields = line.rstrip("\r\n").split("\t")
-            if len(fields) < 3 or not fields[1]:
+            if not labeled:
+                if len(fields) != 1 or not fields[0]:
+                    raise ValueError(f"invalid NaCGEC test input at line {index}: {path}")
+                uid, source, references = str(index), fields[0], None
+            elif len(fields) < 3 or not fields[1]:
                 raise ValueError(f"invalid NaCGEC parallel row: {path}")
-            uid, source, *references = fields
+            else:
+                uid, source, *references = fields
             yield {"id": f"nacgec/{split}/{uid}", "original_id": uid, "dataset": "nacgec", "task": "cgec",
                    "split": split, "src": source, "references": references,
+                   "reference_origin": "explicit_test_reference" if split == "test" and labeled else "public_dev" if labeled else None,
                    "messages": [{"role": "user", "content": source}]}
+
+
+def validate_input(path, dataset, split, explicit_gold=False):
+    labeled = (split != "test") or explicit_gold
+    count = 0
+    for row in iter_jsonl(path):
+        count += 1
+        if row.get("dataset") != dataset or row.get("split") != split:
+            raise ValueError("CGEC dataset/split does not match the requested run; prepare a new run")
+        if (row.get("references") is not None) != labeled:
+            raise ValueError("CGEC gold policy differs from requested Dev/Test export; prepare a new run")
+        if dataset == "nacgec" and split == "test" and labeled and row.get("reference_origin") != "explicit_test_reference":
+            raise ValueError("old implicit NaCGEC test gold: prepare with --reference-file explicitly")
+    if not count:
+        raise ValueError("empty CGEC input")
+
+
+def nacgec_test_rows(input_path, reference_path=None):
+    inputs = nacgec_rows(input_path, "test", labeled=False)
+    if reference_path is None:
+        yield from inputs
+        return
+    references = nacgec_rows(reference_path, "test")
+    for source, gold in itertools.zip_longest(inputs, references):
+        if source is None or gold is None or source["src"] != gold["src"] or source["original_id"] != gold["original_id"]:
+            raise ValueError("NaCGEC explicit gold must match official test input order, IDs and sources")
+        yield {**source, "references": gold["references"], "reference_origin": "explicit_test_reference"}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=("fcgec", "nacgec"), required=True)
-    parser.add_argument("--split", choices=("valid", "test"), default="test")
+    parser.add_argument("--split", choices=("dev", "valid", "test"), default="dev")
+    parser.add_argument("--reference-file", type=Path, help="explicit published NaCGEC test references; otherwise export only")
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data/evaluation/cgec")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
+    if args.reference_file is not None and (args.dataset != "nacgec" or args.split != "test"):
+        parser.error("--reference-file is only for explicit NaCGEC test scoring")
+    args.split = ("valid" if args.split == "dev" else args.split) if args.dataset == "fcgec" else ("dev" if args.split == "valid" else args.split)
+    if args.output.exists():
+        validate_input(args.output, args.dataset, args.split, args.reference_file is not None)
+    if args.check_only:
+        if not args.output.exists():
+            raise FileNotFoundError(args.output)
+        return
     if args.dataset == "fcgec":
         path = args.data_dir / "FCGEC" / f"FCGEC_{args.split}.json"
         rows = fcgec_rows(path, args.split)
+        sources = [path]
     else:
-        suffix = "dev" if args.split == "valid" else "test"
-        path = args.data_dir / "NaCGEC/data" / f"nacgec.{suffix}.ref.para"
-        rows = nacgec_rows(path, args.split)
-    print(prepare_file(rows, args.output, [path], f"{args.dataset}-{args.split}-source-only-multireference-v2"))
+        directory = args.data_dir / "NaCGEC/data"
+        path = directory / ("nacgec.dev.ref.para" if args.split == "dev" else "nacgec.test.input")
+        rows = nacgec_rows(path, "dev") if args.split == "dev" else nacgec_test_rows(path, args.reference_file)
+        sources = [path] + ([args.reference_file] if args.reference_file is not None else [])
+    print(prepare_file(rows, args.output, sources, f"{args.dataset}-{args.split}-explicit-gold-v3"))
 
 
 if __name__ == "__main__":

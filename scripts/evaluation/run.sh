@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON="${PYTHON:-$ROOT/.venv/evaluation/bin/python}"
-BENCHMARKS="${BENCHMARKS:-ppl,lmeh,csc,fcgec_valid,fcgec_test,nacgec,ancient_c3,ancient_fuxi}"
+BENCHMARKS="${BENCHMARKS:-ppl,lmeh,csc,fcgec_valid,fcgec_test,nacgec,nacgec_test,ancient_c3,ancient_fuxi}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 [[ -x "$PYTHON" ]] || { echo "Run scripts/environment/run.sh first" >&2; exit 1; }
@@ -12,7 +12,7 @@ MODEL_NAME="${MODEL_NAME:-${CPT_MODEL_NAME:-}}"
 if [[ -z "$MODEL_NAME" ]]; then
     [[ -s "$ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run model_build/run.sh" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$ROOT/models/model_name.txt"
-    MODEL_NAME="${MODEL_NAME}-CPT"
+    MODEL_NAME="${MODEL_NAME}-CPT-INS"
 fi
 if [[ -z "${MODEL:-}" ]]; then
     pointer="$TRAIN_ROOT/$MODEL_NAME/next_stage_model.txt"
@@ -25,7 +25,7 @@ fi
 IFS=, read -r -a requested_benchmarks <<< "$BENCHMARKS"
 for benchmark in "${requested_benchmarks[@]}"; do
     case "$benchmark" in
-        ppl|lmeh|csc|fcgec_valid|fcgec_test|nacgec|ancient_c3|ancient_fuxi) ;;
+        ppl|lmeh|csc|fcgec_valid|fcgec_test|nacgec|nacgec_test|ancient_c3|ancient_fuxi) ;;
         *) echo "Unknown evaluation target: $benchmark" >&2; exit 2 ;;
     esac
 done
@@ -65,6 +65,11 @@ if selected fcgec_test; then
         DATASET=fcgec SPLIT=test bash "$ROOT/scripts/evaluation/cgec/run.sh"
 fi
 if selected nacgec; then
+    adapter="$(adapter_path CGEC)"
+    LORA="$adapter" MODEL="$MODEL" MODEL_NAME="${MODEL_NAME}-CGEC" PYTHON="$PYTHON" \
+        DATASET=nacgec SPLIT=dev bash "$ROOT/scripts/evaluation/cgec/run.sh"
+fi
+if selected nacgec_test; then
     adapter="$(adapter_path CGEC)"
     LORA="$adapter" MODEL="$MODEL" MODEL_NAME="${MODEL_NAME}-CGEC" PYTHON="$PYTHON" \
         DATASET=nacgec SPLIT=test bash "$ROOT/scripts/evaluation/cgec/run.sh"

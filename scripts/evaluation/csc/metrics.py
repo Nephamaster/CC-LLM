@@ -323,13 +323,16 @@ def evaluate_files(
     rows: List[Dict[str, Any]] = []
     for input_path in input_paths:
         rows.extend(tqdm(iter_jsonl(input_path), desc=f"load {input_path.name}", unit="rows"))
-    raw_result = calculate_equal_length_metrics(tqdm(rows, desc="metrics overall", unit="rows", leave=False))
+    raw_result = calculate_equal_length_metrics(tqdm(rows, desc="metrics raw", unit="rows", leave=False), prediction_key="predict_raw")
     result: Dict[str, Any] = {
         "inputs": [str(path) for path in input_paths],
         "sample_count": len(rows),
         "raw": raw_result,
-        "datasets": grouped_metrics(rows),
-        "phonetic": phonetic_stats(rows),
+        "datasets": grouped_metrics(rows, prediction_key="predict_raw"),
+        "cleaned": calculate_equal_length_metrics(rows),
+        "datasets_cleaned": grouped_metrics(rows),
+        "prediction_policy": "primary raw full output; cleaned first-line and ChERRANT are supplementary",
+        "phonetic": phonetic_stats(rows, prediction_key="predict_raw"),
     }
     if cherrant_dir is not None:
         predictions, cherrant_stats = cherrant_equalize(rows, cherrant_dir)

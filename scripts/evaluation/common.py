@@ -53,9 +53,23 @@ def read_journal(path):
 
 def prediction_health(rows):
     from collections import Counter
-
-    return {"samples": len(rows), "empty_outputs": sum(not r["predict_clean"] for r in rows),
-            "finish_reasons": dict(Counter(r.get("finish_reason") or "unknown" for r in rows))}
+    from scripts.train.finetune.dev_metrics import repeated_text
+    n = len(rows)
+    reasons = Counter(r.get("finish_reason") or "unknown" for r in rows)
+    stopped = sum(r.get("finish_reason") in {"stop", "eos", "eos_token", "stop_sequence"} for r in rows)
+    truncated = sum(r.get("finish_reason") == "length" for r in rows)
+    repeated = sum(repeated_text(r.get("predict_raw", r["predict_clean"])) for r in rows)
+    report = {"samples": n, "empty_outputs": sum(not r["predict_clean"] for r in rows),
+              "finish_reasons": dict(reasons), "normal_stop_count": stopped, "truncation_count": truncated,
+              "repetition_count": repeated, "normal_stop_rate": stopped/n if n else None,
+              "truncation_rate": truncated/n if n else None, "repetition_rate": repeated/n if n else None,
+              "denominator": "all samples, including errors/unknown finish reasons",
+              "repetition_detector": "raw-text terminal loops; heuristic, not semantic repetition",
+              "note": "backend stop is not proof that im_end was emitted; exact EOS IDs are checked in Dev acceptance"}
+    tasks = {r.get("task") for r in rows}
+    if len(tasks) > 1:
+        report["by_task"] = {task: prediction_health([r for r in rows if r.get("task") == task]) for task in sorted(tasks)}
+    return report
 
 
 def scoring_environment():

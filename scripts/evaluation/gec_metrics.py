@@ -50,7 +50,7 @@ def cherrant_score(rows, output_dir, *, remove_punctuation=False):
 
 
 def reference_edits(source, target):
-    """The pinned official edit_creator algorithm, applied separately to every reference."""
+    """NUS edit_creator alignment, applied separately to every reference."""
     from .vendor.m2scorer import levenshtein as m2
 
     graphs = [m2.edit_graph(*m2.levenshtein_matrix(source.split(), target.split(), 1, 1, cost)) for cost in (1, 2)]
@@ -59,8 +59,10 @@ def reference_edits(source, target):
     v, e, distance, edits = m2.merge_graph(v1, v2, e1, e2, d1, d2, a1, a2)
     v, e, distance, edits = m2.transitive_arcs(v, e, distance, edits, 0, False)
     weights = m2.set_weights(e, distance, edits, [], False, False)
-    return [(start, end, old, [new]) for start, end, old, new in m2.best_edit_seq_bf(v, e, weights, edits, False)
-            if old != new]
+    # Backtracking returns reverse order; matchSeq consumes source-ordered gold.
+    return sorted([(start, end, old, [new])
+                   for start, end, old, new in m2.best_edit_seq_bf(v, e, weights, edits, False) if old != new],
+                  key=lambda edit: (edit[0], edit[1]))
 
 
 def maxmatch_score(rows, output_dir):
@@ -97,5 +99,5 @@ def maxmatch_score(rows, output_dir):
             hyp_file.write(hyp + "\n")
     p, r, f = m2.batch_multi_pre_rec_f1(hypotheses, sources, all_edits, max_unchanged_words=2, beta=.5)
     return {"precision": p * 100, "recall": r * 100, "f0.5": f * 100,
-            "segmenter": "THULAC seg_only=True", "gold_alignment": "NUS edit_creator, max_unchanged_words=0",
+            "segmenter": "THULAC seg_only=True", "gold_alignment": "NUS edit_creator, source-ordered edits, max_unchanged_words=0",
             "system_max_unchanged_words": 2}

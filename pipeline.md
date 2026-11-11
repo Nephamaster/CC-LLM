@@ -876,6 +876,12 @@ scripts/train/finetune/
 
 三条实验路线均执行相同类型的 SFT。
 
+### 5.0 通用指令微调（General-SFT）
+
+专项 SFT 之前，三条路线均先完成 General-SFT：Base → Base-INS，Char-CPT → Char-CPT-INS，PGCA-CPT → PGCA-CPT-INS。使用同一 COIG-CQIA/Tulu 3 清洗池和统一的目标监督预算，正式预算待真实数据统计后确定。仅监督 Assistant 及 EOS，采用保存的 Qwen3 非思考 ChatML。
+
+入口为 `scripts/train/instruction/run.sh`。General-SFT 使用 LoRA，按有限 Dev loss 排序并要求完整生成/Adapter/Cache 验收，合并后复验，通过后发布完整 `M-INS` 权重。专项任务从该完整权重开始，各自训练独立 Adapter，不叠加 General-SFT Adapter。完整对话预算可能略超目标，必须用准备报告与实际训练日志对齐三路监督量，不能仅凭相同配置宣称严格相等。数据与执行细节见 [General-SFT](scripts/train/instruction/README.md)。
+
 ### 5.1 LoRA 微调机制
 
 默认配置：
@@ -932,15 +938,15 @@ Epochs        = 5
 执行：
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint-N \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
 bash scripts/train/finetune/csc.sh
 ```
 
 输出：
 
 ```text
-PGCA-CPT-CSC/
+PGCA-CPT-INS-CSC/
 ```
 
 ### 5.3 中文语法纠错（CGEC）
@@ -967,15 +973,15 @@ Epochs        = 5
 执行：
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint-N \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
 bash scripts/train/finetune/cgec.sh
 ```
 
 输出：
 
 ```text
-PGCA-CPT-CGEC/
+PGCA-CPT-INS-CGEC/
 ```
 
 ### 5.4 古汉语多任务微调（ACT）
@@ -1031,15 +1037,15 @@ L_{\mathrm{punctuate}}
 执行：
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint-N \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
 bash scripts/train/finetune/ancient.sh
 ```
 
 输出：
 
 ```text
-PGCA-CPT-ACT/
+PGCA-CPT-INS-ACT/
 ```
 
 ### 5.5 下游训练的生成式验收
@@ -1124,7 +1130,7 @@ bash scripts/evaluation/ppl/run.sh
 
 ### 6.2 通用语言理解与推理
 
-使用 lm-evaluation-harness。
+使用 lm-evaluation-harness。所有通用主结果使用 General-SFT 后的 INS 模型，默认 `EVAL_MODE=instruct`，从保存的 Swift 非思考模板恢复实际 Prompt；few-shot 固定为多轮 user/assistant 消息。原始 Base/CPT 对照须显式设置 `EVAL_MODE=base`，不可混用协议。
 
 覆盖：
 
@@ -1149,7 +1155,7 @@ bash scripts/evaluation/ppl/run.sh
 
 ```bash
 MODEL=/path/to/checkpoint \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS \
 BENCHMARK=all \
 bash scripts/evaluation/lmeh/run.sh
 ```
@@ -1167,7 +1173,7 @@ BENCHMARK=clue
 
 CLUE 在论文表中按照源码定义的任务组汇总，不能直接称为官方 CLUE 总分。
 
-### 6.3 CSC 正式评估
+### 6.3 CSC 正式评估（完整原始输出为主）
 
 评估数据：
 
@@ -1179,9 +1185,9 @@ LEMON
 使用对应模型训练得到的 CSC Adapter。
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint \
-LORA=/path/to/PGCA-CPT-CSC/adapter-checkpoint \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CSC \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+LORA=/path/to/PGCA-CPT-INS-CSC/adapter-checkpoint \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS-CSC \
 bash scripts/evaluation/csc/run.sh
 ```
 
@@ -1206,9 +1212,9 @@ NaCGEC
 执行 FCGEC Valid：
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint \
-LORA=/path/to/PGCA-CPT-CGEC/adapter-checkpoint \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CGEC \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+LORA=/path/to/PGCA-CPT-INS-CGEC/adapter-checkpoint \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS-CGEC \
 DATASET=fcgec SPLIT=valid \
 bash scripts/evaluation/cgec/run.sh
 ```
@@ -1216,10 +1222,10 @@ bash scripts/evaluation/cgec/run.sh
 执行 NaCGEC：
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint \
-LORA=/path/to/PGCA-CPT-CGEC/adapter-checkpoint \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CGEC \
-DATASET=nacgec SPLIT=test \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+LORA=/path/to/PGCA-CPT-INS-CGEC/adapter-checkpoint \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS-CGEC \
+DATASET=nacgec SPLIT=dev \
 bash scripts/evaluation/cgec/run.sh
 ```
 
@@ -1227,11 +1233,11 @@ bash scripts/evaluation/cgec/run.sh
 
 - 编辑级 Precision
 - 编辑级 Recall
-- 编辑级 F1
-- F0.5
+- F0.5（FCGEC 主指标；NaCGEC 双评分器算术平均）
+- 编辑级 F1（补充）
 - NaCGEC 对应评分协议
 
-FCGEC 公开 Test 没有本地可用的完整参考标签，脚本生成提交文件，不能在本地伪造 Test 分数。
+FCGEC 默认 Test 仅导出提交。NaCGEC 默认 Dev 使用 `nacgec.dev.ref.para` 评分，Test 使用 `nacgec.test.input` 导出。NaCGEC 官方已公开 Test gold；本地 Test 评分需显式传 `REFERENCE_FILE`，不能再描述为“官方没有公开参考”。[官方说明](https://github.com/masr2000/NaCGEC)
 
 ### 6.5 古汉语能力评估
 
@@ -1255,9 +1261,9 @@ Fùxì 包含多种古汉语知识、理解和生成任务。
 执行 C³Bench：
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint \
-LORA=/path/to/PGCA-CPT-ACT/adapter-checkpoint \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+LORA=/path/to/PGCA-CPT-INS-ACT/adapter-checkpoint \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS-ACT \
 DATASET=c3 \
 bash scripts/evaluation/ancient/run.sh
 ```
@@ -1265,9 +1271,9 @@ bash scripts/evaluation/ancient/run.sh
 执行 Fùxì：
 
 ```bash
-MODEL=/path/to/PGCA-CPT/checkpoint \
-LORA=/path/to/PGCA-CPT-ACT/adapter-checkpoint \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT \
+MODEL=/path/to/PGCA-CPT-INS/merged \
+LORA=/path/to/PGCA-CPT-INS-ACT/adapter-checkpoint \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS-ACT \
 DATASET=fuxi \
 bash scripts/evaluation/ancient/run.sh
 ```
@@ -1290,22 +1296,22 @@ Fùxì 部分任务需要额外的模型裁判。
 #### Base
 
 ```bash
-MODEL_NAME=Qwen3-1.7B-Base \
-MODEL="$BASE_MODEL" \
+MODEL_NAME=Qwen3-Base-INS \
+MODEL=/path/to/Base-INS/merged \
 bash scripts/evaluation/run.sh
 ```
 
-#### Char-CPT
+#### Char-CPT-INS
 
 ```bash
-MODEL_NAME=Qwen3-1.7B-Base-Char-CPT \
+MODEL_NAME=Qwen3-1.7B-Base-Char-CPT-INS \
 bash scripts/evaluation/run.sh
 ```
 
-#### PGCA-CPT
+#### PGCA-CPT-INS
 
 ```bash
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS \
 bash scripts/evaluation/run.sh
 ```
 
@@ -1315,7 +1321,7 @@ bash scripts/evaluation/run.sh
 
 ```bash
 BENCHMARKS=ppl,lmeh \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS \
 bash scripts/evaluation/run.sh
 ```
 
@@ -1323,7 +1329,7 @@ bash scripts/evaluation/run.sh
 
 ```bash
 BENCHMARKS=csc,fcgec_valid,nacgec,ancient_c3 \
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-INS \
 bash scripts/evaluation/run.sh
 ```
 
@@ -1652,9 +1658,9 @@ outputs/smoke/vN/summary.md
 ### Step 4：执行三组正式训练
 
 ```text
-Base  → 下游 SFT
-Char  → Phase1 → Char-CPT → 下游 SFT
-PGCA  → Phase1 → Phase2-A → Phase2-B → 下游 SFT
+Base  → General-SFT/合并 → 下游专项 SFT
+Char  → Phase1 → Char-CPT → General-SFT/合并 → 下游专项 SFT
+PGCA  → Phase1 → Phase2-A → Phase2-B → General-SFT/合并 → 下游专项 SFT
 ```
 
 使用各自的 `MODEL_VARIANT`、`MODEL_NAME` 和输入模型路径。
@@ -1711,18 +1717,18 @@ KV Cache
 分别运行：
 
 ```bash
-MODEL_NAME=Qwen3-1.7B-Base \
-MODEL=/absolute/path/to/Qwen3-1.7B-Base \
+MODEL_NAME=Qwen3-Base-INS \
+MODEL=/absolute/path/to/Base-INS/merged \
 bash scripts/evaluation/run.sh
 ```
 
 ```bash
-MODEL_NAME=Qwen3-1.7B-Base-Char-CPT \
+MODEL_NAME=Qwen3-Base-Char-CPT-INS \
 bash scripts/evaluation/run.sh
 ```
 
 ```bash
-MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT \
+MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
 bash scripts/evaluation/run.sh
 ```
 

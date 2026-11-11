@@ -96,7 +96,8 @@ def evaluate_one(args, benchmark, backend):
                 "max_length": args.max_length, "dtype": args.dtype, "device": args.device,
                 "batch_size": args.batch_size, "limit": args.limit, "smoke_only": args.limit is not None,
                 "seed": 42, "bootstrap_iters": 0 if args.limit else 1000,
-                "apply_chat_template": False, "add_bos_token": False,
+                "evaluation_mode": args.mode, "apply_chat_template": args.mode == "instruct",
+                "fewshot_as_multiturn": args.mode == "instruct", "add_bos_token": False,
                 "tensor_parallel_size": args.tensor_parallel_size,
                 "overflow_policy": "error; no prompt/few-shot truncation",
                 "HF_ENDPOINT": os.getenv("HF_ENDPOINT", "https://hf-mirror.com")}
@@ -125,6 +126,9 @@ def evaluate_one(args, benchmark, backend):
             if backend.world_size != 1:
                 raise ValueError("this launcher is single-process; do not use torchrun/accelerate launch")
         backend.checkpoint_identity = model_identity
+    if args.mode == "instruct":
+        from .chat import install_chat
+        manifest["chat_protocol"] = install_chat(backend, args.model, output)
     manifest["actual_model"] = {"backend_class": type(backend).__name__,
                                 "tokenizer": type(backend.tokenizer).__name__}
     if backend_name == "hf":
@@ -139,7 +143,7 @@ def evaluate_one(args, benchmark, backend):
     root = loaded.get("groups", {}).get(task_name) or loaded["tasks"].get(task_name)
     result = evaluator.simple_evaluate(
         model=backend, tasks=[root], task_manager=manager, num_fewshot=BENCHMARKS[benchmark]["shots"],
-        limit=args.limit, log_samples=True, apply_chat_template=False, fewshot_as_multiturn=False,
+        limit=args.limit, log_samples=True, apply_chat_template=args.mode == "instruct", fewshot_as_multiturn=args.mode == "instruct",
         random_seed=42, numpy_random_seed=42, torch_random_seed=42, fewshot_random_seed=42,
         bootstrap_iters=0 if args.limit else 1000, cache_requests=False,
     )
@@ -163,6 +167,7 @@ def evaluate_one(args, benchmark, backend):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--benchmark", default="all")
+    parser.add_argument("--mode", choices=("base", "instruct"), default="instruct")
     parser.add_argument("--stage", choices=("inspect", "check", "run"), default="run")
     parser.add_argument("--model", type=Path)
     parser.add_argument("--model-name")

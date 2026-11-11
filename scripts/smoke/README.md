@@ -18,13 +18,15 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smoke/run.sh /path/to/Qwen3-Base
 
 | 路线 | 模型构建与训练 | 评估 |
 | --- | --- | --- |
-| Base | 读取原基座 → CSC / CGEC / Ancient LoRA | 原 Base PPL、六项通用 benchmark、三类下游 adapter |
-| Char | 从 Base 构建 Char → Phase1 → Phase2 CPT → 三项 LoRA | 初始 Char 与 Char-CPT PPL、六项通用 benchmark、三类下游 adapter |
-| PGCA | 从 Char 构建完整 PGCA → Phase1 → Phase2-A → Phase2-B → 三项 LoRA | PGCA-ALIGN 与 PGCA-CPT PPL、六项通用 benchmark、三类下游 adapter |
+| Base | 原基座 → General-SFT/合并 → 三项专项 LoRA | 原 Base PPL、INS 通用 benchmark、专项 adapter |
+| Char | Base 构建 Char → Phase1 → CPT → General-SFT/合并 → 三项专项 LoRA | 初始 Char/CPT PPL、INS 通用 benchmark、专项 adapter |
+| PGCA | Char 构建 PGCA → Phase1 → Phase2-A/B → General-SFT/合并 → 三项专项 LoRA | ALIGN/CPT PPL、INS 通用 benchmark、专项 adapter |
 
 六项通用 benchmark 为 MMLU、ARC-Challenge、SQuAD v2、GSM8K、CMMLU、CLUE；LMEH 的 `LIMIT=1` 是每个叶子任务各一条，所以 MMLU/CMMLU/CLUE 的全部子任务都会检查。保留正式脚本的 few-shot 协议。
 
-下游覆盖 CSCD-NS 与 LEMON 七域、FCGEC valid、FCGEC 无标签 test 的提交导出、NaCGEC、C³Bench 五任务、Fuxi 全部 21 任务。评分使用现有入口和真实参考答案。微调每个阶段只训练两步，输出质量与短生成上限不作正式性能结论。
+下游覆盖 CSCD-NS 与 LEMON 七域、FCGEC valid/Test 提交、NaCGEC Dev 评分/Test 提交、C³Bench 五任务、Fuxi 全部 21 任务。评分使用现有入口和真实参考答案。微调每个阶段只训练两步，输出质量与短生成上限不作正式性能结论。
+
+指令数据需先按 [General-SFT](../train/instruction/README.md) 准备；缺少该数据时其后训练/评估会标为失败或阻断，不会用假数据补齐。冒烟的 General-SFT 合并验收使用 report 模式并明确标记 smoke_only，不代表正式生成门槛通过。
 
 训练通过不仅看进程退出码：还检查发布的 checkpoint、实际训练步数、所有已记录验证 loss 有限，以及下游辅助损失关闭。评估检查推理是否完整、评分文件是否生成；PPL 要完成六域，LMEH 要生成表格指标。
 
