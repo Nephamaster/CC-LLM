@@ -8,10 +8,10 @@ cd "$ROOT"
 MODEL_NAME="${MODEL_NAME:-}"
 MODEL="${MODEL:-}"
 INSTRUCTION_DATA="${INSTRUCTION_DATA:-}"
-SUPERVISED_TOKENS="${SUPERVISED_TOKENS:-0}"  # 0 只表示全量一遍；正式预算待三条路线统计后确定
+SUPERVISED_TOKENS="${SUPERVISED_TOKENS:-0}"  # 每 Epoch 的 Assistant 监督量目标；0 使用全部保留样本
 MAX_LENGTH="${MAX_LENGTH:-4096}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
-NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"
+NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"  # 首轮默认 1，可显式设置 2
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2}"
 GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-8}"
 ADD_NON_THINKING_PREFIX=false
@@ -22,7 +22,7 @@ if [[ -z "$MODEL_NAME" ]]; then
     IFS= read -r MODEL_NAME < "$ROOT/models/model_name.txt"
     MODEL_NAME="${MODEL_NAME}-CPT"
 fi
-source "$TASK_DIR/../finetune/common.sh"
+source "$TASK_DIR/../downstream/common.sh"
 
 if [[ -z "$MODEL" ]]; then
     pointer="$TRAIN_ROOT/$MODEL_NAME/next_stage_model.txt"
@@ -46,7 +46,6 @@ DEV="$view/dev.jsonl"
   --output "$TRAIN" --tokens "$SUPERVISED_TOKENS" --max-length "$MAX_LENGTH"
 "$PYTHON_CMD" -B -m scripts.train.instruction.budget --model "$MODEL" --input "$source_dev" \
   --output "$DEV" --tokens 0 --max-length "$MAX_LENGTH"
-if [[ "$SUPERVISED_TOKENS" != 0 ]]; then NUM_TRAIN_EPOCHS=1; fi
-run_finetuning instruction
+run_sft instruction
 "$PYTHON_CMD" -B -m scripts.train.instruction.finish --model "$MODEL" --adapter-root "$OUT" \
     --dev "$DEV" --output "$INS_OUT"

@@ -116,7 +116,7 @@ class CorrectionCallback(TrainerCallback):
                       "trainable_names": sorted(trainable),
                       "macro_channels": list(filter(None, os.environ.get("CC_LLM_MACRO_CHANNELS", "").split(","))),
                       "metric_for_best_model": args.metric_for_best_model}
-            (Path(args.output_dir) / "finetune_report.json").write_text(json.dumps(report, indent=2) + "\n")
+            (Path(args.output_dir) / "sft_report.json").write_text(json.dumps(report, indent=2) + "\n")
 
     def on_train_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
@@ -126,7 +126,7 @@ class CorrectionCallback(TrainerCallback):
     def on_save(self, args, state, control, model=None, **kwargs):
         if not state.is_world_process_zero:
             return
-        from scripts.train.finetune.dev_check import saved_checkpoint_check
+        from scripts.train.downstream.dev_check import saved_checkpoint_check
 
         model = self.trainer.accelerator.unwrap_model(model)
         output = Path(args.output_dir) / f"checkpoint-{state.global_step}" / "dev_check"

@@ -66,10 +66,10 @@ run_stage() {
 ALIGN_ROOT="${ALIGN_OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
 CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
 ADAPTATION_OUT="${ADAPTATION_OUT:-$CPT_ROOT/adaptation}"
-FINETUNE_MODEL_NAME="${MODEL_NAME}-CPT"
+SFT_MODEL_NAME="${MODEL_NAME}-CPT"
 BASE_INPUT=""
 if [[ "$MODEL_VARIANT" == base ]]; then
-    FINETUNE_MODEL_NAME="$MODEL_NAME"
+    SFT_MODEL_NAME="$MODEL_NAME"
     BASE_INPUT="${BASE_MODEL:-}"
 fi
 align_updated=false
@@ -98,20 +98,20 @@ if selected phase2_b; then
         fi
     fi
 fi
-INS_ROOT="${INS_OUT:-$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-INS}"
+INS_ROOT="${INS_OUT:-$TRAIN_ROOT/${SFT_MODEL_NAME}-INS}"
 instruction_updated=false
 if selected instruction; then
-    run_stage instruction "$INS_ROOT" "${INSTRUCTION_MODEL:-$BASE_INPUT}" "$cpt_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/instruction/run.sh"
+    run_stage instruction "$INS_ROOT" "${INSTRUCTION_MODEL:-$BASE_INPUT}" "$cpt_updated" "$SFT_MODEL_NAME" "$ROOT/scripts/train/instruction/run.sh"
     instruction_updated="$stage_ran"
 fi
-FINETUNE_MODEL_NAME="${FINETUNE_MODEL_NAME}-INS"
+SFT_MODEL_NAME="${SFT_MODEL_NAME}-INS"
 # 专项脚本从 INS_OUT 读取完整权重；只有用户显式传参才覆盖该来源。
 if selected csc; then
-    run_stage csc "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CSC" "${CSC_MODEL:-}" "$instruction_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/csc.sh"
+    run_stage csc "$TRAIN_ROOT/${SFT_MODEL_NAME}-CSC" "${CSC_MODEL:-}" "$instruction_updated" "$SFT_MODEL_NAME" "$ROOT/scripts/train/downstream/csc.sh"
 fi
 if selected cgec; then
-    run_stage cgec "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-CGEC" "${CGEC_MODEL:-}" "$instruction_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/cgec.sh"
+    run_stage cgec "$TRAIN_ROOT/${SFT_MODEL_NAME}-CGEC" "${CGEC_MODEL:-}" "$instruction_updated" "$SFT_MODEL_NAME" "$ROOT/scripts/train/downstream/cgec.sh"
 fi
 if selected ancient; then
-    run_stage ancient "$TRAIN_ROOT/${FINETUNE_MODEL_NAME}-ACT" "${ANCIENT_MODEL:-}" "$instruction_updated" "$FINETUNE_MODEL_NAME" "$ROOT/scripts/train/finetune/ancient.sh"
+    run_stage ancient "$TRAIN_ROOT/${SFT_MODEL_NAME}-ACT" "${ANCIENT_MODEL:-}" "$instruction_updated" "$SFT_MODEL_NAME" "$ROOT/scripts/train/downstream/ancient.sh"
 fi

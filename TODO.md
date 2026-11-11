@@ -117,6 +117,8 @@ COIG/Tulu 的具体混合比例、是否增加辅助任务权重、是否扩展 
 | 10 C³Bench | 保持内部重建并明确非官方等价标记；官方仓库当前只提供数据/简短说明，NER/出处/标点等价性仍待证据。 |
 | 11 专项生成 | 已按任务配置预算；CSC 主报完整原始输出，清理结果为补充；三项均报告停止/截断/重复率。 |
 
-数据就绪后仍需完成：正式混合比例与质量抽检、全量去污染、三路共同可用样本和实际监督 token 对齐、真实规模 General-SFT/专项训练，以及 GPU/vLLM/全量 benchmark 验收。`SUPERVISED_TOKENS=0` 当前表示全量一遍，不代表已经确定正式预算；完整对话选择可能略超目标，报告保留超额及真实训练计数。
+首轮规模已确定为约 15 万条高质量样本池（默认约 14.7 万训练、3000 验证），每 Epoch 完整输入预计 0.12–0.23B Token，训练 1–2 Epoch，默认 1。完整输入与 Assistant 有效监督 Token 分开统计，预计范围不作为硬门槛。
+
+数据就绪后仍需完成：正式混合比例与质量抽检、全量去污染、三路共同可用样本和实际监督 token 对齐、真实规模 General-SFT/专项训练，以及 GPU/vLLM/全量 benchmark 验收。`SUPERVISED_TOKENS=0` 表示保留全部样本视图，Epoch 独立配置；可选监督预算按每 Epoch 生效，完整对话选择可能略超目标，报告保留超额及真实训练计数。
 
 代码、数据目录和命令见 [General-SFT](scripts/train/instruction/README.md)。本轮核对与验证边界见 [实施记录](Checkpoint/2026-11-11-general-sft-and-evaluation.md)。

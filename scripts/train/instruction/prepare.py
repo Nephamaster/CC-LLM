@@ -272,6 +272,8 @@ def prepare(args):
     report = {
         "counts": dict(counts),
         "rows": len(picked),
+        "sample_limit": args.samples or None,
+        "sample_shortfall": max(0, args.samples - len(picked)) if args.samples else 0,
         "requested_rows": total,
         "actual_chinese_share": combined["language:zh"] / len(picked),
         "actual_tulu_share": combined["source_family:tulu"] / len(picked),
@@ -279,6 +281,7 @@ def prepare(args):
             name: combined[f"task_type:{name}"] / len(picked) for name in ("general", "math", "code")
         },
         "dev_rows": dev_count,
+        "train_rows": len(picked) - dev_count,
         "distribution": distribution,
         "benchmark_patterns": benchmark.count,
         "decontamination": "normalized full input substring, min 24 characters; not paraphrase or exhaustive n-gram detection",
@@ -313,7 +316,12 @@ def main():
     parser.add_argument("--math-share", type=float)
     parser.add_argument("--code-share", type=float)
     parser.add_argument("--dev-ratio", type=float, default=0.02)
-    parser.add_argument("--samples", type=int, default=0)
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=150_000,
+        help="clean conversation pool limit, including Dev; 0 keeps all available",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if (

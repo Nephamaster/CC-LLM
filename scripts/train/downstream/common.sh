@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FINETUNE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-CC_ROOT="${CC_ROOT:-$(cd -- "$FINETUNE_DIR/../../.." && pwd)}"
+DOWNSTREAM_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CC_ROOT="${CC_ROOT:-$(cd -- "$DOWNSTREAM_DIR/../../.." && pwd)}"
 
 # ==================== 下游 LoRA 共享参数 ====================
 # 修改 :- 后的默认值；命令行同名环境变量优先。任务路径、长度、学习率在任务脚本顶部。
@@ -61,12 +61,12 @@ fi
 [[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
     echo "MODEL_NAME must be the input model name, not a checkpoint path" >&2; exit 2;
 }
-IFS=, read -r -a finetune_devices <<< "$CUDA_VISIBLE_DEVICES"
-NPROC_PER_NODE="${NPROC_PER_NODE:-${#finetune_devices[@]}}"
+IFS=, read -r -a visible_devices <<< "$CUDA_VISIBLE_DEVICES"
+NPROC_PER_NODE="${NPROC_PER_NODE:-${#visible_devices[@]}}"
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE MASTER_PORT PYTHONDONTWRITEBYTECODE=1
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
-run_finetuning() {
+run_sft() {
     local task="$1" model="$MODEL" output="$OUT" add_version=true
     local -a resume_args=()
     if [[ -n "$RESUME_FROM_CHECKPOINT" ]]; then
@@ -108,7 +108,7 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
         echo "Training/validation JSONL missing or empty: TRAIN=$TRAIN DEV=$DEV" >&2; return 1;
     }
     local -a args=(
-        --external_plugins "$FINETUNE_DIR/plugin.py"
+        --external_plugins "$DOWNSTREAM_DIR/plugin.py"
         --model "$model" --model_type qwen3 --check_model false --load_args false
         # 任务脚本选择已验收的模板；插件仅处理 PGCA 前向及闲置辅助头。
         --template "$TEMPLATE_TYPE" --use_chat_template true --enable_thinking false

@@ -169,7 +169,7 @@ class Smoke:
         if (report["global_step"] < self.args.train_steps or not report["valid_evaluations"]
                 or report["valid_evaluations"] != report["evaluations"]):
             raise ValueError("未完成指定训练步数，或没有有限的验证 loss")
-        if adapter and read_json(path.parent / "finetune_report.json")["auxiliary_loss_enabled"]:
+        if adapter and read_json(path.parent / "sft_report.json")["auxiliary_loss_enabled"]:
             raise ValueError("下游辅助损失未关闭")
         return path
 

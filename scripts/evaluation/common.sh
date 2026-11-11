@@ -37,7 +37,7 @@ check_sft_dev() {
     local -a args=(--model "$MODEL" --task "$task" --output "$OUT/dev_check")
     [[ -z "${LORA:-}" ]] || args+=(--adapter "$LORA")
     printf '[evaluation][%s] fixed-Dev generation/LoRA/cache acceptance\n' "$task"
-    "$PYTHON" -B -m scripts.train.finetune.dev_check "${args[@]}"
+    "$PYTHON" -B -m scripts.train.downstream.dev_check "${args[@]}"
     export DEV_CHECK_MODE="${DEV_CHECK_MODE:-required}"
     export DEV_CHECK_REPORT_ROOT="$OUT/dev_check"
 }

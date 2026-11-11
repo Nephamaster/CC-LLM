@@ -17,7 +17,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 
 # ==================== 古汉语多任务 SFT 参数 ====================
 MODEL="${MODEL:-}"
-ANCIENT_DATA_DIR="${ANCIENT_DATA_DIR:-$CC_ROOT/data/finetune/ancient}"
+ANCIENT_DATA_DIR="${ANCIENT_DATA_DIR:-$CC_ROOT/data/downstream/ancient}"
 OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME%-ALIGN}-ACT}"
 ANCIENT_VIEW_DIR="${ANCIENT_VIEW_DIR:-$OUT/.inputs}"
 TRAIN="$ANCIENT_VIEW_DIR/train.jsonl"
@@ -29,8 +29,8 @@ NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-5}"
 export CC_LLM_MACRO_CHANNELS="${CC_LLM_MACRO_CHANNELS:-c2m,m2c,punctuate}"
 
 "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" ancient/prepare python \
-    "$FINETUNE_DIR/prepare_ancient_views.py" \
+    "$DOWNSTREAM_DIR/prepare_ancient_views.py" \
     --data-dir "$ANCIENT_DATA_DIR" \
     --output-dir "$ANCIENT_VIEW_DIR"
 
-run_finetuning ancient
+run_sft ancient

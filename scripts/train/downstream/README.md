@@ -1,23 +1,25 @@
-# 下游 LoRA
+# 下游专项训练（Downstream）
 
 CSC、CGEC 和古汉语均使用 ms-swift all-linear LoRA，PGCA 分支参与 LoRA，字音/字形辅助损失关闭。
 
 ```bash
-bash scripts/train/finetune/csc.sh
-bash scripts/train/finetune/cgec.sh
-bash scripts/train/finetune/ancient.sh
+bash scripts/train/downstream/csc.sh
+bash scripts/train/downstream/cgec.sh
+bash scripts/train/downstream/ancient.sh
 ```
 
-数据分别位于 `data/finetune/{csc,cgec,ancient}`。CSC 默认读取 `csc_mix_dedup.jsonl` 和 `cscd_dev.jsonl`；其余任务使用各目录下的 train/validation 或 train/dev。任务脚本顶部直接设置长度、学习率和 epoch；GPU、batch、LoRA 和优化器公共参数位于 `common.sh` 顶部。
+数据分别位于 `data/downstream/{csc,cgec,ancient}`。CSC 默认读取 `csc_mix_dedup.jsonl` 和 `cscd_dev.jsonl`；其余任务使用各目录下的 train/validation 或 train/dev。任务脚本顶部直接设置长度、学习率和 epoch；GPU、batch、LoRA 和优化器公共参数位于 `common.sh` 顶部。
 
 正式新增路线默认读取合并后的 INS 指针，分别训练独立专项 Adapter。General-SFT 参见 [指令微调](../instruction/README.md)。显式固定完整输入权重时同时传入名称：
 
 ```bash
 MODEL=/path/to/merged-ins-model MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
-bash scripts/train/finetune/csc.sh
+bash scripts/train/downstream/csc.sh
 ```
 
 产物是 LoRA adapter，并在任务输出根目录发布 `next_stage_model.txt`。
+
+训练元数据统一写入 `sft_report.json`，General-SFT 同样使用该报告名。已有 checkpoint 保留原权重和历史报告；读取时支持旧报告名，并将已知的旧插件路径及 `data/finetune/` Dev 路径定位到当前目录。其他自定义数据位置仍可通过 `DEV_CHECK_DEV` 指定。
 
 集中冒烟会设置 `MAX_STEPS=2 SAVE_ONLY_MODEL=true`；正式微调默认仍按 epoch 训练并保存优化器状态。
 
@@ -57,7 +59,7 @@ bash scripts/train/finetune/csc.sh
 也可提前独立验收，无需开始整套评估：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 .venv/evaluation/bin/python -B -m scripts.train.finetune.dev_check \
+CUDA_VISIBLE_DEVICES=0 .venv/evaluation/bin/python -B -m scripts.train.downstream.dev_check \
   --task ancient --model /path/to/full-model --adapter /path/to/adapter-checkpoint \
   --output outputs/evaluation/dev_check
 ```

@@ -100,10 +100,10 @@ def prepare(kind, data, output, train_samples, eval_samples):
         task = kind.removesuffix("_sft")
         filenames = ("csc_mix_dedup.jsonl", "cscd_dev.jsonl") if task == "csc" else ("train.jsonl", "validation.jsonl")
         return {split: write_rows(output / f"{split}.jsonl", islice(
-            iter_jsonl(data / "finetune" / task / name), count))
+            iter_jsonl(data / "downstream" / task / name), count))
                 for split, name, count in zip(("train", "dev"), filenames, (train_samples, eval_samples))}
     if kind == "ancient_sft":
-        return {split: ancient_samples(data / "finetune/ancient", output, split, count)
+        return {split: ancient_samples(data / "downstream/ancient", output, split, count)
                 for split, count in (("train", max(1, train_samples // 3)), ("dev", eval_samples))}
     if kind == "ppl":
         return {path.stem: write_rows(output / path.name, text_samples(iter_jsonl(path), eval_samples))

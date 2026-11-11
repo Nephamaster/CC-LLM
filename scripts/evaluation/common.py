@@ -53,7 +53,7 @@ def read_journal(path):
 
 def prediction_health(rows):
     from collections import Counter
-    from scripts.train.finetune.dev_metrics import repeated_text
+    from scripts.train.downstream.dev_metrics import repeated_text
     n = len(rows)
     reasons = Counter(r.get("finish_reason") or "unknown" for r in rows)
     stopped = sum(r.get("finish_reason") in {"stop", "eos", "eos_token", "stop_sequence"} for r in rows)

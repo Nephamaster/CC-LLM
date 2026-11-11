@@ -30,14 +30,16 @@ def relocated_training_plugins(plugins):
     paths = [plugins] if isinstance(plugins, str) else list(plugins or [])
     for index, value in enumerate(paths):
         path = Path(value)
-        if path.is_file():
-            continue
-        for stage in ("cpt", "finetune"):
+        for stage in ("cpt", "finetune", "downstream"):
             if (path.parts[-5:] == ("scripts", "train", "ms_swift", stage, "plugin.py")
                     or path.parts[-4:] == ("scripts", "train", stage, "plugin.py")):
-                relocated = ROOT / "scripts/train" / stage / "plugin.py"
+                if stage != "finetune" and path.is_file():
+                    break
+                target = "downstream" if stage == "finetune" else stage
+                relocated = ROOT / "scripts/train" / target / "plugin.py"
                 if relocated.is_file():
                     paths[index] = str(relocated)
+                break
     return paths
 
 

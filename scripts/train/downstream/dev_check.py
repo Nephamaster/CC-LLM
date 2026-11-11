@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import traceback
 
-from scripts.evaluation.common import iter_jsonl
+from scripts.evaluation.common import ROOT, iter_jsonl
 from scripts.evaluation.runs import new_run_directory
 from .dev_metrics import DevPolicy, generation_stats, summarize
 
@@ -264,20 +264,38 @@ def saved_checkpoint_check(model, template, dev, task, output):
     save_report(output, report)
 
 
+def relocated_dev_path(value):
+    if not value:
+        return None
+    path = Path(value)
+    if path.is_file():
+        return path.resolve()
+    for index in range(len(path.parts) - 1):
+        if path.parts[index:index + 2] in {("data", "finetune"), ("data", "downstream")}:
+            relocated = ROOT / "data/downstream" / Path(*path.parts[index + 2:])
+            if relocated.is_file():
+                return relocated.resolve()
+    return None
+
+
 def validation_source(model_path, adapter_path, contract, explicit):
     if explicit is not None:
-        return explicit.resolve()
+        return relocated_dev_path(explicit) or explicit.resolve()
     checkpoint = adapter_path or model_path
-    selection = checkpoint.parent / "finetune_report.json"
-    if selection.is_file():
-        value = json.loads(selection.read_text()).get("dev_file")
-        if value and Path(value).is_file():
-            return Path(value).resolve()
+    # Existing checkpoints retain their original reports; new runs write sft_report.json.
+    for filename in ("sft_report.json", "finetune_report.json"):
+        selection = checkpoint.parent / filename
+        if selection.is_file():
+            path = relocated_dev_path(json.loads(selection.read_text()).get("dev_file"))
+            if path is not None:
+                return path
     args = json.loads(Path(contract["args_path"]).read_text())
     candidates = args.get("val_dataset", [])
     candidates = [candidates] if isinstance(candidates, str) else candidates
-    if len(candidates) == 1 and isinstance(candidates[0], str) and Path(candidates[0]).is_file():
-        return Path(candidates[0]).resolve()
+    if len(candidates) == 1 and isinstance(candidates[0], str):
+        path = relocated_dev_path(candidates[0])
+        if path is not None:
+            return path
     raise ValueError("original SFT Dev file is unavailable; set DEV_CHECK_DEV or pass --dev explicitly")
 
 

@@ -10,8 +10,8 @@ from scripts.evaluation.common import iter_jsonl, write_json
 def prepare(model, source, output, budget, max_length):
     from swift.model import get_model_processor
     from swift.template import get_template
-    from scripts.train.finetune import plugin  # noqa: F401 -- registers the shared SFT templates
-    from scripts.train.finetune.dev_check import encoded_case
+    from scripts.train.downstream import plugin  # noqa: F401 -- registers the shared SFT templates
+    from scripts.train.downstream.dev_check import encoded_case
 
     _, processor = get_model_processor(str(model), model_type="qwen3", load_model=False, download_model=False)
     template = get_template(
@@ -23,7 +23,7 @@ def prepare(model, source, output, budget, max_length):
         loss_scale="default",
     )
     template.set_mode("train")
-    total, count, too_long, last_count = 0, 0, 0, 0
+    total, input_tokens, count, too_long, last_count = 0, 0, 0, 0, 0
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as handle:
         for row in iter_jsonl(source):
@@ -47,6 +47,7 @@ def prepare(model, source, output, budget, max_length):
                 raise ValueError("instruction sample has no supervised target")
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             total += last_count
+            input_tokens += len(encoded["input_ids"])
             count += 1
             if budget and total >= budget:
                 break
@@ -56,14 +57,16 @@ def prepare(model, source, output, budget, max_length):
         "model": str(model),
         "input": str(source),
         "rows": count,
+        "input_tokens": input_tokens,
         "supervised_tokens": total,
+        "token_scope": "per epoch; input includes Prompt, answers and template tokens, excludes padding",
         "requested_tokens": budget or None,
         "target_reached": total >= budget if budget else None,
         "overage_tokens": max(0, total - budget) if budget else 0,
         "last_conversation_tokens": last_count,
         "dropped_too_long": too_long,
         "max_length": max_length,
-        "budget_policy": "one pass; keep final complete conversation, no partial answer or EOS masking",
+        "budget_policy": "per-epoch view; keep final complete conversation, no partial answer or EOS masking",
         "comparability": "same requested budget is not proof of equal actual targets; compare all three reports",
     }
     write_json(output.with_suffix(".report.json"), report)

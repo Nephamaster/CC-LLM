@@ -50,7 +50,7 @@ CSC、CGEC、Ancient 的 `STAGE=all|infer` 会先在当前可见的第一张卡�
 
 默认每任务 10 条（ACT 三任务共 30 条），正常停止及 `<|im_end|>` 结束率各至少 90%，截断、重复、异常率各不超过 10%，按任务分别判定。还检查真实模板中的 EOS label、LoRA 开关 logits，以及同一前缀在 Cache 开关下的数值、缓存长度和生成状态。任一要求未通过会在正式推理前退出；结果在本轮 `dev_check/vN/report.json` 和 `samples.jsonl`，原命令无需增加步骤。
 
-若迁移了训练数据，可在原评估命令前设置 `DEV_CHECK_DEV=/path/to/original-dev.jsonl`。阈值、采样量、生成上限、Cache 容差与独立验收命令见 [下游训练说明](../train/finetune/README.md#固定-dev-生成验收)。默认 `DEV_CHECK_MODE=required`；`report` 仅用于冒烟或排障，允许生成质量未达标继续运行，不能当作通过正式验收，结构、LoRA 或 Cache 失败仍阻止运行。推理 manifest 记录检查模式及报告位置。
+若迁移了训练数据，可在原评估命令前设置 `DEV_CHECK_DEV=/path/to/original-dev.jsonl`。阈值、采样量、生成上限、Cache 容差与独立验收命令见 [下游训练说明](../train/downstream/README.md#固定-dev-生成验收)。默认 `DEV_CHECK_MODE=required`；`report` 仅用于冒烟或排障，允许生成质量未达标继续运行，不能当作通过正式验收，结构、LoRA 或 Cache 失败仍阻止运行。推理 manifest 记录检查模式及报告位置。
 
 此验收使用 HF 单序列、无 padding 的真实模型路径。它能发现明显非终止和加载/缓存异常，不证明回答准确性，也不代替实际 vLLM、批量推理的一致性检查。
 

@@ -21,7 +21,7 @@ def check(model, adapter, dev, output):
         sys.executable,
         "-B",
         "-m",
-        "scripts.train.finetune.dev_check",
+        "scripts.train.downstream.dev_check",
         "--model",
         str(model),
         "--task",
@@ -151,13 +151,25 @@ def finish(base, adapter_root, output, dev):
     budget_file = dev.with_name("train.report.json")
     budget = json.loads(budget_file.read_text()) if budget_file.is_file() else {}
     requested = budget.get("requested_tokens")
+    args_file = qualified.parent / "args.json"
+    training_args = json.loads(args_file.read_text()) if args_file.is_file() else {}
+    epochs = training_args.get("num_train_epochs")
+    requested_total = requested * epochs if requested and epochs is not None else None
+    report["input_tokens_per_epoch"] = budget.get("input_tokens")
+    report["configured_epochs"] = epochs
+    report["planned_input_tokens"] = (
+        budget["input_tokens"] * epochs
+        if budget.get("input_tokens") is not None and epochs is not None
+        else None
+    )
     report["selected_checkpoint_supervised_tokens"] = selected_tokens
     report["supervised_budget"] = {
-        "requested": requested,
-        "prepared": budget.get("supervised_tokens"),
+        "requested_per_epoch": requested,
+        "prepared_per_epoch": budget.get("supervised_tokens"),
+        "requested_total": requested_total,
         "actual_run": actual_tokens,
         "actual_selected": selected_tokens,
-        "selected_reached_target": selected_tokens >= requested if requested else None,
+        "selected_reached_target": selected_tokens >= requested_total if requested_total else None,
     }
     report["completion_scope"] = (
         "selection, merging and generation checks; strict cross-route token equality is not established"

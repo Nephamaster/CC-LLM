@@ -124,7 +124,7 @@ data/
 ├── instruction/
 │   ├── raw/{COIG-CQIA,tulu-3-sft-mixture}/
 │   └── prepared/                  # prepare 命令生成；也可指定外部成品目录
-├── finetune/
+├── downstream/
 │   ├── csc/{csc_mix_dedup,cscd_dev}.jsonl
 │   ├── cgec/{train,validation}.jsonl
 │   └── ancient/
@@ -137,6 +137,12 @@ data/
     ├── csc/*.jsonl
     ├── cgec/{FCGEC,NaCGEC}/...
     └── ancient/{c3bench,FuxiBench}/...
+```
+
+旧数据包若解压为 `data/finetune/`，在目标 `data/downstream/` 尚不存在时先执行一次：
+
+```bash
+mv -- data/finetune data/downstream
 ```
 
 预训练分片还需在训练前原地解压。每个 tar.xz 内为同名 JSONL，执行：
@@ -248,7 +254,7 @@ bash scripts/train/run.sh
 | PGCA-A | 音形分支与辅助头，冻结主干 | `scripts/train/cpt/phase2_a.sh` |
 | PGCA-B | 主干、分支和辅助头联合训练 | `scripts/train/cpt/phase2_b.sh` |
 | General-SFT | 主干及 PGCA 的 LoRA，关闭辅助损失；验收后合并 | `scripts/train/instruction/run.sh` |
-| CSC/CGEC/Ancient | 主干及 PGCA 线性层的 LoRA，关闭辅助损失 | `scripts/train/finetune/{common,csc,cgec,ancient}.sh` |
+| CSC/CGEC/Ancient | 主干及 PGCA 线性层的 LoRA，关闭辅助损失 | `scripts/train/downstream/{common,csc,cgec,ancient}.sh` |
 
 阶段参数放在各脚本顶部，同名环境变量优先。正式默认 batch 如下，8 卡数值不代表固定使用 8 个进程：
 
@@ -278,7 +284,9 @@ bash scripts/train/run.sh
 
 下游 LoRA 每次保存 checkpoint，还会自动执行每任务 1 条固定 Dev 自由生成，检查结束符监督及生成健康状况，写入 `checkpoint-N/dev_check/vN/`。失败保留报告并继续训练，不改变原有 loss 选模。正式评估前会对选中的模型再做完整验收，见下一节。
 
-General-SFT 的最终选模还要求完整生成验收通过，合并后复验；成功才发布 `outputs/train/M-INS/next_stage_model.txt`，专项训练从该完整权重出发。`SUPERVISED_TOKENS` 可配置，正式预算待数据就绪后确定；以实际标签和训练日志计数，不把相同配置值当作三路实际监督量已经相等。
+General-SFT 首轮目标为约 15 万条清洗后样本（默认约 14.7 万训练、3000 验证），单 Epoch 完整输入预计 0.12–0.23B Token；默认训练 1 Epoch，设置 `NUM_TRAIN_EPOCHS=2` 可训练两遍。输入量与 Assistant 监督量分开统计，估计范围不设为硬门槛，`SUPERVISED_TOKENS=0` 默认保留全部样本视图。
+
+General-SFT 的最终选模还要求完整生成验收通过，合并后复验；成功才发布 `outputs/train/M-INS/next_stage_model.txt`，专项训练从该完整权重出发。三路实际 Token 量以 Tokenizer 报告及训练日志核对，不把相同配置值当作实际监督量已经相等。
 
 ## 7. 三条路线的正式评估
 
@@ -320,7 +328,7 @@ export JUDGE_BASE_URL=http://127.0.0.1:8000/v1
 
 CSC、CGEC、Ancient 的正式推理会先自动重新加载基座和 adapter，按真实训练模板执行固定 Dev 验收：每任务 10 条，ACT 三任务共 30 条。每任务正常停止率及 `<|im_end|>` 结束率均须至少 90%，截断、重复、异常率各不超过 10%；同时检查结束符 label、LoRA 实际生效、Cache 数值与生成状态。失败会阻止该项下游 benchmark 推理，报告写入本轮 `dev_check/vN/{report.json,samples.jsonl}`。PPL/LMEH 不受此 SFT 门槛影响。
 
-采样量和阈值可通过 `DEV_CHECK_*` 配置，完整说明和独立验收命令见 [固定 Dev 生成验收](scripts/train/finetune/README.md#固定-dev-生成验收)。迁移数据后如原 Dev 路径失效，设置 `DEV_CHECK_DEV`。集中冒烟只报告生成质量，正式评估默认启用硬门槛。
+采样量和阈值可通过 `DEV_CHECK_*` 配置，完整说明和独立验收命令见 [固定 Dev 生成验收](scripts/train/downstream/README.md#固定-dev-生成验收)。迁移数据后如原 Dev 路径失效，设置 `DEV_CHECK_DEV`。集中冒烟只报告生成质量，正式评估默认启用硬门槛。
 
 评估结果位于 `outputs/evaluation/<任务>/<模型>/.../vN/`，重复执行自动新建版本。LMEH 的 `table_metrics.json`、其他评估 `metrics.json` 中的 `table_metrics` 可用于实验表；取数定义见 [评估说明](scripts/evaluation/README.md)。只读取完整运行的结果，不把冒烟分数作为正式实验结果。
 
@@ -403,7 +411,7 @@ bash scripts/train/cpt/phase2_b.sh
 ```bash
 MODEL_NAME="${B}-PGCA-CPT-INS" \
 RESUME_FROM_CHECKPOINT=/absolute/path/to/CSC/vN/checkpoint-N \
-bash scripts/train/finetune/csc.sh
+bash scripts/train/downstream/csc.sh
 ```
 
 恢复需保持原 GPU 数、batch、数据、预算、长度、种子和缓存，并使用原 `OUT`。自定义 `TRAIN_ROOT` 或 `OUT` 时恢复命令也要带上；checkpoint 必须属于该输出目录。正式训练默认保存优化器状态，冒烟的 model-only checkpoint 不用于此类恢复。

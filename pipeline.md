@@ -142,7 +142,7 @@ data/
 │       ├── train/
 │       └── validation/
 │
-├── finetune/
+├── downstream/
 │   ├── csc/
 │   ├── cgec/
 │   └── ancient/
@@ -867,7 +867,7 @@ next_stage_model.txt
 执行入口：
 
 ```text
-scripts/train/finetune/
+scripts/train/downstream/
 ├── common.sh
 ├── csc.sh
 ├── cgec.sh
@@ -878,7 +878,7 @@ scripts/train/finetune/
 
 ### 5.0 通用指令微调（General-SFT）
 
-专项 SFT 之前，三条路线均先完成 General-SFT：Base → Base-INS，Char-CPT → Char-CPT-INS，PGCA-CPT → PGCA-CPT-INS。使用同一 COIG-CQIA/Tulu 3 清洗池和统一的目标监督预算，正式预算待真实数据统计后确定。仅监督 Assistant 及 EOS，采用保存的 Qwen3 非思考 ChatML。
+专项 SFT 之前，三条路线均先完成 General-SFT：Base → Base-INS，Char-CPT → Char-CPT-INS，PGCA-CPT → PGCA-CPT-INS。首轮目标为约 15 万条高质量样本池，默认约 14.7 万训练、3000 验证；单 Epoch 完整输入预计 0.12–0.23B Token，训练 1–2 Epoch（默认 1）。三路使用同一 COIG-CQIA/Tulu 3 清洗池；完整输入与 Assistant 有效监督量独立统计，以实际数据报告核对，估计不设为硬门槛。仅监督 Assistant 及 EOS，采用保存的 Qwen3 非思考 ChatML。
 
 入口为 `scripts/train/instruction/run.sh`。General-SFT 使用 LoRA，按有限 Dev loss 排序并要求完整生成/Adapter/Cache 验收，合并后复验，通过后发布完整 `M-INS` 权重。专项任务从该完整权重开始，各自训练独立 Adapter，不叠加 General-SFT Adapter。完整对话预算可能略超目标，必须用准备报告与实际训练日志对齐三路监督量，不能仅凭相同配置宣称严格相等。数据与执行细节见 [General-SFT](scripts/train/instruction/README.md)。
 
@@ -897,7 +897,7 @@ Target       = all-linear
 
 SFT 不再计算字音和字形辅助损失，辅助预测头被冻结。
 
-实际哪些 Linear 模块进入可训练范围，以生成的 `finetune_report.json` 为准。
+实际哪些 Linear 模块进入可训练范围，以生成的 `sft_report.json` 为准。
 
 三项任务分别训练独立 Adapter，不能将 CSC Adapter 继续训练成 CGEC Adapter 再进行公平比较。
 
@@ -914,13 +914,13 @@ PGCA-CPT
 训练数据：
 
 ```text
-data/finetune/csc/csc_mix_dedup.jsonl
+data/downstream/csc/csc_mix_dedup.jsonl
 ```
 
 验证数据：
 
 ```text
-data/finetune/csc/cscd_dev.jsonl
+data/downstream/csc/cscd_dev.jsonl
 ```
 
 训练目标：
@@ -940,7 +940,7 @@ Epochs        = 5
 ```bash
 MODEL=/path/to/PGCA-CPT-INS/merged \
 MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
-bash scripts/train/finetune/csc.sh
+bash scripts/train/downstream/csc.sh
 ```
 
 输出：
@@ -954,8 +954,8 @@ PGCA-CPT-INS-CSC/
 数据：
 
 ```text
-data/finetune/cgec/train.jsonl
-data/finetune/cgec/validation.jsonl
+data/downstream/cgec/train.jsonl
+data/downstream/cgec/validation.jsonl
 ```
 
 目标：
@@ -975,7 +975,7 @@ Epochs        = 5
 ```bash
 MODEL=/path/to/PGCA-CPT-INS/merged \
 MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
-bash scripts/train/finetune/cgec.sh
+bash scripts/train/downstream/cgec.sh
 ```
 
 输出：
@@ -989,7 +989,7 @@ PGCA-CPT-INS-CGEC/
 训练数据：
 
 ```text
-data/finetune/ancient/
+data/downstream/ancient/
 ├── train.jsonl
 ├── train.metadata.jsonl
 ├── dev.jsonl
@@ -1039,7 +1039,7 @@ L_{\mathrm{punctuate}}
 ```bash
 MODEL=/path/to/PGCA-CPT-INS/merged \
 MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
-bash scripts/train/finetune/ancient.sh
+bash scripts/train/downstream/ancient.sh
 ```
 
 输出：
@@ -1065,7 +1065,7 @@ PGCA-CPT-INS-ACT/
 
 保存时默认每任务 1 条，结果写入 `checkpoint-N/dev_check/vN/`；失败只记录，不中断训练，也不改变原有 loss 选模。
 
-下游评估入口 `STAGE=all|infer` 自动重新加载完整模型和已保存 adapter，每任务检查前 10 条（ACT 三任务共 30 条）。各任务正常停止率及 `<|im_end|>` 结束率均须至少 90%，截断、重复、异常率各不超过 10%；EOS 监督、模板、LoRA 生效或 Cache 检查失败也会阻止正式推理。完整结果写入本轮评估目录的 `dev_check/vN/`。阈值、样本数、生成上限和 Cache 容差均可配置，见 [固定 Dev 生成验收](scripts/train/finetune/README.md#固定-dev-生成验收)。
+下游评估入口 `STAGE=all|infer` 自动重新加载完整模型和已保存 adapter，每任务检查前 10 条（ACT 三任务共 30 条）。各任务正常停止率及 `<|im_end|>` 结束率均须至少 90%，截断、重复、异常率各不超过 10%；EOS 监督、模板、LoRA 生效或 Cache 检查失败也会阻止正式推理。完整结果写入本轮评估目录的 `dev_check/vN/`。阈值、样本数、生成上限和 Cache 容差均可配置，见 [固定 Dev 生成验收](scripts/train/downstream/README.md#固定-dev-生成验收)。
 
 Cache 对照使用真实单序列、无 padding 的 HF 前向，比较同一前缀的完整计算与逐 token 计算，并核对 PGCA 主干及音形缓存长度。Cache 两路自由生成不强求逐字相同，但数值须在容差内，停止、截断、重复、异常标记须一致。LoRA 对照检查 logits 变化和两路生成。该检查不代替 vLLM/批量推理验收，也不判断参考答案是否正确。
 
@@ -1524,7 +1524,7 @@ CPT：
 SFT：
 
 - 训练 Adapter 与基础模型对应；
-- `finetune_report.json` 中参数范围符合预期；
+- `sft_report.json` 中参数范围符合预期；
 - assistant 答案结束符受到有效监督；
 - 固定短 Dev 可以正常自由生成；
 - 终止率、重复率和长度上限命中率满足预先制定的验收条件。
@@ -1789,7 +1789,7 @@ mechanism_probe_results
 
 需要特别注意：
 
-1. `master` 采用 `scripts/model_build`、`scripts/train/cpt`、`scripts/train/finetune` 路径，不能使用旧的 `scripts/train/ms_swift/cpt` 路径。
+1. `master` 采用 `scripts/model_build`、`scripts/train/cpt`、`scripts/train/downstream` 路径，不能使用旧的 `scripts/train/ms_swift/cpt` 路径。
 2. PGCA 插入层默认按模型中间三分之一自动选择，不保证等于历史的第 11–16 层。
 3. Phase2-B 当前默认 Warm-up 是 3%，不能直接认定与此前实际训练采用的 1% 配置相同。
 4. 当前仓库不包含原始数据及训练权重，也不完整包含历史 Data Factory 的源数据生产过程。
