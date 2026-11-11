@@ -28,6 +28,8 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smoke/run.sh /path/to/Qwen3-Base
 
 训练通过不仅看进程退出码：还检查发布的 checkpoint、实际训练步数、所有已记录验证 loss 有限，以及下游辅助损失关闭。评估检查推理是否完整、评分文件是否生成；PPL 要完成六域，LMEH 要生成表格指标。
 
+下游保存时执行每任务 1 条固定 Dev 生成；下游评估前再重新加载实际 adapter，检查 EOS 监督、LoRA 开关及 Cache 数值/生成状态。冒烟显式使用 `DEV_CHECK_MODE=report`、每任务 1 条、与冒烟一致的生成上限：生成质量不设硬门槛，结构、LoRA 或 Cache 错误仍会使步骤失败。质量报告保留在各 checkpoint 或评估目录下的 `dev_check/vN/`；少步冒烟通过不表示停止率已达到正式门槛。
+
 ## 数据与参数
 
 运行时只在本次输出目录抽取少量样本：

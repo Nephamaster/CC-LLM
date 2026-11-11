@@ -84,7 +84,8 @@ class Smoke:
                     "RAW_CACHE", "ALIGN_OUT", "CPT_ROOT", "ADAPTATION_OUT", "RESUME_FROM_CHECKPOINT",
                     "PHASE1_MODEL", "PHASE2_A_MODEL", "PHASE2_B_MODEL", "CPT_MODEL", "CSC_MODEL", "CGEC_MODEL",
                     "ANCIENT_MODEL", "LORA", "PGCA_ENABLED", "CC_LLM_STAGE", "RANK", "LOCAL_RANK", "WORLD_SIZE",
-                    "MASTER_PORT", "MASTER_ADDR", "NODE_RANK", "NNODES", "NPROC_PER_NODE", "CC_LLM_MACRO_CHANNELS"):
+                    "MASTER_PORT", "MASTER_ADDR", "NODE_RANK", "NNODES", "NPROC_PER_NODE", "CC_LLM_MACRO_CHANNELS",
+                    "DEV_CHECK_DEV", "DEV_CHECK_DEVICE", "DEV_CHECK_REPORT_ROOT"):
             env.pop(key, None)
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_ENDPOINT=env.get("HF_ENDPOINT", "https://hf-mirror.com"),
                    CUDA_VISIBLE_DEVICES="" if gpu is None else gpu, CC_ROOT=str(ROOT), TOKENIZERS_PARALLELISM="false")
@@ -187,6 +188,7 @@ class Smoke:
                       EVAL_BATCH_SIZE=1, GRAD_ACCUMULATION=1, DATASET_NUM_PROC=1, MAX_STEPS=self.args.train_steps,
                       EVAL_STEPS=self.args.train_steps, SAVE_STEPS=self.args.train_steps, LOGGING_STEPS=1,
                       SAVE_TOTAL_LIMIT=1, SAVE_ONLY_MODEL="true", LOAD_FROM_CACHE_FILE="false",
+                      DEV_CHECK_SAMPLES=1, DEV_CHECK_SAVE_SAMPLES=1, DEV_CHECK_MAX_NEW_TOKENS=self.args.max_new_tokens,
                       ALIGN_OUT=root / f"{name}-ALIGN", CPT_ROOT=cpt, ADAPTATION_OUT=cpt / "adaptation")
         if adapter:
             values.update({f"{stage.upper()}_MODEL": model or "", "NUM_TRAIN_EPOCHS": 1,
@@ -235,6 +237,7 @@ class Smoke:
         values = dict(MODEL=model or "", LORA=adapter or "", MODEL_NAME=f"{model_name}-{suffix}",
                       PYTHON=self.args.eval_python, RUN_DIR=output, STAGE="all", BATCH_SIZE=1,
                       MAX_NEW_TOKENS=self.args.max_new_tokens, INFERENCE_BACKEND=self.args.backend,
+                      DEV_CHECK_MODE="report", DEV_CHECK_SAMPLES=1, DEV_CHECK_MAX_NEW_TOKENS=self.args.max_new_tokens,
                       TENSOR_PARALLEL_SIZE=1, FEWSHOT=0)
         if kind.startswith("fcgec_"):
             values.update(DATASET="fcgec", SPLIT=kind.removeprefix("fcgec_"))

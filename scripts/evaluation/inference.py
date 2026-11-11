@@ -73,7 +73,7 @@ def resolve_backend(model_path, requested):
 
 class TrainingTemplatePredictor:
     def __init__(self, model_path, adapter_path, contract, batch_size, max_new_tokens,
-                 backend="auto", tensor_parallel_size=1):
+                 backend="auto", tensor_parallel_size=4):
         from swift import InferRequest, RequestConfig, TransformersEngine
         from swift.model import get_model_processor
         from swift.template import get_template
@@ -138,8 +138,8 @@ class TrainingTemplatePredictor:
         return output
 
 
-def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, max_new_tokens=1024,
-          predictor=None, backend="auto", tensor_parallel_size=1):
+def infer(input_path, output_path, model_path, adapter_path=None, batch_size=32, max_new_tokens=1024,
+          predictor=None, backend="auto", tensor_parallel_size=4):
     from .csc.metrics import clean_prediction
 
     if batch_size < 1 or max_new_tokens < 1:
@@ -157,6 +157,8 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=8, 
                 "backend": resolve_backend(model_path, backend),
                 "tensor_parallel_size": tensor_parallel_size,
                 "pgca_enabled_env": os.getenv("PGCA_ENABLED")}
+    identity["dev_check"] = {"mode": os.getenv("DEV_CHECK_MODE", "not_run"),
+                             "reports": os.getenv("DEV_CHECK_REPORT_ROOT")}
     previous = []
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
@@ -251,10 +253,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--adapter", type=Path)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--backend", choices=("auto", "hf", "vllm"), default="auto")
-    parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--tensor-parallel-size", type=int, default=4)
     args = parser.parse_args()
     report = infer(args.input, args.output, args.model, args.adapter, args.batch_size, args.max_new_tokens,
                    backend=args.backend, tensor_parallel_size=args.tensor_parallel_size)

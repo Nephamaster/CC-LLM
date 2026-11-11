@@ -141,6 +141,6 @@ print(value)' "$RESUME_FROM_CHECKPOINT/adapter_config.json")"
         --seed "$SEED" --data_seed "$DATA_SEED" --add_version "$add_version" --output_dir "$output"
     )
     # 不导出 .raw、不另建准备缓存，直接使用 ms-swift 原生 JSONL 加载/缓存机制。
-    PGCA_ENABLED=true CC_LLM_SFT_OUTPUT_ROOT="$OUT" \
+    PGCA_ENABLED=true CC_LLM_SFT_OUTPUT_ROOT="$OUT" CC_LLM_SFT_TASK="$task" CC_LLM_SFT_DEV="$DEV" \
     "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" "$task" sft "${args[@]}" "${resume_args[@]}"
 }

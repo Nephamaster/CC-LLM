@@ -99,6 +99,7 @@ class CorrectionCallback(TrainerCallback):
                 raise ValueError("PGCA context encoder was not included in LoRA")
         if state.is_world_process_zero:
             report = {"loss": "assistant_only", "auxiliary_loss_enabled": False, "pgca_enabled": pgca,
+                      "task": os.environ.get("CC_LLM_SFT_TASK"), "dev_file": os.environ.get("CC_LLM_SFT_DEV"),
                       "target_modules": "all-linear", "trainable_parameters": sum(p.numel() for p in trainable.values()),
                       "trainable_names": sorted(trainable),
                       "macro_channels": list(filter(None, os.environ.get("CC_LLM_MACRO_CHANNELS", "").split(","))),
@@ -109,6 +110,16 @@ class CorrectionCallback(TrainerCallback):
         if not state.is_world_process_zero:
             return
         publish_checkpoint(args, state, os.environ.get("CC_LLM_SFT_OUTPUT_ROOT"))
+
+    def on_save(self, args, state, control, model=None, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        from scripts.train.finetune.dev_check import saved_checkpoint_check
+
+        model = self.trainer.accelerator.unwrap_model(model)
+        output = Path(args.output_dir) / f"checkpoint-{state.global_step}" / "dev_check"
+        saved_checkpoint_check(model, self.trainer.template, os.environ.get("CC_LLM_SFT_DEV"),
+                               os.environ.get("CC_LLM_SFT_TASK"), output)
 
 
 for base_meta, template_type, template_cls in (

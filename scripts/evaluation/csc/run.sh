@@ -5,6 +5,9 @@ source "$TASK_DIR/../common.sh"
 configure_evaluation "$TASK_DIR" csc
 STAGE="${STAGE:-all}"
 case "$STAGE" in all|prepare|infer|score) ;; *) echo "Invalid STAGE" >&2; exit 2 ;; esac
+if [[ "$STAGE" == all || "$STAGE" == infer ]]; then
+  check_sft_dev csc
+fi
 printf '[evaluation][csc] stage=%s output=%s\n' "$STAGE" "$OUT"
 if [[ "$STAGE" == all || "$STAGE" == prepare ]]; then
   printf '[evaluation][csc] preparing inputs\n'
@@ -12,13 +15,12 @@ if [[ "$STAGE" == all || "$STAGE" == prepare ]]; then
   printf '[evaluation][csc] inputs ready\n'
 fi
 if [[ "$STAGE" == all || "$STAGE" == infer ]]; then
-  : "${MODEL:?Set MODEL to the SFT model or base model for LORA}"
   adapter=()
   [[ -z "${LORA:-}" ]] || adapter=(--adapter "$LORA")
   printf '[evaluation][csc] starting inference\n'
   "$PYTHON" -B -m scripts.evaluation.inference --input "$OUT/input.jsonl" --output "$OUT/predictions.jsonl" \
-    --model "$MODEL" "${adapter[@]}" --batch-size "${BATCH_SIZE:-8}" --max-new-tokens "${MAX_NEW_TOKENS:-1024}" \
-    --backend "${INFERENCE_BACKEND:-auto}" --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-1}"
+    --model "$MODEL" "${adapter[@]}" --batch-size "${BATCH_SIZE:-32}" --max-new-tokens "${MAX_NEW_TOKENS:-1024}" \
+    --backend "${INFERENCE_BACKEND:-auto}" --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-4}"
   printf '[evaluation][csc] inference complete\n'
 fi
 if [[ "$STAGE" == all || "$STAGE" == score ]]; then

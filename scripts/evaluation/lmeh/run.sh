@@ -9,8 +9,8 @@ cd "$ROOT"
 args=(--benchmark "${BENCHMARK:-all}" --stage "${STAGE:-run}"
       --output-root "${OUT:-$ROOT/outputs/evaluation}"
       --device "${DEVICE:-cuda:0}" --dtype "${DTYPE:-bfloat16}"
-      --batch-size "${BATCH_SIZE:-1}" --max-length "${MAX_LENGTH:-8192}"
-      --backend "${INFERENCE_BACKEND:-auto}" --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-1}")
+      --batch-size "${BATCH_SIZE:-32}" --max-length "${MAX_LENGTH:-8192}"
+      --backend "${INFERENCE_BACKEND:-auto}" --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-4}")
 [[ -z "${MODEL:-}" ]] || args+=(--model "$MODEL")
 [[ -z "${MODEL_NAME:-}" ]] || args+=(--model-name "$MODEL_NAME")
 [[ -z "${RUN_NAME:-}" ]] || args+=(--run-name "$RUN_NAME")

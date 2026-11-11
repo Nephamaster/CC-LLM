@@ -19,10 +19,12 @@ STAGE=check BENCHMARK=all bash scripts/evaluation/lmeh/run.sh
 
 ```bash
 INFERENCE_BACKEND=hf|vllm|auto
-TENSOR_PARALLEL_SIZE=1
-BATCH_SIZE=auto
+TENSOR_PARALLEL_SIZE=4
+BATCH_SIZE=32
 MAX_LENGTH=8192
 LIMIT=10                 # 仅冒烟
 ```
 
 每次运行自动创建新的 `vN` 结果目录。
+
+单卡 vLLM 评估需设置 `CUDA_VISIBLE_DEVICES=<索引> TENSOR_PARALLEL_SIZE=1`；HF 后端不使用该 TP 参数。

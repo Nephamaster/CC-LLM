@@ -22,7 +22,12 @@ ADAPTATION_OUT="${ADAPTATION_OUT:-$CPT_ROOT/adaptation}"
 OUT="${OUT:-$CPT_ROOT/joint}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase2}"
 MAX_LENGTH="${MAX_LENGTH:-4096}"
-CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/$MODEL_NAME/phase2_${MAX_LENGTH}}"
+# A/B 的 batch 不同：B 单独准备视图，默认复用 A 的原始编码。
+# 显式指定 CACHE_DIR 时，沿用该目录对应的 .raw；RAW_CACHE 仍可单独覆盖。
+if [[ -z "${RAW_CACHE:-}" && -n "${CACHE_DIR:-}" ]]; then
+    RAW_CACHE="${CACHE_DIR}.raw"
+fi
+CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/$MODEL_NAME/phase2_${MAX_LENGTH}_joint}"
 # 与 A 保持相同数据、长度、DATA_SEED 和预算；B 只使用扣除 A 后的剩余监督目标。
 PHASE2_TOKENS="${PHASE2_TOKENS:-10000000000}"
 ADAPTATION_TOKENS="${ADAPTATION_TOKENS:-100000000}"
@@ -34,10 +39,10 @@ RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-}"              # 留空时按可见 GPU 数推导
 MASTER_PORT="${MASTER_PORT:-}"                  # 留空时由 torchrun 自动分配
-TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"         # 每卡训练 batch
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"         # 每卡训练 batch
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"           # 每卡验证 batch
-GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-32}"
-DATASET_NUM_PROC="${DATASET_NUM_PROC:-1}"
+GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-2}"
+DATASET_NUM_PROC="${DATASET_NUM_PROC:-32}"
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
 
@@ -84,7 +89,7 @@ if [[ -z "$MODEL" ]]; then
 fi
 
 # ==================== 2. 准备或校验训练数据 ====================
-RAW_CACHE="${RAW_CACHE:-${CACHE_DIR}.raw}"
+RAW_CACHE="${RAW_CACHE:-$CC_ROOT/outputs/cache/$MODEL_NAME/phase2_${MAX_LENGTH}.raw}"
 prepare_args=(
     --input "$RAW_CACHE" --output "$CACHE_DIR"
     --model "$MODEL" --max-length "$MAX_LENGTH"

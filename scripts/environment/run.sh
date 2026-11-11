@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -12,7 +11,8 @@ export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 # Avoid broken/unreachable globally configured extra indexes.
 export PIP_CONFIG_FILE=/dev/null
-unset PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX
+unset PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX PIP_CONSTRAINT
+unset UV_INDEX UV_DEFAULT_INDEX UV_INDEX_URL UV_EXTRA_INDEX_URL UV_CONSTRAINT
 
 die() {
     echo "ERROR: $*" >&2
@@ -53,69 +53,53 @@ select_torch() {
     fi
 
     case "$CHANNEL" in
-        cu128|cu126|cpu) TORCH_VERSION=2.8.0 ;;
-        cu124)          TORCH_VERSION=2.6.0 ;;
-        cu121|cu118)    TORCH_VERSION=2.5.1 ;;
+        cu128|cu126|cu124|cu121|cu118|cpu) ;;
         *) die "Unsupported TORCH_CHANNEL=$CHANNEL" ;;
     esac
 }
 
 install_environment() {
-    local target="$1" requirements="$2" constraints
-    local installed_version
-    local -a pip_args torch_args
+    local target="$1" requirements="$2"
+    local -a pip_args
 
     [[ -f "$requirements" ]] || die "Requirements file does not exist: $requirements"
     if [[ ! -x "$target/bin/python" ]]; then
         "$PYTHON_BIN" -m venv "$target"
     fi
     check_python "$target/bin/python"
-    constraints="$target/.torch-constraints.txt"
-    printf 'torch==%s+%s\n' "$TORCH_VERSION" "$CHANNEL" > "$constraints"
-
     if [[ -n "$WHEELHOUSE" ]]; then
         [[ -d "$WHEELHOUSE" ]] || die "WHEELHOUSE does not exist: $WHEELHOUSE"
         pip_args=(--no-index --find-links "$WHEELHOUSE")
-        torch_args=("${pip_args[@]}")
         if compgen -G "${WHEELHOUSE%/}/pip-*.whl" >/dev/null; then
             "$target/bin/python" -m pip install "${pip_args[@]}" --upgrade pip
         else
             echo "Offline mode: no pip wheel in WHEELHOUSE; skipping pip upgrade."
         fi
+        "$target/bin/python" -m pip install "${pip_args[@]}" -r "$requirements"
     else
         pip_args=(--index-url "$PIP_INDEX_URL")
-        torch_args=(
-            --index-url "$PIP_INDEX_URL"
-            --extra-index-url "${TORCH_INDEX_BASE%/}/$CHANNEL/"
-        )
-        echo "Upgrading pip in $target ..."
-        "$target/bin/python" -m pip install "${pip_args[@]}" --upgrade pip
+        "$target/bin/python" -m pip install "${pip_args[@]}" --upgrade pip uv
+        # Resolve together and reselect Torch from the CUDA index even when an
+        # existing environment already has a newer, incompatible CUDA build.
+        "$target/bin/uv" --no-config pip install \
+            --python "$target/bin/python" --upgrade --reinstall-package torch \
+            --index "${TORCH_INDEX_BASE%/}/$CHANNEL/" \
+            --default-index "$PIP_INDEX_URL" --index-strategy first-index \
+            -r "$requirements"
     fi
-    "$target/bin/python" -m pip --version
-
-    installed_version="$("$target/bin/python" -c 'from importlib.metadata import version, PackageNotFoundError
-try:
-    print(version("torch"))
-except PackageNotFoundError:
-    pass')"
-    if [[ "$installed_version" == "$TORCH_VERSION+$CHANNEL" ]]; then
-        echo "PyTorch $installed_version already installed; skipping download."
-    else
-        echo "Installing torch==$TORCH_VERSION+$CHANNEL ..."
-        "$target/bin/python" -m pip install "${torch_args[@]}" "torch==$TORCH_VERSION+$CHANNEL"
-    fi
-
-    "$target/bin/python" -m pip install "${pip_args[@]}" -c "$constraints" -r "$requirements"
     "$target/bin/python" -m pip check
 
-    "$target/bin/python" - "$CHANNEL" "$TORCH_VERSION" <<'PY'
+    "$target/bin/python" -B - "$CHANNEL" "${target##*/}" <<'PY'
 import sys
 import torch
+import transformers
+import swift
 
-channel, version = sys.argv[1:]
-expected = f"{version}+{channel}"
-if torch.__version__ != expected:
-    raise SystemExit(f"Expected PyTorch {expected}; got {torch.__version__}")
+channel, role = sys.argv[1:]
+print(f"Python: {sys.executable}; transformers={transformers.__version__}; torch={torch.__version__}")
+if role == "evaluation":
+    import lm_eval
+    from vllm import LLM
 
 if channel == "cpu":
     print(f"Validated: torch={torch.__version__} (CPU)")
@@ -139,7 +123,7 @@ for target in "$ROOT/.venv/train" "$ROOT/.venv/evaluation"; do
     fi
 done
 select_torch
-printf 'Selected: torch==%s+%s\n' "$TORCH_VERSION" "$CHANNEL"
+printf 'Selected CUDA wheel index: %s/%s/\n' "${TORCH_INDEX_BASE%/}" "$CHANNEL"
 
 install_environment "$ROOT/.venv/train" "$ROOT/requirements/train.txt"
 install_environment "$ROOT/.venv/evaluation" "$ROOT/requirements/evaluation.txt"

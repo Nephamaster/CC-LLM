@@ -30,3 +30,14 @@ configure_evaluation() {
         *) echo "Invalid STAGE: $STAGE" >&2; return 2 ;;
     esac
 }
+
+check_sft_dev() {
+    local task="$1"
+    : "${MODEL:?Set MODEL to the full SFT base model}"
+    local -a args=(--model "$MODEL" --task "$task" --output "$OUT/dev_check")
+    [[ -z "${LORA:-}" ]] || args+=(--adapter "$LORA")
+    printf '[evaluation][%s] fixed-Dev generation/LoRA/cache acceptance\n' "$task"
+    "$PYTHON" -B -m scripts.train.finetune.dev_check "${args[@]}"
+    export DEV_CHECK_MODE="${DEV_CHECK_MODE:-required}"
+    export DEV_CHECK_REPORT_ROOT="$OUT/dev_check"
+}
