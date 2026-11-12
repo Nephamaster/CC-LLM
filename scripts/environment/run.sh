@@ -12,7 +12,6 @@ export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 # Avoid broken/unreachable globally configured extra indexes.
 export PIP_CONFIG_FILE=/dev/null
 unset PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX PIP_CONSTRAINT
-unset UV_INDEX UV_DEFAULT_INDEX UV_INDEX_URL UV_EXTRA_INDEX_URL UV_CONSTRAINT
 
 die() {
     echo "ERROR: $*" >&2
@@ -60,7 +59,8 @@ select_torch() {
 
 install_environment() {
     local target="$1" requirements="$2"
-    local -a pip_args
+    local torch_version
+    local -a pip_args torch_args
 
     [[ -f "$requirements" ]] || die "Requirements file does not exist: $requirements"
     if [[ ! -x "$target/bin/python" ]]; then
@@ -70,23 +70,31 @@ install_environment() {
     if [[ -n "$WHEELHOUSE" ]]; then
         [[ -d "$WHEELHOUSE" ]] || die "WHEELHOUSE does not exist: $WHEELHOUSE"
         pip_args=(--no-index --find-links "$WHEELHOUSE")
+        torch_args=("${pip_args[@]}")
         if compgen -G "${WHEELHOUSE%/}/pip-*.whl" >/dev/null; then
             "$target/bin/python" -m pip install "${pip_args[@]}" --upgrade pip
         else
             echo "Offline mode: no pip wheel in WHEELHOUSE; skipping pip upgrade."
         fi
-        "$target/bin/python" -m pip install "${pip_args[@]}" -r "$requirements"
     else
         pip_args=(--index-url "$PIP_INDEX_URL")
-        "$target/bin/python" -m pip install "${pip_args[@]}" --upgrade pip uv
-        # Resolve together and reselect Torch from the CUDA index even when an
-        # existing environment already has a newer, incompatible CUDA build.
-        "$target/bin/uv" --no-config pip install \
-            --python "$target/bin/python" --upgrade --reinstall-package torch \
-            --index "${TORCH_INDEX_BASE%/}/$CHANNEL/" \
-            --default-index "$PIP_INDEX_URL" --index-strategy first-index \
-            -r "$requirements"
+        torch_args=(--index-url "${TORCH_INDEX_BASE%/}/$CHANNEL/")
+        "$target/bin/python" -m pip install "${pip_args[@]}" --upgrade pip
     fi
+
+    "$target/bin/python" -m pip install "${pip_args[@]}" -r "$requirements"
+    # Keep the Torch release chosen by requirements (including vLLM), changing only its CUDA build.
+    torch_version="$("$target/bin/python" -c 'from importlib.metadata import version; print(version("torch").split("+")[0])')"
+    echo "Installing Torch last: torch==$torch_version+$CHANNEL"
+    (
+        wheel_dir="$(mktemp -d)"
+        trap 'rm -rf -- "$wheel_dir"' EXIT
+        # Fetch only the Torch wheel from the CUDA source; resolve dependencies from the normal source.
+        "$target/bin/python" -m pip download "${torch_args[@]}" \
+            --no-deps --only-binary=:all: --dest "$wheel_dir" "torch==$torch_version+$CHANNEL" \
+            || die "No Torch $torch_version build for $CHANNEL; this requirements/CUDA combination is unavailable."
+        "$target/bin/python" -m pip install "${pip_args[@]}" "$wheel_dir"/torch-*.whl
+    )
     "$target/bin/python" -m pip check
 
     "$target/bin/python" -B - "$CHANNEL" "${target##*/}" <<'PY'
@@ -102,8 +110,13 @@ if role == "evaluation":
     from vllm import LLM
 
 if channel == "cpu":
+    if torch.version.cuda is not None:
+        raise SystemExit(f"Expected CPU Torch, got CUDA {torch.version.cuda}")
     print(f"Validated: torch={torch.__version__} (CPU)")
 else:
+    expected_cuda = f"{channel[2:-1]}.{channel[-1]}"
+    if torch.version.cuda != expected_cuda:
+        raise SystemExit(f"Expected CUDA {expected_cuda}, got {torch.version.cuda}")
     if not torch.cuda.is_available():
         raise SystemExit("CUDA not available; check GPU driver and PyTorch compatibility")
     result = torch.ones(1, device="cuda")

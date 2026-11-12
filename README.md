@@ -54,10 +54,12 @@ bash scripts/environment/run.sh
 | 训练环境 | `.venv/train`：模型构建、CPT、LoRA |
 | 评估环境 | `.venv/evaluation`：PPL、LMEH、vLLM、下游评分 |
 | CUDA 构建渠道 | 从 `nvidia-smi` 推导；可用 `TORCH_CHANNEL=cu128` 等显式覆盖，但必须匹配驱动能力 |
-| 在线依赖安装 | 安装助手 uv 将 Torch 与其余依赖共同解析；CUDA 镜像优先、普通包使用清华镜像 |
+| 在线依赖安装 | 先用 pip 从清华源安装 requirements，最后单独安装对应 CUDA 构建的 Torch |
 | 完成检查 | `pip check`、关键模块导入及 CUDA 张量测试 |
 
-环境脚本不固定具体包版本、不生成依赖锁或 Torch 约束文件，不调用 Git 命令。重新运行会重新解析依赖并从所选 CUDA 源重新安装 Torch；已完成配置的环境不需要为每个模型重复安装。选择 CUDA wheel 渠道不等于锁定 Torch 版本；渠道内必须存在与其余依赖兼容的组合。源优先策略见 [uv 文档](https://docs.astral.sh/uv/concepts/indexes/)。
+环境脚本不固定具体包版本、不生成依赖锁或 Torch 约束文件，不调用 Git 命令。先正常安装 requirements，不全局升级已有依赖；随后保留这一步选出的 Torch 发布版本，仅切换为目标 CUDA 构建，防止破坏 vLLM 对 Torch 版本的要求。CUDA 镜像仅下载 Torch wheel，wheel 的依赖仍从清华源安装。最后执行依赖、关键模块导入和 CUDA 检查；已完成配置的环境不需要为每个模型重复安装。
+
+如果该 Torch 发布版本没有目标 CUDA wheel，脚本会停止并说明缺失组合，不自行升级或降级整套依赖。离线 WHEELHOUSE 也需包含对应 CUDA 构建及其依赖。最后安装 Torch 能防止它被前序安装覆盖，但不能保证任意 vLLM wheel 都与该 CUDA 构建二进制兼容。
 
 安装完成后可查看实际环境：
 
@@ -451,8 +453,8 @@ bash scripts/train/cpt/phase2_b.sh
 | 找不到 Python 3.12 / 实际是 3.9 | 回到第 1 步准备解释器，设置 PYTHON_BIN。已有错误版本的 .venv 先移到备份位置，再安装。 |
 | nvidia-smi 失败 / CUDA 不可用 | 先检查驱动、容器 GPU 挂载和可见设备，再安装 Python 包；CPU 安装不能替代 GPU 实验。 |
 | 依赖解析失败，Torch/vLLM 无可用组合 | 核对驱动与 CUDA 源。使用完整匹配的 wheelhouse，或由管理员升级驱动后重建环境；不要用 --no-deps 绕过依赖。 |
-| undefined symbol / vLLM 扩展导入失败 | 在新评估环境联合安装依赖，检查实际 Torch/CUDA。不要只升级 Torch 后继续使用旧 vLLM 二进制。 |
-| 模块缺失 / PreTrainedConfig 等导入失败 | 确认使用项目 .venv 解释器；检查实际安装包与代码 API。重新完成联合安装和导入检查，再做模型构建。 |
+| undefined symbol / vLLM 扩展导入失败 | 检查实际 Torch/CUDA 与 vLLM wheel 的二进制兼容性；使用匹配的 vLLM wheel，不能只看 pip check 是否通过。 |
+| 模块缺失 / PreTrainedConfig 等导入失败 | 确认使用项目 .venv 解释器；检查实际安装包与代码 API。旧环境不会因重跑而自动全局升级，需修复不兼容包后重新执行导入检查。 |
 | DNS、连接镜像超时 | 检查国内端点连通性；环境脚本已隔离额外包索引。模型与数据下载重试同一目录，或准备离线 wheel/数据缓存。 |
 | 训练提示没有 JSONL | 完成外层数据解压及预训练分片解压，排除 data/data 嵌套。损坏的包先重新取得。 |
 | 构建校验失败 | 查看 Char/PGCA 输出中的 reports；确认原基座、汉字资源、词表/embedding/特殊 token 映射。修正原因后重建，不绕过校验继续训练。 |
