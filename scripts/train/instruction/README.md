@@ -14,19 +14,23 @@
 
 以上 Token 量是规划范围，实际以对应 Tokenizer 的报告为准，不作为运行硬门槛。清洗、去污染或混合约束导致不足 15 万时，不重复补样；报告保留目标、实际 Train/Dev 数量及差额。
 
-## 数据准备好后
+## 原始数据与准备
 
 本轮不下载数据。将两份原始数据的 JSON、JSONL 或 Parquet 放到：
 
 ```text
 data/instruction/
 ├── raw/
-│   ├── COIG-CQIA/
-│   └── tulu-3-sft-mixture/
+│   ├── COIG-CQIA/coig_cqia.jsonl
+│   └── tulu-3-sft-mixture/tulu3.jsonl
 └── prepared/                   # 准备命令自动生成 vN、latest.txt
 ```
 
 已有成品 `train.jsonl`、`dev.jsonl` 时也可以通过 `INSTRUCTION_DATA` 直接指定其目录；集中冒烟还接受 `data/instruction/final/`。
+
+当前两份 JSONL 均含 `sample_id`、`source`、`messages` 和 `metadata`。转换直接使用原始 `messages`，从嵌套 `metadata` 读取原始 ID、任务类型、人工校验、版权及许可字段；同时将完整元数据保存在标量字符串 `source_metadata` 中，避免不同来源的嵌套结构影响 Arrow 读取。顶层同名字段优先，仍支持原生 COIG 的 `instruction/input/output` 格式。`dedup_text`、`first_user_prompt` 不作为训练内容，清洗和去重均从真实对话重新计算。
+
+当前本地原始文件共 COIG 44,693 条、Tulu 931,481 条（2026-11-12 全量解析计数）。保持默认 Tulu 占比上限 60% 时，即使 COIG 全部保留，总池也最多约 111,732 条；清洗、去重、去污染和语言比例约束后还可能更少。目标 150,000 不代表当前数据一定能达到，配比保持不变，缺口由准备报告记录。
 
 新环境按根 README 安装。已有训练环境只需补新增依赖：
 

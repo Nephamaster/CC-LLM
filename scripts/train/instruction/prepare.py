@@ -73,6 +73,9 @@ def records(path):
 
 
 def convert(row, family, path, index):
+    metadata = row.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid_metadata")
     messages = row.get("messages")
     if messages is None and family == "coig":
         if any(
@@ -108,8 +111,9 @@ def convert(row, family, path, index):
     text = "\n".join(m["content"] for m in cleaned)
     if len(text) > 100_000:
         raise ValueError("oversized_conversation")
-    source = str(row.get("source") or path.parent.name)
-    hint = (source + " " + json.dumps(row.get("task_type", ""), ensure_ascii=False)).lower()
+    source = str(row.get("source") or metadata.get("source_subset") or path.parent.name)
+    original_task_type = row.get("task_type", metadata.get("task_type"))
+    hint = (source + " " + json.dumps(original_task_type, ensure_ascii=False)).lower()
     task = (
         "code"
         if re.search(r"code|python|编程|程序", hint) or "```" in text
@@ -120,8 +124,24 @@ def convert(row, family, path, index):
     hanzi = sum("\u3400" <= c <= "\u9fff" or 0x20000 <= ord(c) <= 0x323AF for c in text)
     letters = sum(c.isalpha() for c in text)
     language = "zh" if hanzi / max(1, letters) >= 0.2 else "other"
-    original_id = row.get("id", row.get("uuid"))
-    license_info = row.get("license")
+    original_id = next(
+        (
+            value
+            for value in (
+                row.get("id"),
+                row.get("uuid"),
+                metadata.get("original_id"),
+                metadata.get("source_row_id"),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    sample_id = row.get("sample_id")
+    id_origin = "source" if original_id is not None else "sample_id" if sample_id is not None else "file_row"
+    if original_id is None:
+        original_id = sample_id if sample_id is not None else f"{path.name}:{index}"
+    license_info = row.get("license", metadata.get("license"))
     license_origin = "row" if license_info else "unspecified"
     if not license_info:
         license_info = (
@@ -136,25 +156,29 @@ def convert(row, family, path, index):
                     break
     elif not isinstance(license_info, str):
         license_info = json.dumps(license_info, ensure_ascii=False)
-    copyright_info = row.get("copyright")
+    copyright_info = row.get("copyright", metadata.get("copyright"))
     if copyright_info is not None and not isinstance(copyright_info, str):
         copyright_info = json.dumps(copyright_info, ensure_ascii=False)
+    human_verified = row.get("human_verified", metadata.get("human_verified"))
     return {
         "messages": cleaned,
         "source_family": family,
         "source": source,
-        "original_id": str(original_id) if original_id is not None else f"{path.name}:{index}",
-        "id_origin": "source" if original_id is not None else "file_row",
+        "original_id": str(original_id),
+        "id_origin": id_origin,
+        "sample_id": str(sample_id) if sample_id is not None else None,
         "source_file": str(path),
+        # Keep varying source schemas as a scalar so Arrow can read mixed-source rows.
+        "source_metadata": json.dumps(metadata, ensure_ascii=False),
         "task_type": task,
-        "original_task_type": json.dumps(row.get("task_type"), ensure_ascii=False),
+        "original_task_type": json.dumps(original_task_type, ensure_ascii=False),
         "language": language,
         "language_method": "Han share among letters >= 0.2",
         "license": license_info,
         "license_origin": license_origin,
         "collection_license": "ODC-BY-1.0" if family == "tulu" else None,
         "copyright": copyright_info,
-        "human_verified": row.get("human_verified") if isinstance(row.get("human_verified"), bool) else None,
+        "human_verified": human_verified if isinstance(human_verified, bool) else None,
     }
 
 

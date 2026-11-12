@@ -122,7 +122,8 @@ data/
 │       ├── train/*.tar.xz
 │       └── validation/*.jsonl
 ├── instruction/
-│   ├── raw/{COIG-CQIA,tulu-3-sft-mixture}/
+│   ├── raw/COIG-CQIA/coig_cqia.jsonl
+│   ├── raw/tulu-3-sft-mixture/tulu3.jsonl
 │   └── prepared/                  # prepare 命令生成；也可指定外部成品目录
 ├── downstream/
 │   ├── csc/{csc_mix_dedup,cscd_dev}.jsonl
