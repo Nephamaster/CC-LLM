@@ -46,14 +46,21 @@ export HF_ENDPOINT=https://hf-mirror.com
 export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 export TORCH_INDEX_BASE=https://mirrors.nju.edu.cn/pytorch/whl
 
-bash scripts/environment/run.sh
+bash scripts/environment/train.sh
+bash scripts/environment/evaluation.sh
+```
+
+两个脚本独立运行，各自只创建或更新对应环境。训练环境已完成、只需重建评估环境时，只执行第二条。驱动支持 CUDA 13 时，评估入口默认选 cu130，训练入口仍默认选 cu128；显式指定如下：
+
+```bash
+TORCH_CHANNEL=cu130 bash scripts/environment/evaluation.sh
 ```
 
 | 项目 | 位置 / 行为 |
 | --- | --- |
 | 训练环境 | `.venv/train`：模型构建、CPT、LoRA |
 | 评估环境 | `.venv/evaluation`：PPL、LMEH、vLLM、下游评分 |
-| CUDA 构建渠道 | 从 `nvidia-smi` 推导；可用 `TORCH_CHANNEL=cu128` 等显式覆盖，但必须匹配驱动能力 |
+| CUDA 构建渠道 | 从 `nvidia-smi` 分别推导；每条安装命令均可用 TORCH_CHANNEL 显式覆盖 |
 | 在线依赖安装 | 先选目标 CUDA 渠道的 Torch，再用清华源预解析 requirements；兼容后安装，最后用同一 Torch wheel 收尾 |
 | 完成检查 | `pip check`、关键模块导入及 CUDA 张量测试 |
 
@@ -62,6 +69,8 @@ bash scripts/environment/run.sh
 找到可解组合后，安装 requirements 时显式携带同一个 Torch wheel，防止普通源选入其他 Torch；最后再单独安装该 wheel 收尾。联合安装阶段 pip 可能提前安装 Torch，最后一步不强制重复重装。保留 pip check、关键模块导入及 CUDA 检查，不全局升级已有依赖。已配置好的环境不需要为每个模型重复安装。
 
 如果目标渠道没有与 requirements 兼容的候选，脚本会在安装应用包之前停止。离线 WHEELHOUSE 使用相同流程，需包含目标 CUDA 构建及依赖。元数据可解不能证明 vLLM 的预编译扩展一定兼容，实际模型推理仍需冒烟验证。
+
+当前 [vLLM 0.26.0 默认构建](https://github.com/vllm-project/vllm/blob/v0.26.0/docker/Dockerfile)使用 CUDA 13.0。将评估环境强制设为 cu128 不能自动把 vLLM 转成 CUDA 12 构建；旧驱动或指定旧渠道时，需要另备配套 vLLM wheel。两套环境不要求使用同一 CUDA 渠道，安装这些预编译包无需修改系统 nvcc。
 
 安装完成后可查看实际环境：
 
@@ -80,7 +89,8 @@ bash scripts/environment/run.sh
 如果国内镜像也无法访问，在可联网机器准备与目标 Linux、Python、CUDA 相匹配的完整 wheel 目录，再执行：
 
 ```bash
-WHEELHOUSE=/absolute/path/to/wheels bash scripts/environment/run.sh
+WHEELHOUSE=/absolute/path/to/wheels bash scripts/environment/train.sh
+WHEELHOUSE=/absolute/path/to/wheels bash scripts/environment/evaluation.sh
 ```
 
 离线模式使用 `--no-index`，不会访问包索引。通用 benchmark 的数据也需要已有缓存，或在运行时能够访问 HF 镜像。

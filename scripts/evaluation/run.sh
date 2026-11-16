@@ -6,7 +6,7 @@ PYTHON="${PYTHON:-$ROOT/.venv/evaluation/bin/python}"
 BENCHMARKS="${BENCHMARKS:-ppl,lmeh,csc,fcgec_valid,fcgec_test,nacgec,nacgec_test,ancient_c3,ancient_fuxi}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
-[[ -x "$PYTHON" ]] || { echo "Run scripts/environment/run.sh first" >&2; exit 1; }
+[[ -x "$PYTHON" ]] || { echo "Run scripts/environment/evaluation.sh first" >&2; exit 1; }
 TRAIN_ROOT="${TRAIN_ROOT:-$ROOT/outputs/train}"
 MODEL_NAME="${MODEL_NAME:-${CPT_MODEL_NAME:-}}"
 if [[ -z "$MODEL_NAME" ]]; then

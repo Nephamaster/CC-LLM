@@ -405,7 +405,7 @@ def main():
         parser.error("base-model must be a local full HF model directory")
     for python in (args.train_python, args.eval_python):
         if not os.access(python, os.X_OK):
-            parser.error(f"missing Python environment: {python}; run scripts/environment/run.sh first")
+            parser.error(f"missing Python environment: {python}; run scripts/environment/train.sh and scripts/environment/evaluation.sh first")
     smoke = Smoke(args)
     try:
         code = smoke.run()

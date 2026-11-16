@@ -15,7 +15,7 @@ UNIHAN_DIR="${UNIHAN_DIR:-$DATA_ROOT/model_build/unihan}"
 PYTHON_CMD="${PYTHON_CMD:-$ROOT/.venv/train/bin/python}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
-[[ -x "$PYTHON_CMD" ]] || { echo "Run scripts/environment/run.sh first" >&2; exit 1; }
+[[ -x "$PYTHON_CMD" ]] || { echo "Run scripts/environment/train.sh first" >&2; exit 1; }
 [[ -f "$BASE_MODEL/config.json" ]] || { echo "Place the local Base model at $BASE_MODEL or set BASE_MODEL" >&2; exit 1; }
 for name in tghz2013.txt common_traditional.txt structure.tsv; do
     [[ -f "$HANZI_SOURCE_DIR/$name" ]] || { echo "Missing model-build resource: $HANZI_SOURCE_DIR/$name" >&2; exit 1; }

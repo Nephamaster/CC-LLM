@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+TORCH_CHANNEL="${TORCH_CHANNEL:-}"
+# Auto detection prefers CUDA 13.0 on capable drivers for current vLLM wheels.
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 TORCH_INDEX_BASE="${TORCH_INDEX_BASE:-https://mirrors.nju.edu.cn/pytorch/whl}"
 WHEELHOUSE="${WHEELHOUSE:-}"
@@ -28,7 +30,7 @@ check_python() {
 select_torch() {
     local cuda_version major minor cuda_code
 
-    if [[ -n "${TORCH_CHANNEL:-}" ]]; then
+    if [[ -n "$TORCH_CHANNEL" ]]; then
         CHANNEL="$TORCH_CHANNEL"
     elif ! command -v nvidia-smi >/dev/null 2>&1 || \
          ! nvidia-smi -L 2>/dev/null | grep -q '^GPU [0-9]'; then
@@ -41,7 +43,8 @@ select_torch() {
         minor="${cuda_version#*.}"
         cuda_code=$((10#$major * 100 + 10#$minor))
 
-        if (( cuda_code >= 1208 )); then CHANNEL=cu128
+        if (( cuda_code >= 1300 )); then CHANNEL=cu130
+        elif (( cuda_code >= 1208 )); then CHANNEL=cu128
         elif (( cuda_code >= 1206 )); then CHANNEL=cu126
         elif (( cuda_code >= 1204 )); then CHANNEL=cu124
         elif (( cuda_code >= 1201 )); then CHANNEL=cu121
@@ -52,7 +55,7 @@ select_torch() {
     fi
 
     case "$CHANNEL" in
-        cu128|cu126|cu124|cu121|cu118|cpu) ;;
+        cu130|cu128|cu126|cu124|cu121|cu118|cpu) ;;
         *) die "Unsupported TORCH_CHANNEL=$CHANNEL" ;;
     esac
 }
@@ -118,18 +121,16 @@ install_environment() {
     )
     "$target/bin/python" -m pip check
 
-    "$target/bin/python" -B - "$CHANNEL" "${target##*/}" <<'PY'
+    "$target/bin/python" -B - "$CHANNEL" <<'PY'
 import sys
 import torch
 import transformers
 import swift
+import lm_eval
+from vllm import LLM
 
-channel, role = sys.argv[1:]
+channel = sys.argv[1]
 print(f"Python: {sys.executable}; transformers={transformers.__version__}; torch={torch.__version__}")
-if role == "evaluation":
-    import lm_eval
-    from vllm import LLM
-
 if channel == "cpu":
     if torch.version.cuda is not None:
         raise SystemExit(f"Expected CPU Torch, got CUDA {torch.version.cuda}")
@@ -147,20 +148,15 @@ else:
 PY
 }
 
+target="$ROOT/.venv/evaluation"
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Only Linux x86_64 is supported."
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "Python 3.12 not found: $PYTHON_BIN. Install it or set PYTHON_BIN to its path."
 check_python "$PYTHON_BIN"
-for target in "$ROOT/.venv/train" "$ROOT/.venv/evaluation"; do
-    if [[ -e "$target" ]]; then
-        [[ -x "$target/bin/python" ]] || die "Existing environment is incomplete: $target; move it aside before recreating it."
-        check_python "$target/bin/python"
-    fi
-done
+if [[ -e "$target" ]]; then
+    [[ -x "$target/bin/python" ]] || die "Existing environment is incomplete: $target; move it aside before recreating it."
+    check_python "$target/bin/python"
+fi
 select_torch
-printf 'Selected CUDA wheel index: %s/%s/\n' "${TORCH_INDEX_BASE%/}" "$CHANNEL"
-
-install_environment "$ROOT/.venv/train" "$ROOT/requirements/train.txt"
-install_environment "$ROOT/.venv/evaluation" "$ROOT/requirements/evaluation.txt"
-
-printf '\nTraining environment:   %s\nEvaluation environment: %s\nHF endpoint:            %s\n' \
-    "$ROOT/.venv/train" "$ROOT/.venv/evaluation" "$HF_ENDPOINT"
+printf 'evaluation CUDA wheel index: %s/%s/\n' "${TORCH_INDEX_BASE%/}" "$CHANNEL"
+install_environment "$target" "$ROOT/requirements/evaluation.txt"
+printf '\nevaluation environment: %s\nHF endpoint: %s\n' "$target" "$HF_ENDPOINT"

@@ -15,7 +15,7 @@ FORCE="${FORCE:-false}"
 TRAIN_ROOT="${TRAIN_ROOT:-$ROOT/outputs/train}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
-[[ -x "$PYTHON_CMD" ]] || { echo "Run scripts/environment/run.sh first" >&2; exit 1; }
+[[ -x "$PYTHON_CMD" ]] || { echo "Run scripts/environment/train.sh first" >&2; exit 1; }
 if [[ -z "${MODEL_NAME:-}" ]]; then
     [[ -s "$ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run scripts/model_build/run.sh" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$ROOT/models/model_name.txt"

@@ -83,7 +83,7 @@ Qwen3 Base
 源码入口：
 
 ```text
-scripts/environment/run.sh
+scripts/environment/{train,evaluation}.sh
 ```
 
 当前 master 要求：
@@ -96,7 +96,8 @@ scripts/environment/run.sh
 执行：
 
 ```bash
-bash scripts/environment/run.sh
+bash scripts/environment/train.sh
+bash scripts/environment/evaluation.sh
 ```
 
 生成：
@@ -1611,7 +1612,8 @@ Char-CPT
 ### Step 1：准备环境与数据
 
 ```bash
-bash scripts/environment/run.sh
+bash scripts/environment/train.sh
+bash scripts/environment/evaluation.sh
 ```
 
 准备完整 Base 模型、汉字资源、预训练数据、下游数据和测试集。
