@@ -50,7 +50,7 @@ bash scripts/environment/train.sh
 bash scripts/environment/evaluation.sh
 ```
 
-两个脚本独立运行，各自只创建或更新对应环境。训练环境已完成、只需重建评估环境时，只执行第二条。驱动支持 CUDA 13 时，评估入口默认选 cu130，训练入口仍默认选 cu128；显式指定如下：
+两个脚本独立运行，各自只创建或更新对应环境。训练环境已完成、只需重建评估环境时，只执行第二条。两者均读取 `nvidia-smi` 显示的驱动 CUDA 能力，再从配置的 Torch 源动态选择不高于该能力的最高可用渠道；不再设置 cu128/cu130 上限或固定分档。离线时从 WHEELHOUSE 中的 Torch wheel 获取渠道。需要手动指定已知兼容渠道时：
 
 ```bash
 TORCH_CHANNEL=cu130 bash scripts/environment/evaluation.sh
@@ -60,17 +60,23 @@ TORCH_CHANNEL=cu130 bash scripts/environment/evaluation.sh
 | --- | --- |
 | 训练环境 | `.venv/train`：模型构建、CPT、LoRA |
 | 评估环境 | `.venv/evaluation`：PPL、LMEH、vLLM、下游评分 |
-| CUDA 构建渠道 | 从 `nvidia-smi` 分别推导；每条安装命令均可用 TORCH_CHANNEL 显式覆盖 |
-| 在线依赖安装 | 先选目标 CUDA 渠道的 Torch，再用清华源预解析 requirements；兼容后安装，最后用同一 Torch wheel 收尾 |
+| CUDA 构建渠道 | 根据驱动能力与包源实际渠道动态选择；每条命令均可用 TORCH_CHANNEL 显式覆盖 |
+| 在线依赖安装 | 训练入口选择目标 CUDA 的 Torch；评估入口先筛选 vLLM CUDA 构建，再匹配 Torch；其余依赖走清华源 |
 | 完成检查 | `pip check`、关键模块导入及 CUDA 张量测试 |
 
-环境脚本不固定具体包版本、不生成依赖锁或 Torch 约束文件，不调用 Git 命令。先查询目标 CUDA 渠道中支持当前 Python/平台的 Torch，按从新到旧的候选，用指定 Torch wheel 与 requirements 一起进行 pip 预解析，依赖冲突时尝试下一候选；网络或构建错误直接报告，不当作版本冲突处理。CUDA 镜像仅提供 Torch wheel，其余依赖仍使用清华源。
+环境脚本不固定具体包版本、不生成依赖锁或 Torch 约束文件，不调用 Git 命令。训练入口查询目标 CUDA 渠道中支持当前 Python/平台的 Torch，按从新到旧的候选，用指定 wheel 与 requirements 预解析，依赖冲突时尝试下一候选。网络或构建错误直接报告，不当作版本冲突处理。
 
-找到可解组合后，安装 requirements 时显式携带同一个 Torch wheel，防止普通源选入其他 Torch；最后再单独安装该 wheel 收尾。联合安装阶段 pip 可能提前安装 Torch，最后一步不强制重复重装。保留 pip check、关键模块导入及 CUDA 检查，不全局升级已有依赖。已配置好的环境不需要为每个模型重复安装。
+这里依据的是驱动支持能力，不是系统 `nvcc` Toolkit 版本。驱动显示 13.1 而源只有 cu130、cu132 时，自动选择 cu130；若源提供 cu131，也会纳入选择。源中没有受支持渠道时明确报错，不使用写死的默认渠道。选定渠道后，仍需通过对应 Torch/vLLM wheel 的可用性和兼容检查。
 
-如果目标渠道没有与 requirements 兼容的候选，脚本会在安装应用包之前停止。离线 WHEELHOUSE 使用相同流程，需包含目标 CUDA 构建及依赖。元数据可解不能证明 vLLM 的预编译扩展一定兼容，实际模型推理仍需冒烟验证。
+评估入口先从普通包源检查支持当前 Python/平台的 vLLM wheel：使用 `+cuXXX` 构建标签，或读取包内 `vllm/envs.py` 声明的默认 CUDA 基线，筛选与目标渠道一致的构建；再读取其 Torch 依赖，选择配套的 Torch，以及它要求的 torchvision、torchaudio。CUDA 源仅提供这些 Torch 系列 wheel，其他依赖和 vLLM 仍使用清华源。未知 CUDA 构建不会被假定为兼容。
 
-当前 [vLLM 0.26.0 默认构建](https://github.com/vllm-project/vllm/blob/v0.26.0/docker/Dockerfile)使用 CUDA 13.0。将评估环境强制设为 cu128 不能自动把 vLLM 转成 CUDA 12 构建；旧驱动或指定旧渠道时，需要另备配套 vLLM wheel。两套环境不要求使用同一 CUDA 渠道，安装这些预编译包无需修改系统 nvcc。
+在线优先用 HTTP Range 读取 wheel 元数据，避免完整下载不匹配的 vLLM；源不支持 Range 时需先下载该候选以读取。构建和版本依赖匹配后，才下载选中组合并进行 requirements 预解析。离线从 WHEELHOUSE 读取相同信息，不访问网络。
+
+找到可解组合后，安装 requirements 时显式携带选中的 wheel，防止普通源替换成其他 Torch 或 vLLM 构建；最后再单独安装同一个 Torch wheel 收尾。联合安装阶段 pip 可能提前安装 Torch，最后一步不强制重复重装。保留 pip check、关键模块导入及 CUDA 检查，不全局升级已有依赖。已配置好的环境不需要为每个模型重复安装。
+
+如果目标渠道没有构建信息明确、且与 requirements 兼容的候选，脚本会在安装应用包之前停止。离线 WHEELHOUSE 需包含配套的 vLLM、Torch 系列 wheel 及其他依赖。旧版默认 wheel 若没有可识别的 CUDA 声明，会被跳过；可以提供官方带 CUDA 标签的替代构建。脚本不会自动编译源码或从 GitHub 获取替代包。筛选与依赖解析不能替代最终导入检查，实际模型推理仍需冒烟验证。
+
+例如 [vLLM 0.26.0 默认构建](https://github.com/vllm-project/vllm/blob/v0.26.0/docker/Dockerfile)使用 CUDA 13.0：目标为 cu128 时，脚本会跳过它，寻找可确认是 cu128 的其他构建；源中没有则明确失败，不继续安装这个 CUDA 13 包。两套环境不要求使用同一 CUDA 渠道，安装这些预编译包无需修改系统 nvcc。
 
 安装完成后可查看实际环境：
 

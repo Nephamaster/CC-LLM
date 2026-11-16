@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 TORCH_CHANNEL="${TORCH_CHANNEL:-}"
-# Auto detection prefers CUDA 12.8 for training; TORCH_CHANNEL can override it.
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 TORCH_INDEX_BASE="${TORCH_INDEX_BASE:-https://mirrors.nju.edu.cn/pytorch/whl}"
 WHEELHOUSE="${WHEELHOUSE:-}"
@@ -28,7 +27,7 @@ check_python() {
 }
 
 select_torch() {
-    local cuda_version major minor cuda_code
+    local cuda_version
 
     if [[ -n "$TORCH_CHANNEL" ]]; then
         CHANNEL="$TORCH_CHANNEL"
@@ -39,24 +38,57 @@ select_torch() {
     else
         cuda_version="$(nvidia-smi 2>/dev/null | sed -nE 's/.*CUDA Version:[[:space:]]*([0-9]+\.[0-9]+).*/\1/p' | head -n 1)" || true
         [[ -n "$cuda_version" ]] || die "Cannot detect CUDA capability from nvidia-smi; set TORCH_CHANNEL explicitly."
-        major="${cuda_version%%.*}"
-        minor="${cuda_version#*.}"
-        cuda_code=$((10#$major * 100 + 10#$minor))
+        CHANNEL="$("$PYTHON_BIN" -B - "$cuda_version" "$TORCH_INDEX_BASE" "$WHEELHOUSE" <<'CUDA'
+from html.parser import HTMLParser
+from pathlib import Path
+import re
+import sys
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
-        if (( cuda_code >= 1208 )); then CHANNEL=cu128
-        elif (( cuda_code >= 1206 )); then CHANNEL=cu126
-        elif (( cuda_code >= 1204 )); then CHANNEL=cu124
-        elif (( cuda_code >= 1201 )); then CHANNEL=cu121
-        elif (( cuda_code >= 1108 )); then CHANNEL=cu118
-        else die "Driver CUDA capability $cuda_version is too old for this script."
-        fi
+capability, index, wheelhouse = sys.argv[1:]
+limit = tuple(map(int, capability.split(".")))
+
+
+class Channels(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.names = set()
+
+    def handle_starttag(self, tag, attrs):
+        href = dict(attrs).get("href", "")
+        name = urlparse(href).path.rstrip("/").split("/")[-1]
+        if tag == "a" and re.fullmatch(r"cu\d{3,}", name):
+            self.names.add(name)
+
+
+if wheelhouse:
+    names = set()
+    for wheel in Path(wheelhouse).glob("torch-*.whl"):
+        match = re.search(r"\+(cu\d{3,})(?:[.-])", wheel.name)
+        if match:
+            names.add(match[1])
+else:
+    with urlopen(index.rstrip("/") + "/", timeout=30) as response:
+        parser = Channels()
+        parser.feed(response.read().decode())
+    names = parser.names
+
+available = [(int(name[2:-1]), int(name[-1]), name) for name in names]
+available = [item for item in available if item[:2] <= limit]
+if not available:
+    raise SystemExit(
+        f"No CUDA wheel channel supported by driver capability {capability} "
+        f"in {wheelhouse or index}; set TORCH_CHANNEL only for a known compatible build."
+    )
+print(max(available)[2])
+CUDA
+)" || die "Cannot select a CUDA channel from the configured wheel source."
         echo "NVIDIA driver CUDA capability: $cuda_version"
     fi
 
-    case "$CHANNEL" in
-        cu130|cu128|cu126|cu124|cu121|cu118|cpu) ;;
-        *) die "Unsupported TORCH_CHANNEL=$CHANNEL" ;;
-    esac
+    [[ "$CHANNEL" == cpu || "$CHANNEL" =~ ^cu[0-9]{3,}$ ]] \
+        || die "Invalid TORCH_CHANNEL=$CHANNEL; use cu followed by the CUDA version, or cpu."
 }
 
 install_environment() {
