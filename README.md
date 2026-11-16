@@ -54,12 +54,14 @@ bash scripts/environment/run.sh
 | 训练环境 | `.venv/train`：模型构建、CPT、LoRA |
 | 评估环境 | `.venv/evaluation`：PPL、LMEH、vLLM、下游评分 |
 | CUDA 构建渠道 | 从 `nvidia-smi` 推导；可用 `TORCH_CHANNEL=cu128` 等显式覆盖，但必须匹配驱动能力 |
-| 在线依赖安装 | 先用 pip 从清华源安装 requirements，最后单独安装对应 CUDA 构建的 Torch |
+| 在线依赖安装 | 先选目标 CUDA 渠道的 Torch，再用清华源预解析 requirements；兼容后安装，最后用同一 Torch wheel 收尾 |
 | 完成检查 | `pip check`、关键模块导入及 CUDA 张量测试 |
 
-环境脚本不固定具体包版本、不生成依赖锁或 Torch 约束文件，不调用 Git 命令。先正常安装 requirements，不全局升级已有依赖；随后保留这一步选出的 Torch 发布版本，仅切换为目标 CUDA 构建，防止破坏 vLLM 对 Torch 版本的要求。CUDA 镜像仅下载 Torch wheel，wheel 的依赖仍从清华源安装。最后执行依赖、关键模块导入和 CUDA 检查；已完成配置的环境不需要为每个模型重复安装。
+环境脚本不固定具体包版本、不生成依赖锁或 Torch 约束文件，不调用 Git 命令。先查询目标 CUDA 渠道中支持当前 Python/平台的 Torch，按从新到旧的候选，用指定 Torch wheel 与 requirements 一起进行 pip 预解析，依赖冲突时尝试下一候选；网络或构建错误直接报告，不当作版本冲突处理。CUDA 镜像仅提供 Torch wheel，其余依赖仍使用清华源。
 
-如果该 Torch 发布版本没有目标 CUDA wheel，脚本会停止并说明缺失组合，不自行升级或降级整套依赖。离线 WHEELHOUSE 也需包含对应 CUDA 构建及其依赖。最后安装 Torch 能防止它被前序安装覆盖，但不能保证任意 vLLM wheel 都与该 CUDA 构建二进制兼容。
+找到可解组合后，安装 requirements 时显式携带同一个 Torch wheel，防止普通源选入其他 Torch；最后再单独安装该 wheel 收尾。联合安装阶段 pip 可能提前安装 Torch，最后一步不强制重复重装。保留 pip check、关键模块导入及 CUDA 检查，不全局升级已有依赖。已配置好的环境不需要为每个模型重复安装。
+
+如果目标渠道没有与 requirements 兼容的候选，脚本会在安装应用包之前停止。离线 WHEELHOUSE 使用相同流程，需包含目标 CUDA 构建及依赖。元数据可解不能证明 vLLM 的预编译扩展一定兼容，实际模型推理仍需冒烟验证。
 
 安装完成后可查看实际环境：
 

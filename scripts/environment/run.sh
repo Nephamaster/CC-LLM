@@ -59,7 +59,6 @@ select_torch() {
 
 install_environment() {
     local target="$1" requirements="$2"
-    local torch_version
     local -a pip_args torch_args
 
     [[ -f "$requirements" ]] || die "Requirements file does not exist: $requirements"
@@ -82,18 +81,40 @@ install_environment() {
         "$target/bin/python" -m pip install "${pip_args[@]}" --upgrade pip
     fi
 
-    "$target/bin/python" -m pip install "${pip_args[@]}" -r "$requirements"
-    # Keep the Torch release chosen by requirements (including vLLM), changing only its CUDA build.
-    torch_version="$("$target/bin/python" -c 'from importlib.metadata import version; print(version("torch").split("+")[0])')"
-    echo "Installing Torch last: torch==$torch_version+$CHANNEL"
     (
+        local wheel_dir torch_version selected=0
+        local -a wheel
         wheel_dir="$(mktemp -d)"
         trap 'rm -rf -- "$wheel_dir"' EXIT
-        # Fetch only the Torch wheel from the CUDA source; resolve dependencies from the normal source.
-        "$target/bin/python" -m pip download "${torch_args[@]}" \
-            --no-deps --only-binary=:all: --dest "$wheel_dir" "torch==$torch_version+$CHANNEL" \
-            || die "No Torch $torch_version build for $CHANNEL; this requirements/CUDA combination is unavailable."
-        "$target/bin/python" -m pip install "${pip_args[@]}" "$wheel_dir"/torch-*.whl
+        # pip filters the candidates for this Python/platform and lists newest first.
+        "$target/bin/python" -m pip index versions "${torch_args[@]}" --only-binary=:all: torch \
+            > "$wheel_dir/versions.txt"
+        while IFS= read -r torch_version; do
+            [[ "$torch_version" == *"+$CHANNEL" ]] || continue
+            echo "Resolving ${target##*/} with torch==$torch_version"
+            rm -f -- "$wheel_dir"/torch-*.whl
+            # Only Torch comes from the CUDA source; all its dependencies use the normal source.
+            "$target/bin/python" -m pip download "${torch_args[@]}" \
+                --no-deps --only-binary=:all: --dest "$wheel_dir" "torch==$torch_version"
+            wheel=("$wheel_dir"/torch-*.whl)
+            if "$target/bin/python" -m pip install "${pip_args[@]}" --dry-run \
+                -r "$requirements" "${wheel[0]}" 2>&1 | tee "$wheel_dir/resolve.log"; then
+                selected=1
+                break
+            fi
+            # Network/build failures are not evidence that an older Torch is needed.
+            grep -Eq 'ResolutionImpossible|conflicting dependencies' "$wheel_dir/resolve.log" \
+                || die "Dependency resolution failed; see the pip error above."
+            echo "Dependency conflict; trying the next $CHANNEL Torch candidate."
+        done < <(sed -n 's/^Available versions: //p' "$wheel_dir/versions.txt" \
+            | tr ',' '\n' | sed 's/^ *//;s/ *$//')
+        [[ "$selected" == 1 ]] \
+            || die "No compatible requirements/Torch combination for $CHANNEL; no application packages installed."
+
+        # Use the same explicit wheel throughout so normal indexes cannot substitute another Torch.
+        "$target/bin/python" -m pip install "${pip_args[@]}" -r "$requirements" "${wheel[0]}"
+        echo "Installing Torch last: torch==$torch_version"
+        "$target/bin/python" -m pip install "${pip_args[@]}" "${wheel[0]}"
     )
     "$target/bin/python" -m pip check
 
