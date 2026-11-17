@@ -1,17 +1,13 @@
-"""Resolve installed built-in tasks; retain upstream prompts, groups and metrics."""
+"""Resolve installed benchmark tasks without pinning package or dataset revisions."""
 from __future__ import annotations
 
-import json
+import os
 import shutil
 from pathlib import Path
 
 import yaml
 
-from ..common import sha256
-
 HERE = Path(__file__).resolve().parent
-DEFAULT_CMMLU_DIR = Path("/share/project/wuhaiming/data/dataset/cmmlu")
-DATA_REVISIONS = json.loads((HERE / "dataset_revisions.json").read_text(encoding="utf-8"))
 BENCHMARKS = {
     "mmlu": {"task": "mmlu", "shots": 5, "leaves": 57, "output": "mmlu"},
     "arc_challenge": {"task": "arc_challenge", "shots": 0, "leaves": 1, "output": "arc/challenge"},
@@ -20,6 +16,47 @@ BENCHMARKS = {
     "cmmlu": {"task": "cmmlu", "shots": 5, "leaves": 67, "output": "cmmlu"},
     "clue": {"task": "clue", "shots": 0, "leaves": 9, "output": "clue"},
 }
+
+
+def cmmlu_dataset(data_files, usecols, **_metadata):
+    """Declare string fields before CSV parsing so Dev/Test cannot infer conflicting types."""
+    from datasets import Features, Value, load_dataset
+
+    return load_dataset(
+        "csv", data_files=data_files, usecols=usecols,
+        features=Features({name: Value("string") for name in usecols}),
+    )
+
+
+def table_metrics(benchmark, results):
+    """Explicit metrics for the experiment sheet; never mix score scales."""
+    def metric(task, name, filter_name="none"):
+        return results.get(task, {}).get(f"{name},{filter_name}")
+
+    if benchmark == "clue":
+        members = {
+            "semantic_inference": [("clue_afqmc", "acc"), ("clue_cmnli", "acc"), ("clue_wsc2020", "acc")],
+            "text_classification": [("clue_tnews", "acc"), ("clue_iflytek", "acc")],
+            "semantic_consistency": [("clue_csl", "acc")],
+            "word_comprehension": [("clue_chid", "acc")],
+            "reading_comprehension": [("clue_c3", "acc"), ("clue_cmrc2018", "f1")],
+        }
+        scores = {}
+        for group, tasks in members.items():
+            values = [metric(task, name) for task, name in tasks]
+            scores[group] = sum(values) / len(values) if all(v is not None for v in values) else None
+        return {"scores": scores, "scale": "0..1", "aggregation": "equal-weight task mean within each group",
+                "members": members, "note": "Reading combines C3 accuracy and CMRC2018 F1; not an official CLUE total."}
+    task, name, filter_name, scale = {
+        "mmlu": ("mmlu", "acc", "none", 1),
+        "arc_challenge": ("arc_challenge", "acc_norm", "none", 1),
+        "squadv2": ("squadv2", "f1", "none", 100),
+        "gsm8k": ("gsm8k", "exact_match", "strict-match", 1),
+        "cmmlu": ("cmmlu", "acc", "none", 1),
+    }[benchmark]
+    value = metric(task, name, filter_name)
+    return {"score": value / scale if value is not None else None, "scale": "0..1",
+            "task": task, "metric": name, "filter": filter_name}
 
 
 def select_benchmarks(value):
@@ -34,8 +71,8 @@ def select_benchmarks(value):
     return selected
 
 
-def build_bundle(destination, benchmark, cmmlu_dir=DEFAULT_CMMLU_DIR):
-    """Snapshot only the selected protocol, independent of external checkout/CWD."""
+def build_bundle(destination, benchmark):
+    """Copy the selected task protocol from the installed lm-eval package."""
     import lm_eval
 
     source = Path(lm_eval.__file__).resolve().parent / "tasks"
@@ -51,38 +88,49 @@ def build_bundle(destination, benchmark, cmmlu_dir=DEFAULT_CMMLU_DIR):
         return destination
     if benchmark == "squadv2":
         (destination / "squadv2.yaml").write_text(
-            "task: squadv2\nclass: !function scripts.evaluation.lmeh.squad.PinnedSQuAD2\n", encoding="utf-8")
+            "task: squadv2\nclass: !function scripts.evaluation.lmeh.squad.BudgetedSQuAD2\n",
+            encoding="utf-8",
+        )
         return destination
+
     family = "arc" if benchmark.startswith("arc_") else benchmark
     folder = source / ("mmlu/default" if family == "mmlu" else family)
-    names = [p.name for p in folder.iterdir() if p.suffix == ".yaml" or p.name == "_default_template_yaml"]
+    names = [path.name for path in folder.iterdir()
+             if path.suffix == ".yaml" or path.name == "_default_template_yaml"]
     if family == "gsm8k":
         names = ["gsm8k.yaml"]
     if family == "arc":
         names = ["arc_challenge.yaml"]
+    if family == "cmmlu":
+        from huggingface_hub import hf_hub_download
+
+        archive = hf_hub_download(
+            repo_id="haonan-li/cmmlu", filename="cmmlu_v1_0_1.zip", repo_type="dataset",
+            endpoint=os.environ.get("HF_ENDPOINT", "https://hf-mirror.com"),
+        )
     for name in sorted(names):
         config = yaml.safe_load((folder / name).read_text(encoding="utf-8"))
         if family == "arc":
-            # Challenge inherits the prompt/scorer from Easy; inline it without registering Easy.
             common = yaml.safe_load((folder / "arc_easy.yaml").read_text(encoding="utf-8"))
             config = {**common, **config}
             config.pop("include", None)
-        extra = ""
         if "dataset_path" in config:
-            if family == "cmmlu":
-                config["dataset_path"] = None
-                extra = "custom_dataset: !function scripts.evaluation.lmeh.datasets.load_cmmlu\n"
-            else:
-                config["dataset_kwargs"] = {"revision": DATA_REVISIONS["datasets"][config["dataset_path"]]}
+            config.pop("dataset_kwargs", None)
             config["num_fewshot"] = BENCHMARKS[benchmark]["shots"]
-        if family == "cmmlu" and "dataset_name" in config:
-            config["dataset_kwargs"] = {"subject": config["dataset_name"], "data_dir": str(Path(cmmlu_dir).resolve())}
+        if family == "cmmlu":
+            if "dataset_path" in config:
+                config["dataset_path"] = "csv"
+            if "dataset_name" in config:
+                subject = config["dataset_name"]
+                config["dataset_name"] = None
+                config["dataset_kwargs"] = {
+                    "data_files": {split: f"zip://{split}/{subject}.csv::{archive}" for split in ("dev", "test")},
+                    "usecols": ["Question", "A", "B", "C", "D", "Answer"],
+                }
         if family == "gsm8k":
             config["generation_kwargs"]["max_gen_toks"] = BENCHMARKS[benchmark]["max_gen_toks"]
-        (destination / name).write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False) + extra,
-                                        encoding="utf-8")
+        text = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+        if family == "cmmlu" and "dataset_name" in config:
+            text += "custom_dataset: !function scripts.evaluation.lmeh.protocol.cmmlu_dataset\n"
+        (destination / name).write_text(text, encoding="utf-8")
     return destination
-
-
-def bundle_hashes(path):
-    return {p.name: sha256(p) for p in sorted(Path(path).iterdir()) if p.is_file()}

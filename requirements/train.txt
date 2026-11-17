@@ -1,0 +1,13 @@
+torch
+transformers
+ms-swift
+accelerate
+datasets
+peft
+pypinyin
+sentencepiece
+safetensors
+tokenizers
+numpy
+PyYAML
+tqdm

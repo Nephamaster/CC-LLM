@@ -12,8 +12,8 @@ from transformers import AutoTokenizer
 
 @dataclass(frozen=True)
 class Qwen3CharTokenizerConfig:
-    tokenizer_dir: str | Path = Path("models/Qwen3-1.7B-Base-Char")
-    features_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
+    tokenizer_dir: str | Path = Path("models/char")
+    features_dir: Path = Path("models/char/features")
     trust_remote_code: bool = True
     use_fast: bool = True
 
@@ -176,8 +176,8 @@ class Qwen3CharTokenizer:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("text")
-    parser.add_argument("--tokenizer-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--features-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char/features"))
+    parser.add_argument("--tokenizer-dir", type=Path, default=Path("models/char"))
+    parser.add_argument("--features-dir", type=Path, default=Path("models/char/features"))
     args = parser.parse_args()
     tokenizer = Qwen3CharTokenizer(Qwen3CharTokenizerConfig(args.tokenizer_dir, args.features_dir))
     encoded = tokenizer.encode(args.text)

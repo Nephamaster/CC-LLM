@@ -1,156 +1,70 @@
-# 下游评估
+# 评估
 
-下游入口位于 `scripts/evaluation/{csc,cgec,ancient}/run.sh`。原始文本 PPL 已提供独立入口 [`scripts/evaluation/ppl/run.sh`](ppl/README.md)，默认读取 `data/ppl/`，不走 SFT 模板推理；通用 benchmark 入口为 [`scripts/evaluation/lmeh/run.sh`](lmeh/README.md)，MMLU/CMMLU/GSM8K 为 5-shot，其余为 0-shot，使用独立 lmeh/env。训练入口位于 `scripts/train/`。
-
-原始 `data/downstream/` 只读。prepare 只在 OUT 下生成评估输入，不重采样、不重新划分、不删除 rSIGHAN/ECSpell 或任何其他数据。
-
-## 环境与训练模板
-
-每个下游评估子目录建立自己的 `env/`，通过普通安装获得框架与评分依赖，不使用外部源码路径或 editable 安装。以下以 CSC 为例；CGEC、古汉语分别将环境路径换成 `cgec/env`、`ancient/env`：
+完整入口：
 
 ```bash
-python3.11 -m venv scripts/evaluation/csc/env
-# GPU 环境先安装与服务器 CUDA 匹配的 PyTorch
-scripts/evaluation/csc/env/bin/python -m pip install -r scripts/evaluation/requirements.txt
-scripts/evaluation/csc/env/bin/python -m pip check
+bash scripts/evaluation/run.sh
 ```
 
-这里的推理仍使用普通安装的 ms-swift 的 TransformersEngine 和实际 get_template，保留自定义 PGCA AutoClass 加载路径，支持完整 SFT 模型和基座＋LoRA。该依赖与 lmeh 的通用 benchmark 环境相互独立。
+所有任务使用 `.venv/evaluation`，数据位于 `data/evaluation/`，结果写入 `outputs/evaluation/`。子入口包括：
 
-模板只来自 SFT checkpoint 的 `args.json`（也允许其直接父目录）；LoRA 优先使用 adapter 的训练参数。继承 template、system、use_chat_template、enable_thinking、response_prefix 等，不提供 `--template` 覆盖，也不绕过聊天模板直接拼接文本。不猜测训练设置：缺失 args.json、插件文件或 use_chat_template=false 的 CPT checkpoint 会报错。导出合并模型时应保留正确的 SFT args.json，不能复制无关的 CPT 参数。
+```text
+ppl/run.sh       原始文本 PPL
+lmeh/run.sh      MMLU、ARC-Challenge、SQuAD v2、GSM8K、CMMLU、CLUE
+csc/run.sh       CSCD-NS 与 LEMON
+cgec/run.sh      FCGEC 与 NaCGEC
+ancient/run.sh   C³Bench 与 Fùxì
+```
 
-训练目录上移后，若旧 checkpoint 保存的 `scripts/train/ms_swift/{cpt,finetune}/plugin.py` 已不存在，
-加载器会解析到本仓库的 `scripts/train/{cpt,finetune}/plugin.py`；不改写 checkpoint 的 args.json。
+下游 LoRA 评估使用 `MODEL=完整基座` 和 `LORA=专项 adapter checkpoint`，正式新增路线从 Base-INS、Char-CPT-INS、PGCA-CPT-INS 合并模型开始。总入口用 `MODEL_NAME` 区分路线，并读取 `outputs/train/<MODEL_NAME>-{CSC,CGEC,ACT}/next_stage_model.txt`；`TRAIN_ROOT` 可以更改训练根目录。`STAGE=prepare|infer|score|all` 可单独执行阶段，`RUN_DIR` 可接续指定版本。
 
-任务指令和 chat template 是两层：CSC/CGEC 现统一为 source-only，user 消息只放原句，不附加任务说明或“输入/输出”包装；C³Bench 用论文中文任务指令；Fùxì 用原数据 instruction/input。这些 user 消息仍由训练聊天模板编码。参考答案不会传入待测模型；Fùxì 明确启用的官方 few-shot 示例除外。
+`INFERENCE_BACKEND=auto` 对标准模型使用 vLLM，对当前 PGCA 使用 HF。显式 `INFERENCE_BACKEND=vllm` 会通过 vLLM Transformers backend 加载本地自定义模型；未完成真实一致性验证前不能替代 PGCA 的 HF 正式结果。
 
-CSC/CGEC 训练和验证也使用同一 source-only 格式，assistant 只放正确句子。适用于两个任务分别微调的专用模型；若将 CSC 和 CGEC 混成同一个多任务模型，需重新设计任务区分，不能直接靠相同裸句判断允许哪些改动。SFT 应继续使用 `use_chat_template=true` 和 assistant-only 的 `loss_scale=default`，不要照搬 CPT 的裸文本/全 token 监督参数。
+正式评估默认 `BATCH_SIZE=32 TENSOR_PARALLEL_SIZE=4`，下游 vLLM 的 `max_num_seqs` 随 batch 取 32。TP 只对 vLLM 生效；HF 后端不会因此启用四卡张量并行。单卡使用 vLLM 时显式设置 `CUDA_VISIBLE_DEVICES=<索引> TENSOR_PARALLEL_SIZE=1`。集中冒烟继续显式使用 batch 1、TP 1。
 
-迁移脚本（只删除已知 user 包装，保留目标、顺序与角色）：
+LMEH 默认 `EVAL_MODE=instruct`，实际使用保存的非思考 Swift 模板，并固定 few-shot 为多轮消息；原始模型对照使用 `EVAL_MODE=base`。详见 [通用协议](lmeh/README.md)。
+
+## CGEC 数据与主指标
+
+默认 `BENCHMARKS=nacgec` 在总入口表示 Dev 本地评分，`nacgec_test` 表示 Test 提交导出。子入口默认 NaCGEC `SPLIT=dev`、FCGEC `SPLIT=valid`：
 
 ```bash
-python -m scripts.data_factory.strip_correction_prompts          # 预览
-python -m scripts.data_factory.strip_correction_prompts --apply  # 备份并替换
+# 沿用 MODEL、LORA、MODEL_NAME、GPU 等配置。
+DATASET=nacgec SPLIT=dev bash scripts/evaluation/cgec/run.sh
+DATASET=nacgec SPLIT=test bash scripts/evaluation/cgec/run.sh
 ```
 
-它覆盖 CSC 的 `sft/*.jsonl`（当前训练/验证文件就在此处）及 `sft/final/`，以及 CGEC 的 `sft/final/`，不改 raw/test 原始数据。原文件保存在同目录 `*.jsonl.with-prompts.bak`，不匹配训练常用的 `*.jsonl`；不可把这些备份作为训练输入。CGEC 生成器也已改为直接输出 source-only，重新构建不会加回提示词。
+Dev 读取 `nacgec.dev.ref.para`；Test 默认只读 `nacgec.test.input`，按原顺序生成 `nacgec.test.output`，不调用本地评分器。NaCGEC 官方已于 2023 年公开 Test gold，因此“官方没有 Test 参考答案”不成立；确需复现公开 Test 指标时显式设置 `REFERENCE_FILE=/path/to/nacgec.test.ref.para`。旧的隐式 Test gold 输入会在推理/评分前被拒绝，需新建运行；已有历史成绩不因默认协议变化就自动变成错误成绩。[官方说明](https://github.com/masr2000/NaCGEC)
 
-CSC/CGEC 评估输入协议已升至 v2，旧 prepare/prediction 产物不可复用；默认全流程启动会自动创建新版本。现有 checkpoint 不会因为数据文件修改而改变行为，需使用新数据重新或继续微调后再评估；训练时重新编码数据，不复用旧 tokenized/cache 文件。去提示词是输入协议调整，不保证自动消除所有额外输出。
+FCGEC 主报 ChERRANT F0.5，F1 为补充；NaCGEC 有标签评分主报 ChERRANT 与 MaxMatch F0.5 算术平均，并保留两个评分器的 P/R/F0.5。当前分词和金标编辑构建口径写入结果，不把本地实现直接宣称为已验证的排行榜等价实现。
 
-评估不沿用训练时的截断策略：限制在模型位置容量减去生成预算内，超长请求报错而不是切掉题目。默认 greedy，参数和训练模板写入推理 Manifest；需要与其他论文推理设置比较时另行说明。
+## 专项生成可靠性
 
-## 启动
+C³Bench 默认上限：分类 32、出处 128、NER 256、标点 512、翻译 1024；Fuxi 选择题 32、其他任务 1024。可用 `CLASSIFICATION_MAX_NEW_TOKENS`、`RETRIEVAL_MAX_NEW_TOKENS`、`NER_MAX_NEW_TOKENS`、`PUNCTUATION_MAX_NEW_TOKENS`、`TRANSLATION_MAX_NEW_TOKENS`、`CHOICE_MAX_NEW_TOKENS`、`GENERATION_MAX_NEW_TOKENS` 覆盖，均受全局 `MAX_NEW_TOKENS` 上限约束。输出逐条记录 `generation_budget`。
 
-所有脚本可在任意工作目录通过绝对路径调用；下面示例在本仓库根目录。`MODEL` 是真实 checkpoint 路径；`MODEL_NAME` 是评估模型的规范名称，不能用 `checkpoint-1000` 代替模型名。默认结果写入 `outputs/evaluation/<评估项>/<MODEL_NAME>/[split或shot]/[RUN_NAME]/vN/`。每次全流程启动自动递增版本，不必修改 RUN_NAME，实际目录在启动时打印。下方使用占位 checkpoint 路径：
+三类专项评分的 `inference` 均记录停止、截断、重复率及分任务统计，分母为全部样本，未知停止原因不会算作正常停止。后端 `finish_reason=stop` 不等于已证明生成了 im_end；精确 EOS ID 在固定 Dev 验收中检查。CSC 主表用完整 `predict_raw` 评分，第一行清理和 ChERRANT 调整结果单独保留，避免用清理掩盖多余生成。
 
-```bash
-# CSC：CSCD-NS + LEMON
-CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/csc-sft MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CSC \
-  bash scripts/evaluation/csc/run.sh
+## 下游评估前的自动验收
 
-# 基座 + LoRA：MODEL 指向基座，LORA 指向 adapter checkpoint
-CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/base LORA=/path/to/csc-adapter \
-  MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CSC RUN_NAME=lora-run1 bash scripts/evaluation/csc/run.sh
+CSC、CGEC、Ancient 的 `STAGE=all|infer` 会先在当前可见的第一张卡上单独加载完整基座和已保存 LoRA，执行固定 Dev 检查，结束进程释放模型后才启动 benchmark 推理。PPL/LMEH 不受这项 SFT 检查影响；只准备输入、评分或补裁判也不需要重新加载模型。
 
-# FCGEC valid 本地评分
-CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/cgec-sft DATASET=fcgec SPLIT=valid \
-  MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CGEC bash scripts/evaluation/cgec/run.sh
+默认每任务 10 条（ACT 三任务共 30 条），正常停止及 `<|im_end|>` 结束率各至少 90%，截断、重复、异常率各不超过 10%，按任务分别判定。还检查真实模板中的 EOS label、LoRA 开关 logits，以及同一前缀在 Cache 开关下的数值、缓存长度和生成状态。任一要求未通过会在正式推理前退出；结果在本轮 `dev_check/vN/report.json` 和 `samples.jsonl`，原命令无需增加步骤。
 
-# FCGEC test：只导出预测，不伪造本地分数
-CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/cgec-sft DATASET=fcgec SPLIT=test \
-  MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CGEC bash scripts/evaluation/cgec/run.sh
+若迁移了训练数据，可在原评估命令前设置 `DEV_CHECK_DEV=/path/to/original-dev.jsonl`。阈值、采样量、生成上限、Cache 容差与独立验收命令见 [下游训练说明](../train/downstream/README.md#固定-dev-生成验收)。默认 `DEV_CHECK_MODE=required`；`report` 仅用于冒烟或排障，允许生成质量未达标继续运行，不能当作通过正式验收，结构、LoRA 或 Cache 失败仍阻止运行。推理 manifest 记录检查模式及报告位置。
 
-# NaCGEC test：官方双指标
-CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/cgec-sft DATASET=nacgec SPLIT=test \
-  MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CGEC bash scripts/evaluation/cgec/run.sh
+此验收使用 HF 单序列、无 padding 的真实模型路径。它能发现明显非终止和加载/缓存异常，不证明回答准确性，也不代替实际 vLLM、批量推理的一致性检查。
 
-# 古汉语：两个 benchmark 分开运行、分开报告
-CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/ancient-sft DATASET=c3 \
-  MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT bash scripts/evaluation/ancient/run.sh
-CUDA_VISIBLE_DEVICES=0 MODEL=/path/to/ancient-sft DATASET=fuxi \
-  MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT bash scripts/evaluation/ancient/run.sh
-```
+## 实验表取数
 
-公共环境变量：`PYTHON`（默认各任务子目录的 `env/bin/python`）、`MODEL_NAME`、`RUN_NAME`（可选模型内实验子目录）、`OUT`（可显式覆盖默认路径）、`BATCH_SIZE`（默认 8）、`MAX_NEW_TOKENS`（CSC/CGEC 1024，古汉语 2048）、`STAGE=all|prepare|infer|score`。古汉语额外支持 `STAGE=judge`，Fùxì 可设 `FEWSHOT=5`，默认 0。LoRA 的 MODEL_NAME 应描述 adapter 所属模型，不是基座；同一模型不同 checkpoint 比较时设置不同 RUN_NAME，避免结果身份冲突。
+LMEH 每次运行额外写入 `table_metrics.json`；其他评估的 `metrics.json` 增加 `table_metrics` 字段，原始指标保留。缺失任务保持空值，不当作 0 分，也不会自动把估算写入实测报告。
 
-`STAGE=all|prepare` 自动创建下一个版本；`STAGE=infer|score|judge` 默认接续该父目录中序号最大的版本。
-需要恢复指定版本或评分历史结果时，设置 `RUN_DIR=/完整路径/v0`，此时不分配新版本。
-例如 `RUN_DIR=/完整路径/v0 STAGE=all ...` 可复用同一运行中已经完成的输入和预测。
-版本分配是原子操作，并发启动使用不同目录；后续阶段并发时请显式指定 RUN_DIR。
-输入、模型或生成参数变化时同一版本仍拒绝复用；不设置 RUN_DIR 重启全流程即可获得新版本。
-权重身份记录路径/大小/mtime；配置、tokenizer、输入按 SHA256 校验。只有本程序 retry journal 的未写完末行允许恢复，原始数据和损坏中间记录不做修复。推理异常保留记录并在重跑时重试，不把异常伪装成模型空答案参与评分。
+| 表格 | 取数口径 |
+| --- | --- |
+| 通用 benchmark | MMLU/CMMLU：harness 汇总 acc；ARC-Challenge：acc_norm；GSM8K：strict-match exact_match；SQuAD v2：F1 除以 100。全部为 0–1。 |
+| CLUE 五组 | 语义理解与推理：AFQMC/CMNLI/WSC2020 acc 等权；分类：TNEWS/IFLYTEK acc 等权；一致性：CSL acc；词语：CHID acc；阅读：C3 acc 与 CMRC2018 F1 等权。全部为 0–1，这是本表的分组汇总，不是官方 CLUE 总分。 |
+| CSC | `table_metrics.lemon_v2` / `cscd_ns`：原始输出的句子级纠正 P/R/F1，0–100。LEMON 为七域分别计数后等权平均，不能从宏平均 P/R 反算实测 F1。ChERRANT 调整后结果另存，避免混用。 |
+| CGEC | `score` 为主指标：FCGEC ChERRANT F0.5，NaCGEC 双评分器 F0.5 平均。`table_metrics` 同时保留 P/R/F0.5/F1，0–100；F1 只作补充。默认 FCGEC valid、NaCGEC Dev；默认 Test 导出不填分。 |
+| C³Bench | 分类 acc、一级出处检索 acc、NER 微平均 F1、标点 F1、中文 corpus BLEU，0–100。检索其他层级仍在 `tasks.retrieval.levels`；当前评分是明确记录的重建协议，未证明等价于官方实现。 |
+| PPL | `domain_token_ppl` 按政务/影视/通用/游戏/科技/金融填六域；`avg_domain_token_ppl` 为六域算术平均，对应表内 AVERAGE。正式整体 PPL 仍按总 NLL/总目标数计算，不能与六域平均混淆。Base/Char tokenizer 不同，跨 tokenizer 比较还需查看 BPC/BPB。 |
 
-运行时会打印 prepare/infer/judge/score 阶段的开始与完成状态。推理进度条按样本统计，显示 total/reused/pending、速度、预计剩余时间和当前错误数；断点重跑时从已成功样本数开始，不把复用项重复推理。
-
-推理加载完整模型后会显式将 `model.config.use_cache` 和 `model.generation_config.use_cache` 设为 true，LoRA 加载后再次校正，确保 HF 自回归生成使用 KV cache。该设置写入预测 Manifest；无缓存的旧预测不与新结果复用。
-
-当前推理缓存身份尚未把所有框架版本纳入拒绝复用条件；切换 env 或升级 Torch/Transformers/ms-swift 后，使用默认新版本全流程重新运行即可。评分报告会记录依赖版本，但这不等于旧预测已在新环境重新生成。
-
-只做输入准备，不需要加载模型：
-
-```bash
-STAGE=prepare MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-CSC bash scripts/evaluation/csc/run.sh
-```
-
-## ACT 训练／推理诊断
-
-古汉语专用入口、概率／缓存对照和数据抽查统一位于
-[`ancient/diagnostics/`](ancient/diagnostics/README.md)，公共目录不再保留 ACT 专用脚本。
-P0 补充检查使用 `MODE=followup bash scripts/evaluation/ancient/diagnostics/run.sh`；
-完整原始三项检查使用 `MODE=baseline`。详细命令、输出及判断边界见该目录说明。
-
-## 评分口径
-
-### CSC
-
-从 `~/Lab/CLLM` 迁移原 metrics、预测清理及 ChERRANT 等长替换逻辑，不改变指标公式。启动脚本仅选择 `cscd_test.jsonl` 和 LEMON 的 `car/cot/enc/gam/mec/new/nov.jsonl`，保留 dataset/subset/src/tgt 与文件内顺序。
-
-输出 raw 与 ChERRANT 两套句级/字级检测纠正指标、FRP、空/不等长输出统计及分数据集宏平均。注意原 CLLM 字级 raw 统计会跳过不等长预测，因此必须同时看不等长率及 ChERRANT 表，不能只挑 raw 字级 F1。ChERRANT 后处理仅保留等长 substitution，**不是 CGEC 的 span-level F0.5**。
-
-### CGEC
-
-- FCGEC valid：解析每条 operation 的全部多参考标签。按官方 tag 优先级处理 Switch/Delete/Insert/Modify，包括真实数据中的覆盖操作、Modify 内 INS 标签及不含尾标点的 Switch；不使用 eval 解析 tag。按官方说明先去标点，报告错误句子上的多参考 Exact Match 和 ChERRANT 字级 span P/R/F0.5。
-- FCGEC test：公开文件无 gold，生成 UUID→预测 JSON 和 `UUID,Sentence,Correction` CSV。它们是 correction 结果交付文件；当前平台的最终提交容器/列要求仍需在提交前核对，未验证可直接上传的 ZIP，不自动上传。不会输出 test 指标，不生成未经预测的错误类型标签。
-- NaCGEC：保留 `.ref.para` 的所有参考答案；字级使用固定 ChERRANT，词级使用 THULAC `seg_only=True`＋固定 NUS MaxMatch，最终 `score=(word_F0.5+char_F0.5)/2`。本地只有平行参考，没有官方固定 word-gold M2，故用 NUS 自带 edit_creator 的双距离图算法生成 gold（max_unchanged_words=0），系统评分 max_unchanged_words=2。报告保留这些参数及生成的 M2，不宣称未经验证地逐位复现官方排行榜。
-
-ChERRANT CGEC 路径保留上游默认 target 简体化及 all 最短编辑策略；CSC 迁移路径保留 CLLM 的 `--no_simplified --multi_cheapest_strategy first`。二者不要互换。MaxMatch 核心从官方 Python 2 源码机械转换到 Python 3，许可证与修改记录保留。
-
-### 古汉语
-
-- C³Bench：原始 10,000 条记录分别形成五任务共 50,000 条请求。分类 accuracy、分层书名检索 accuracy、实体集合 micro-F1、标点位置＋符号 micro-F1、corpus SacreBLEU（zh）。标点任务若改动正文字符，其正确标点数按 0 计，不能仅按偏移碰巧得分。官方仓库未提供完整 scorer，以上按论文重建，具体分词/后处理/聚合口径写入报告，`official_code_equivalence=false`。
-- Fùxì：21 任务，3 项选择题 accuracy、6 项 sentence SacreBLEU 均值、2 项格式检查、10 项模型裁判。选择题提取沿用官方实现；词牌使用官方首个 longyusheng_template 及标题/重复段规则。对联和词牌分数只反映格式，**不验证完整文学质量或平仄音韵**。
-- 默认 Fùxì zero-shot。可选 5-shot 只读取给定 `dev_fewshot.json`，不会从 test 临时挑示例。本地提供的示例与 119 条测试输入有文本重合，逐条记录 demonstration_overlap，不删除任何测试样本；使用 few-shot 结果时必须披露，不能视作严格未见测试。
-
-## 可选模型裁判
-
-不配置裁判时，Fùxì 自动指标正常评分，10 项裁判任务显示 pending、score=null，complete=false；不使用 Exact Match 代替，不计算伪完整总分。
-
-需要时设置独立的 `JUDGE_MODEL`、`JUDGE_BASE_URL`、`JUDGE_API_KEY` 环境变量，然后：
-
-```bash
-DATASET=fuxi STAGE=judge MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT \
-  bash scripts/evaluation/ancient/run.sh
-DATASET=fuxi STAGE=score MODEL_NAME=Qwen3-1.7B-Base-PGCA-CPT-ACT \
-  bash scripts/evaluation/ancient/run.sh
-```
-
-`STAGE=all` 仅当 DATASET=fuxi 且显式设置 JUDGE_MODEL 时自动调用裁判。接口为 `JUDGE_BASE_URL/chat/completions`，需要配置到 `/v1` 等 API base。凭据不写脚本、参数文件或日志，不读取仓库 `HF_TOKEN`。调用会将对应测试题、参考答案及待测输出发送至所配置服务，并可能产生费用。
-
-每条裁判结果绑定预测内容、裁判模型/地址、prompt 哈希，成功结果可复用；格式不合法/API 错误保持 pending，不计为错误答案。不同裁判配置不可混合使用，原始判断保留在 judgments.jsonl。
-
-## 产物与验证
-
-实际版本目录下保存 input.jsonl/manifest、predictions.jsonl/manifest、retry journal、metrics.json，以及评分所需的中间 M2/分词文件。例如 `outputs/evaluation/fcgec/Qwen3-1.7B-Base-PGCA-CPT-CGEC/valid/v0/`。原始回答与清理后回答分别保存，报告统计空输出、finish_reason 和依赖/评分代码哈希；代码指纹排除 env/.venv，不扫描或绑定整套虚拟环境。
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q \
-  tests/test_evaluation.py tests/test_evaluation_csc_migration.py
-
-# 含真实 THULAC 与 ms-swift CPU 小模型推理
-EVALUATION_INTEGRATION=1 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q \
-  tests/test_evaluation.py tests/test_evaluation_csc_migration.py
-```
-
-完整数据适配验证不等于模型评测完成。CPU 小模型测试不代表服务器 PGCA 权重、GPU 显存或全量 benchmark 分数已经验证。
-
-官方依据与第三方版本见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+正式新实验三条路线均先完成 General-SFT，再训练独立专项 LoRA；模型名保留 INS 后缀。旧的原基座直接专项微调结果属于不同训练协议，应单独标注。C³Bench 的 `official_code_equivalence=false`：NER、层级出处、标点仍为内部重建口径，未经等价核验不得作为已确认官方分数。

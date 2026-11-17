@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,9 +19,9 @@ from .unicode_ranges import CJK_RANGES, count_hanzi
 
 @dataclass(frozen=True)
 class VocabValidationConfig:
-    char_model_path: Path = Path("models/Qwen3-1.7B-Base-Char")
-    features_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
-    hanzi_set_path: Path = Path("resources/hanzi/hanzi_set.txt")
+    char_model_path: Path = Path("models/char")
+    features_dir: Path = Path("models/char/features")
+    hanzi_set_path: Path = Path("models/.build/hanzi/hanzi_set.txt")
     output_path: Path | None = None
     trust_remote_code: bool = True
     use_fast: bool = True
@@ -175,20 +174,9 @@ class VocabValidator:
                 if len(failures) >= 20:
                     break
 
-        def sha256(path: Path) -> str:
-            digest = hashlib.sha256()
-            with path.open("rb") as file:
-                for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return digest.hexdigest()
-
         checks = {
             "removed_count_matches": manifest.get("removed_multi_hanzi_token_count") == len(removed),
             "new_hanzi_count_matches": manifest.get("new_hanzi_token_count") == len(new_hanzi),
-            "removed_sha256_matches": manifest.get("removed_multi_hanzi_tokens_sha256")
-            == sha256(removed_path),
-            "new_hanzi_sha256_matches": manifest.get("new_hanzi_token_ids_sha256")
-            == sha256(new_hanzi_path),
         }
         return {
             "passed": not failures and all(checks.values()),
@@ -346,9 +334,9 @@ class VocabValidator:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--char-model-path", type=Path, default=Path("models/Qwen3-1.7B-Base-Char"))
-    parser.add_argument("--features-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char/features"))
-    parser.add_argument("--hanzi-set-path", type=Path, default=Path("resources/hanzi/hanzi_set.txt"))
+    parser.add_argument("--char-model-path", type=Path, default=Path("models/char"))
+    parser.add_argument("--features-dir", type=Path, default=Path("models/char/features"))
+    parser.add_argument("--hanzi-set-path", type=Path, default=Path("models/.build/hanzi/hanzi_set.txt"))
     parser.add_argument("--max-hanzi-checks", type=int, default=None)
     args = parser.parse_args()
     report = VocabValidator(

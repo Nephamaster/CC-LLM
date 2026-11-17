@@ -3,26 +3,16 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
+import fcntl
 import json
 from pathlib import Path
+import shutil
+import tempfile
+import time
 
 import numpy as np
 import pyarrow.compute as pc
 from datasets import Dataset, load_from_disk
-
-
-def tokenizer_hash(model_path):
-    root = Path(model_path)
-    digest = hashlib.sha256()
-    for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.json", "merges.txt"):
-        path = root / name
-        if path.is_file():
-            digest.update(name.encode())
-            digest.update(path.read_bytes())
-    if not (root / "tokenizer.json").is_file():
-        raise FileNotFoundError(root / "tokenizer.json")
-    return digest.hexdigest()
 
 
 def target_count(labels):
@@ -92,8 +82,49 @@ def usable_dataset(path, max_length=None):
     return dataset.select(indices.tolist()), counts[indices], len(dataset) - len(indices)
 
 
-def prepare(input_dir, output_dir, *, adaptation_tokens=0, total_tokens=0, seed=42, model_path=None,
-            max_length=None, world_size=1, batch_size=1):
+def check_raw(input_dir):
+    rows = {}
+    for name in ("train", "val"):
+        path = Path(input_dir) / name
+        try:
+            dataset = load_from_disk(str(path))
+            if not isinstance(dataset, Dataset) or not {"input_ids", "labels"}.issubset(dataset.column_names) or not len(dataset):
+                raise ValueError("expected nonempty encoded input_ids and labels")
+            rows[name] = len(dataset)
+        except (OSError, ValueError, TypeError) as error:
+            raise RuntimeError(f"raw cache split {path} is incomplete or unreadable: {error}; "
+                               "preserve this directory and set RAW_CACHE to a new export path") from error
+    return rows
+
+
+def prepare(input_dir, output_dir, **kwargs):
+    output_dir = Path(output_dir)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    with (output_dir.parent / f".{output_dir.name}.prepare.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if (output_dir / "preparation_report.json").exists():
+            raise FileExistsError(f"prepared cache already completed: {output_dir}; rerun with --verify")
+        staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-prepare-", dir=output_dir.parent))
+        backup = None
+        try:
+            report = build_prepared(input_dir, staging / "cache", **kwargs)
+            if output_dir.exists():
+                backup = output_dir.with_name(f"{output_dir.name}.incomplete-{time.time_ns()}")
+                output_dir.replace(backup)
+                print(f"preserved incomplete prepared cache: {backup}", flush=True)
+            try:
+                (staging / "cache").replace(output_dir)
+            except OSError:
+                if backup is not None and not output_dir.exists():
+                    backup.replace(output_dir)
+                raise
+            return report
+        finally:
+            shutil.rmtree(staging)
+
+
+def build_prepared(input_dir, output_dir, *, adaptation_tokens=0, total_tokens=0, seed=42, model_path=None,
+                   max_length=None, world_size=1, batch_size=1):
     input_dir, output_dir = Path(input_dir), Path(output_dir)
     if output_dir.exists():
         raise FileExistsError(f"refusing to overwrite {output_dir}")
@@ -115,11 +146,9 @@ def prepare(input_dir, output_dir, *, adaptation_tokens=0, total_tokens=0, seed=
               "requested_train_targets": requested_budget, "shortfall_targets": requested_budget - budget,
               "train_targets": budget, "validation_targets": int(val_counts.sum()),
               "dropped_train_rows": dropped_train, "dropped_validation_rows": dropped_val, "splits": {}}
-    report["tokenizer_sha256"] = tokenizer_hash(model_path) if model_path is not None else None
     report["max_length"] = max_length
     report["world_size"] = world_size
     report["batch_size"] = batch_size
-    report["input_fingerprint"] = train._fingerprint
     for name, (start, stop) in ranges.items():
         dataset = Dataset.from_generator(partition_rows,
                                          gen_kwargs=dict(dataset=train, counts=counts, start=start, stop=stop),
@@ -152,14 +181,16 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=Path)
     parser.add_argument("--max-length", type=int)
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--check-raw", action="store_true")
     parser.add_argument("--world-size", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
     args = parser.parse_args()
-    if args.verify:
+    if args.check_raw:
+        print("reusing completed raw cache:", json.dumps(check_raw(args.input)))
+    elif args.verify:
         report = json.loads((args.output / "preparation_report.json").read_text(encoding="utf-8"))
-        expected = tokenizer_hash(args.model)
-        if report["tokenizer_sha256"] != expected or report["max_length"] != args.max_length:
-            raise ValueError("prepared cache tokenizer or max_length mismatch; use a new cache directory")
+        if report["max_length"] != args.max_length:
+            raise ValueError("prepared cache max_length mismatch; use a new cache directory")
         if report.get("world_size") != args.world_size or report.get("batch_size") != args.batch_size:
             raise ValueError("prepared cache distributed batch geometry mismatch; prepare new cache views")
         if report["seed"] != args.seed:

@@ -1,5 +1,0 @@
-lm_eval[hf]
-transformers
-datasets
-evaluate
-PyYAML

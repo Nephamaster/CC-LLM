@@ -3,23 +3,27 @@ set -euo pipefail
 
 CC_PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CC_ROOT="${CC_ROOT:-$(cd -- "$CC_PLUGIN_DIR/../../.." && pwd)}"
-MS_SWIFT_DIR="$(cd -- "$CC_PLUGIN_DIR/.." && pwd)"
 
 # ==================== Phase1 独立参数：通常只改这里 ====================
 # 修改 :- 后的默认值即可；命令行传入的同名环境变量优先。
 
 # 环境、模型名称与产物根目录。本文件包含本阶段全部配置，不依赖 common.sh。
-PYTHON_CMD="${PYTHON_CMD:-$MS_SWIFT_DIR/env/bin/python}"
-BASE_MODEL_NAME="${BASE_MODEL_NAME:-Qwen3-1.7B-Base}"
-MODEL_NAME="${MODEL_NAME:-${BASE_MODEL_NAME}-PGCA}"
+PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/.venv/train/bin/python}"
+MODEL_NAME="${MODEL_NAME:-}"
+if [[ -z "$MODEL_NAME" && -s "$CC_ROOT/models/model_name.txt" ]]; then
+    IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
+    if [[ "${MODEL_VARIANT:-pgca}" == char ]]; then
+        MODEL_NAME="${MODEL_NAME%-PGCA}-Char"
+    fi
+fi
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 
-# 本阶段输入、输出及训练参数。MODEL 是未做 ALIGN 的初始 PGCA 模型。
-MODEL="${MODEL:-$CC_ROOT/models/$MODEL_NAME}"
-DATA_DIR="${DATA_DIR:-$CC_ROOT/data/corpus/runs/phase1/phase1-1b-default-c97f9387391d/final/ms_swift}"
+# MODEL 是初始 PGCA 模型；MODEL_VARIANT=char 时使用标准 Char 模型。
+MODEL="${MODEL:-}"
+DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase1}"
 OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
 MAX_LENGTH="${MAX_LENGTH:-2048}"
-CACHE_DIR="${CACHE_DIR:-$CC_ROOT/data/cc_llm_multitask/phase1_${MAX_LENGTH}}"
+CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/$MODEL_NAME/phase1_${MAX_LENGTH}}"
 PHASE1_TOKENS="${PHASE1_TOKENS:-1000000000}"        # 上限；不足时用实际量，0 表示全部
 PHASE1_LR="${PHASE1_LR:-1e-5}"
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
@@ -27,9 +31,10 @@ RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 # 单机 GPU 与 batch；有效 batch = 卡数 × TRAIN_BATCH_SIZE × GRAD_ACCUMULATION。
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-}"              # 留空时按可见 GPU 数推导
-TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"         # 每卡训练 batch
+MASTER_PORT="${MASTER_PORT:-}"                  # 留空时由 torchrun 自动分配
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"         # 每卡训练 batch
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"           # 每卡验证 batch
-GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-32}"
+GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-4}"
 DATASET_NUM_PROC="${DATASET_NUM_PROC:-32}"
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
@@ -52,22 +57,36 @@ LOGGING_STEPS="${LOGGING_STEPS:-10}"
 EVAL_STEPS="${EVAL_STEPS:-500}"
 SAVE_STEPS="${SAVE_STEPS:-500}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
+SAVE_ONLY_MODEL="${SAVE_ONLY_MODEL:-false}"
+MAX_STEPS="${MAX_STEPS:--1}"  # 正数用于集中冒烟；默认按完整数据单遍训练
 SEED="${SEED:-42}"
 DATA_SEED="${DATA_SEED:-42}"                      # 同时控制准备缓存时的样本打乱
 
 
 # ==================== 1. 初始化与输入模型 ====================
+if [[ -z "$MODEL" ]]; then
+    if [[ "${MODEL_VARIANT:-pgca}" == char ]]; then
+        MODEL="$CC_ROOT/models/$MODEL_NAME"
+    else
+        [[ -s "$CC_ROOT/models/next_stage_model.txt" ]] || { echo "Set MODEL or run model_build/run.sh" >&2; exit 1; }
+        IFS= read -r MODEL < "$CC_ROOT/models/next_stage_model.txt"
+    fi
+fi
 [[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
     echo "MODEL_NAME must be a model name, not a checkpoint path" >&2; exit 2;
 }
 export PYTHONDONTWRITEBYTECODE=1
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
-export CUDA_VISIBLE_DEVICES NPROC_PER_NODE
+export CUDA_VISIBLE_DEVICES NPROC_PER_NODE MASTER_PORT
 export CC_LLM_STAGE=phase1 PGCA_ENABLED=false
+if [[ "${MODEL_VARIANT:-pgca}" == char ]]; then
+    export CC_LLM_STAGE=char_cpt
+fi
 
 # ==================== 2. 准备或校验训练数据 ====================
-RAW_CACHE="${CACHE_DIR}.raw"
+RAW_CACHE="${RAW_CACHE:-${CACHE_DIR}.raw}"
 prepare_args=(
     --input "$RAW_CACHE" --output "$CACHE_DIR"
     --model "$MODEL" --max-length "$MAX_LENGTH"
@@ -76,26 +95,35 @@ prepare_args=(
 )
 shopt -s nullglob
 train_files=("$DATA_DIR"/train/*.jsonl)
+archives=("$DATA_DIR"/train/*.tar.xz)
 validation_files=("$DATA_DIR"/validation/*.jsonl)
 shopt -u nullglob
+if [[ ${#train_files[@]} -eq 0 && ${#archives[@]} -gt 0 ]]; then
+    echo "Compressed pretraining shards are not extracted; run the mandatory extraction command in README.md" >&2
+    exit 1
+fi
 [[ -f "$MODEL/config.json" && ${#train_files[@]} -gt 0 && ${#validation_files[@]} -gt 0 ]] || {
     echo "Model config or train/validation JSONL files missing" >&2; exit 1;
 }
 if [[ -f "$CACHE_DIR/preparation_report.json" ]]; then
-    "$PYTHON_CMD" -B "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}" --verify
+    "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase1/cache python \
+        "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}" --verify
 else
-    [[ ! -e "$CACHE_DIR" && ! -e "$RAW_CACHE" ]] || {
-        echo "Partial cache exists; inspect it and choose a new CACHE_DIR" >&2; exit 1;
-    }
-    env -u NPROC_PER_NODE "$PYTHON_CMD" -B -m swift.cli.main export \
-        --external_plugins "$CC_PLUGIN_DIR/plugin.py" \
-        --model "$MODEL" --model_type qwen3 --template cc_llm_multitask --load_args false \
-        --dataset "${train_files[@]}" --val_dataset "${validation_files[@]}" \
-        --dataset_num_proc "$DATASET_NUM_PROC" --data_seed "$DATA_SEED" --to_cached_dataset true \
-        --strict true --load_from_cache_file "$LOAD_FROM_CACHE_FILE" --split_dataset_ratio 0 \
-        --truncation_strategy split --max_length "$MAX_LENGTH" \
-        --use_chat_template false --loss_scale all --disable_ignore_empty_think true --output_dir "$RAW_CACHE"
-    "$PYTHON_CMD" -B "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}"
+    if [[ -e "$RAW_CACHE" ]]; then
+        "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase1/cache python \
+            "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}" --check-raw
+    else
+        "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase1/export export \
+            --external_plugins "$CC_PLUGIN_DIR/plugin.py" \
+            --model "$MODEL" --model_type qwen3 --template cc_llm_multitask --load_args false \
+            --dataset "${train_files[@]}" --val_dataset "${validation_files[@]}" \
+            --dataset_num_proc "$DATASET_NUM_PROC" --data_seed "$DATA_SEED" --to_cached_dataset true \
+            --strict true --load_from_cache_file "$LOAD_FROM_CACHE_FILE" --split_dataset_ratio 0 \
+            --truncation_strategy split --max_length "$MAX_LENGTH" \
+            --use_chat_template false --loss_scale all --disable_ignore_empty_think true --output_dir "$RAW_CACHE"
+    fi
+    "$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase1/prepare python \
+        "$CC_PLUGIN_DIR/prepare_data.py" "${prepare_args[@]}"
 fi
 
 # ==================== 3. 本阶段训练 / 断点恢复 ====================
@@ -117,7 +145,7 @@ if [[ -n "$RESUME_FROM_CHECKPOINT" ]]; then
 fi
 
 CC_LLM_OUTPUT_ROOT="$OUT" \
-"$PYTHON_CMD" -B -m swift.cli.main pt \
+"$PYTHON_CMD" -B "$CC_ROOT/scripts/train/runtime.py" phase1 pt \
     --external_plugins "$CC_PLUGIN_DIR/plugin.py" \
     --model "$MODEL" --model_type qwen3 --template cc_llm_multitask \
     --check_model false --load_args false --tuner_type full \
@@ -130,7 +158,7 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
     --average_tokens_across_devices true \
     --packing false --padding_free false --sequence_parallel_size 1 \
     --use_liger_kernel false --use_logits_to_keep false --attn_impl sdpa \
-    --num_train_epochs 1 \
+    --num_train_epochs 1 --max_steps "$MAX_STEPS" \
     --learning_rate "$PHASE1_LR" \
     --per_device_train_batch_size "$TRAIN_BATCH_SIZE" \
     --per_device_eval_batch_size "$EVAL_BATCH_SIZE" \
@@ -145,7 +173,7 @@ CC_LLM_OUTPUT_ROOT="$OUT" \
     --logging_steps "$LOGGING_STEPS" --logging_nan_inf_filter false \
     --eval_on_start true --eval_strategy steps --eval_steps "$EVAL_STEPS" \
     --save_strategy steps --save_steps "$SAVE_STEPS" --save_total_limit "$SAVE_TOTAL_LIMIT" \
-    --save_only_model false --load_best_model_at_end "true" \
+    --save_only_model "$SAVE_ONLY_MODEL" --load_best_model_at_end "true" \
     --metric_for_best_model eval_clm_loss --greater_is_better false \
     --add_version "$add_version" --output_dir "$training_output" \
     --freeze_parameters_ratio 0 \

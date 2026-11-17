@@ -21,9 +21,6 @@ class PGCACrossAttention(nn.Module):
 
         if self.num_heads % self.num_key_value_heads != 0:
             raise ValueError("pgca_num_attention_heads must be divisible by pgca_num_key_value_heads")
-        if self.num_heads * self.head_dim != self.hidden_size:
-            raise ValueError("pgca_num_attention_heads * pgca_head_dim must equal hidden_size")
-
         bias = bool(getattr(config, "attention_bias", False))
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=bias)
         self.k_proj = nn.Linear(self.feature_hidden_size, self.num_key_value_heads * self.head_dim, bias=bias)

@@ -11,8 +11,8 @@ from .semantic_embedding import EmbeddingMigrationConfig, SemanticEmbeddingMigra
 from .validate_embedding import EmbeddingValidationConfig, EmbeddingValidator
 
 
-DEFAULT_BASE_MODEL = "/share/project/wuhaiming/data/models/Qwen3-1.7B-Base/"
-DEFAULT_CHAR_MODEL = Path("models/Qwen3-1.7B-Base-Char")
+DEFAULT_BASE_MODEL = Path("models/base")
+DEFAULT_CHAR_MODEL = Path("models/char")
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -72,7 +72,7 @@ def main() -> None:
     all_parser = subparsers.add_parser("all")
     add_common_args(all_parser)
     all_parser.add_argument("--torch-dtype", default="auto")
-    all_parser.add_argument("--d-model", type=int, default=2048)
+    all_parser.add_argument("--d-model", type=int)
     all_parser.add_argument("--d-feat", type=int, default=256)
     all_parser.add_argument("--initializer-range", type=float, default=0.02)
     all_parser.add_argument("--skip-migrate", action="store_true")
@@ -87,7 +87,7 @@ def main() -> None:
 
     config_parser = subparsers.add_parser("config")
     add_common_args(config_parser)
-    config_parser.add_argument("--d-model", type=int, default=2048)
+    config_parser.add_argument("--d-model", type=int)
     config_parser.add_argument("--d-feat", type=int, default=256)
     config_parser.add_argument("--initializer-range", type=float, default=0.02)
     config_parser.set_defaults(func=build_config)

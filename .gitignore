@@ -1,23 +1,18 @@
+.venv/
+env/
 .vscode/
 __pycache__/
-env/
-.venv/
+*.py[cod]
 .pytest_cache/
-/outputs/
 
-output/
-models/
-log/
-tools/
 data/
+models/
+outputs/
+output/
+logs/
 reports/
-hanzi/
-manifests/
-phase1/
 resources/
 
-Character-Level Chinese Large Language Model.md
-GITHUB_TOKEN
 HF_TOKEN
-history.md
-suggestion.md
+GITHUB_TOKEN
+.env

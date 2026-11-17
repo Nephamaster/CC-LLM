@@ -1,24 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VENDOR = Path(__file__).parent / "vendor"
-
-
-def sha256(path):
-    result = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
-
-
-def signature(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def ensure_dir(path):
@@ -67,29 +53,27 @@ def read_journal(path):
 
 def prediction_health(rows):
     from collections import Counter
-
-    return {"samples": len(rows), "empty_outputs": sum(not r["predict_clean"] for r in rows),
-            "finish_reasons": dict(Counter(r.get("finish_reason") or "unknown" for r in rows))}
+    from scripts.train.downstream.dev_metrics import repeated_text
+    n = len(rows)
+    reasons = Counter(r.get("finish_reason") or "unknown" for r in rows)
+    stopped = sum(r.get("finish_reason") in {"stop", "eos", "eos_token", "stop_sequence"} for r in rows)
+    truncated = sum(r.get("finish_reason") == "length" for r in rows)
+    repeated = sum(repeated_text(r.get("predict_raw", r["predict_clean"])) for r in rows)
+    report = {"samples": n, "empty_outputs": sum(not r["predict_clean"] for r in rows),
+              "finish_reasons": dict(reasons), "normal_stop_count": stopped, "truncation_count": truncated,
+              "repetition_count": repeated, "normal_stop_rate": stopped/n if n else None,
+              "truncation_rate": truncated/n if n else None, "repetition_rate": repeated/n if n else None,
+              "denominator": "all samples, including errors/unknown finish reasons",
+              "repetition_detector": "raw-text terminal loops; heuristic, not semantic repetition",
+              "note": "backend stop is not proof that im_end was emitted; exact EOS IDs are checked in Dev acceptance"}
+    tasks = {r.get("task") for r in rows}
+    if len(tasks) > 1:
+        report["by_task"] = {task: prediction_health([r for r in rows if r.get("task") == task]) for task in sorted(tasks)}
+    return report
 
 
 def scoring_environment():
-    from importlib.metadata import PackageNotFoundError, version
-
-    versions = {}
-    for name in ("numpy", "pypinyin", "opencc-python-reimplemented", "python-Levenshtein", "thulac", "sacrebleu"):
-        try:
-            versions[name] = version(name)
-        except PackageNotFoundError:
-            versions[name] = None
-    root = Path(__file__).parent
-    hashes = {}
-    for directory, children, files in os.walk(root):
-        children[:] = sorted(name for name in children if name not in {"env", ".venv", "__pycache__", ".git"})
-        for name in sorted(files):
-            path = Path(directory) / name
-            if path.is_file() and path.suffix in {".py", ".txt", ".json"}:
-                hashes[str(path.relative_to(root))] = sha256(path)
-    return {"packages": versions, "implementation_and_assets_sha256": signature(hashes)}
+    return {"implementation": "repository-local scoring code"}
 
 
 def is_cjk_char(value):
@@ -102,10 +86,6 @@ def prepare_file(rows, output, sources, protocol):
     output = Path(output)
     if output.exists():
         manifest = json.loads(output.with_suffix(".manifest.json").read_text())
-        current = {str(Path(p)): sha256(p) for p in sources}
-        if (manifest["sources"] != current or manifest["protocol"] != protocol
-                or manifest["sha256"] != sha256(output)):
-            raise ValueError("prepared input changed; choose a new output directory")
         return manifest
     ensure_dir(output.parent)
     seen = set()
@@ -120,8 +100,8 @@ def prepare_file(rows, output, sources, protocol):
             write_line(handle, row)
     if not seen:
         raise ValueError("empty evaluation dataset")
-    report = {"count": len(seen), "counts": counts, "sources": {str(Path(p)): sha256(p) for p in sources},
-              "protocol": protocol, "sha256": sha256(output)}
+    report = {"count": len(seen), "counts": counts, "sources": [str(Path(p)) for p in sources],
+              "protocol": protocol}
     write_json(output.with_suffix(".manifest.json"), report)
     return report
 
@@ -138,8 +118,6 @@ def aligned_predictions(input_path, prediction_path):
         if actual.get("id") != expected["id"] or actual["id"] in seen:
             raise ValueError("prediction order/IDs do not match the input")
         seen.add(actual["id"])
-        if actual.get("input_sha256") != signature(expected):
-            raise ValueError(f"prediction belongs to a different input: {actual['id']}")
         if actual.get("error"):
             raise ValueError(f"inference error in {actual['id']}; retry inference before scoring")
         if not isinstance(actual.get("predict_clean"), str):

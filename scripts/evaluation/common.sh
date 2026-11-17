@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# The calling task supplies its own environment directory and evaluation protocol.
 configure_evaluation() {
     local task_dir="$1" benchmark="$2" protocol="${3:-}"
     local component
     ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-    PYTHON="${PYTHON:-$task_dir/env/bin/python}"
+    PYTHON="${PYTHON:-$ROOT/.venv/evaluation/bin/python}"
     export PYTHONDONTWRITEBYTECODE=1
+    export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
     cd "$ROOT"
     if [[ -n "${RUN_DIR:-}" ]]; then
         OUT="$RUN_DIR"
@@ -29,4 +29,15 @@ configure_evaluation() {
         infer|score|judge) OUT="$("$PYTHON" -B -m scripts.evaluation.runs "$OUT" --latest)" ;;
         *) echo "Invalid STAGE: $STAGE" >&2; return 2 ;;
     esac
+}
+
+check_sft_dev() {
+    local task="$1"
+    : "${MODEL:?Set MODEL to the full SFT base model}"
+    local -a args=(--model "$MODEL" --task "$task" --output "$OUT/dev_check")
+    [[ -z "${LORA:-}" ]] || args+=(--adapter "$LORA")
+    printf '[evaluation][%s] fixed-Dev generation/LoRA/cache acceptance\n' "$task"
+    "$PYTHON" -B -m scripts.train.downstream.dev_check "${args[@]}"
+    export DEV_CHECK_MODE="${DEV_CHECK_MODE:-required}"
+    export DEV_CHECK_REPORT_ROOT="$OUT/dev_check"
 }

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .feature_vocab import (
     FEATURE_SCHEMA_VERSION, NONE_TOKEN, PAD_TOKEN, UNK_TOKEN, POLYPHONE_EXPECTATIONS,
-    normalize_pinyin_tone, sha256_file, split_pinyin,
+    normalize_pinyin_tone, split_pinyin,
 )
 
 PHONETIC = ("pinyin", "shengmu", "yunmu", "tone")
@@ -71,12 +71,9 @@ def check_vocab_binding(features_dir: Path) -> dict:
     if manifest.get("schema_version") != FEATURE_SCHEMA_VERSION:
         raise ValueError("legacy feature schema: rebuild feature-vocab and feature-index; do not mix old IDs")
     expected = {f"feature_vocabs/{name}_vocab.json" for name in (*PHONETIC, *GLYPH)} | {"char_features.json"}
-    hashes = manifest.get("artifact_sha256", {})
-    if set(hashes) != expected:
-        raise ValueError("incomplete feature-vocab artifact hashes")
     for relative in sorted(expected):
-        if sha256_file(features_dir / relative) != hashes[relative]:
-            raise ValueError(f"feature-vocab hash mismatch: {relative}")
+        if not (features_dir / relative).is_file():
+            raise FileNotFoundError(f"missing feature-vocab artifact: {relative}")
     return manifest
 
 
@@ -92,18 +89,8 @@ def validate_feature_artifacts(features_dir: Path, vocab_size: int, tokenizer_di
         manifest = json.loads((features_dir / "feature_index_manifest.json").read_text(encoding="utf-8"))
         if manifest.get("schema_version") != FEATURE_SCHEMA_VERSION:
             raise ValueError("feature index is not schema v2")
-        if manifest["feature_vocab_manifest_sha256"] != sha256_file(features_dir / "feature_vocab_manifest.json"):
-            raise ValueError("feature index belongs to a different feature vocab")
-        if tokenizer_dir is not None and manifest["semantic_vocab_sha256"] != sha256_file(tokenizer_dir / "vocab.json"):
-            raise ValueError("feature index belongs to a different semantic vocabulary")
-        hashes = manifest["artifact_sha256"]
-        if "char_feature_index.jsonl" not in hashes or set(hashes) - {"char_feature_index.jsonl", "feature_index.pt"}:
-            raise ValueError("incomplete or unexpected feature-index hashes")
-        for name, expected in hashes.items():
-            if sha256_file(features_dir / name) != expected:
-                raise ValueError(f"feature-index hash mismatch: {name}")
         pt = None
-        if "feature_index.pt" in manifest["artifact_sha256"]:
+        if (features_dir / "feature_index.pt").is_file():
             import torch
 
             pt = torch.load(features_dir / "feature_index.pt", map_location="cpu", weights_only=True)

@@ -1,4 +1,0 @@
-# Normal, non-editable installation of the implementation used by the project plugin.
-ms-swift @ git+https://github.com/Nephamaster/ms-swift.git@ce28e0288657d6472a439ea219f1bcc77310e764
-transformers==5.12.1
-pypinyin==0.55.0

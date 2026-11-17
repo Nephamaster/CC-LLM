@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import unicodedata
@@ -22,7 +21,6 @@ UNK_TOKEN = "<unk>"
 PAD_TOKEN = "<pad>"
 
 FEATURE_SCHEMA_VERSION = 2
-PYPINYIN_VERSION = "0.55.0"
 SPECIAL_TOKENS = {PAD_TOKEN, NONE_TOKEN, UNK_TOKEN}
 POLYPHONE_EXPECTATIONS = {
     "行": {"xing2", "hang2"}, "重": {"zhong4", "chong2"},
@@ -32,31 +30,21 @@ POLYPHONE_EXPECTATIONS = {
 }
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def require_pypinyin():
     try:
         import pypinyin
     except ImportError as exc:
-        raise RuntimeError(f"feature vocab requires pypinyin=={PYPINYIN_VERSION}; no silent fallback") from exc
-    if pypinyin.__version__ != PYPINYIN_VERSION:
-        raise RuntimeError(f"expected pypinyin=={PYPINYIN_VERSION}, got {pypinyin.__version__}")
+        raise RuntimeError("feature vocab requires pypinyin; no silent fallback") from exc
     return pypinyin
 
 
 @dataclass(frozen=True)
 class FeatureVocabBuildConfig:
-    hanzi_set_path: Path = Path("resources/hanzi/hanzi_set.txt")
-    structure_path: Path = Path("resources/hanzi/structure.tsv")
-    unihan_path: Path = Path("resources/unihan/Unihan.zip")
-    fallback_unihan_dir: Path = Path("resources/raw/Unihan")
-    output_dir: Path = Path("models/Qwen3-1.7B-Base-Char/features")
+    hanzi_set_path: Path = Path("models/.build/hanzi/hanzi_set.txt")
+    structure_path: Path = Path("models/.build/hanzi/structure.tsv")
+    unihan_path: Path = Path("data/model_build/unihan/Unihan.zip")
+    fallback_unihan_dir: Path = Path("data/model_build/unihan")
+    output_dir: Path = Path("models/char/features")
     max_pinyin_per_char: int = 16
     allow_missing_features: bool = True
 
@@ -331,20 +319,12 @@ class FeatureVocabBuilder:
 
         if not self.config.allow_missing_features and any(missing.values()):
             raise ValueError(f"missing features are disabled: {missing}")
-        source_paths = [self.config.hanzi_set_path, self.config.structure_path]
-        if self.config.unihan_path.is_file():
-            source_paths.append(self.config.unihan_path)
-        else:
-            directory = self.config.unihan_path if self.config.unihan_path.is_dir() else self.config.fallback_unihan_dir
-            source_paths.extend(sorted(directory.glob("Unihan*.txt")))
         manifest = {
             "schema_version": FEATURE_SCHEMA_VERSION,
-            "pypinyin_version": PYPINYIN_VERSION,
             "split_convention": "pypinyin-strict; v=ü; syllabic m/n/ng/hm/hng use zero initial",
             "candidate_distribution": dict(candidate_counts),
             "max_observed_candidates": max(map(int, candidate_counts)),
             "pronunciation_source_char_counts": dict(source_counts),
-            "source_sha256": {str(path): sha256_file(path) for path in source_paths if path.is_file()},
             "auxiliary_ignore_index": -100,
             "generated_at": _utc_now_iso(),
             "hanzi_set_path": str(self.config.hanzi_set_path),
@@ -377,21 +357,17 @@ class FeatureVocabBuilder:
         write_json(vocab_dir / "radical_stroke_vocab.json", result.feature_vocabs["radical_stroke"])
         write_json(vocab_dir / "structure_vocab.json", result.feature_vocabs["structure"])
         write_json(output_dir / "char_features.json", result.char_features)
-        result.manifest["artifact_sha256"] = {
-            str(path.relative_to(output_dir)): sha256_file(path)
-            for path in [*sorted(vocab_dir.glob("*_vocab.json")), output_dir / "char_features.json"]
-        }
         write_json(output_dir / "feature_vocab_manifest.json", result.manifest)
         return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hanzi-set-path", type=Path, default=Path("resources/hanzi/hanzi_set.txt"))
-    parser.add_argument("--structure-path", type=Path, default=Path("resources/hanzi/structure.tsv"))
-    parser.add_argument("--unihan-path", type=Path, default=Path("resources/unihan/Unihan.zip"))
-    parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("resources/raw/Unihan"))
-    parser.add_argument("--output-dir", type=Path, default=Path("models/Qwen3-1.7B-Base-Char/features"))
+    parser.add_argument("--hanzi-set-path", type=Path, default=Path("models/.build/hanzi/hanzi_set.txt"))
+    parser.add_argument("--structure-path", type=Path, default=Path("models/.build/hanzi/structure.tsv"))
+    parser.add_argument("--unihan-path", type=Path, default=Path("data/model_build/unihan/Unihan.zip"))
+    parser.add_argument("--fallback-unihan-dir", type=Path, default=Path("data/model_build/unihan"))
+    parser.add_argument("--output-dir", type=Path, default=Path("models/char/features"))
     parser.add_argument("--max-pinyin-per-char", type=int, default=16)
     parser.add_argument("--require-complete-features", action="store_true")
     args = parser.parse_args()

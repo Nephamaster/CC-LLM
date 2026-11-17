@@ -22,7 +22,7 @@ def rows(paths):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/downstream/csc/test")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/evaluation/csc")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     paths = [args.data_dir / f"{name}.jsonl" for name in FILES]
