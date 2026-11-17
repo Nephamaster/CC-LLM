@@ -26,7 +26,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smoke/run.sh /path/to/Qwen3-Base
 
 下游覆盖 CSCD-NS 与 LEMON 七域、FCGEC valid/Test 提交、NaCGEC Dev 评分/Test 提交、C³Bench 五任务、Fuxi 全部 21 任务。评分使用现有入口和真实参考答案。微调每个阶段只训练两步，输出质量与短生成上限不作正式性能结论。
 
-指令数据需先按 [General-SFT](../train/instruction/README.md) 准备；缺少该数据时其后训练/评估会标为失败或阻断，不会用假数据补齐。冒烟的 General-SFT 合并验收使用 report 模式并明确标记 smoke_only，不代表正式生成门槛通过。
+指令成品直接读取 `data/instruction/train.jsonl`、`data/instruction/dev.jsonl`，不需要先运行数据处理命令；格式见 [General-SFT](../train/instruction/README.md)。缺少该数据时其后训练/评估会标为失败或阻断，不会用假数据补齐。冒烟的 General-SFT 合并验收使用 report 模式并明确标记 smoke_only，不代表正式生成门槛通过。
 
 训练通过不仅看进程退出码：还检查发布的 checkpoint、实际训练步数、所有已记录验证 loss 有限，以及下游辅助损失关闭。评估检查推理是否完整、评分文件是否生成；PPL 要完成六域，LMEH 要生成表格指标。
 

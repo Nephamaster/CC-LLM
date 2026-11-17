@@ -92,8 +92,7 @@ def prepare(kind, data, output, train_samples, eval_samples):
             pretrain_rows(source / split), train_samples if split == "train" else eval_samples))
                 for split in ("train", "validation")}
     if kind == "instruction_sft":
-        pointer = data / "instruction/prepared/latest.txt"
-        directory = Path(pointer.read_text().strip()) if pointer.is_file() else data / "instruction/final"
+        directory = data / "instruction"
         return {split: write_rows(output / f"{split}.jsonl", islice(iter_jsonl(directory / f"{split}.jsonl"), count))
                 for split, count in (("train", train_samples), ("dev", eval_samples))}
     if kind in {"csc_sft", "cgec_sft"}:

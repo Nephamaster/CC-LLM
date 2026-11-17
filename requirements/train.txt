@@ -11,4 +11,3 @@ tokenizers
 numpy
 PyYAML
 tqdm
-pyahocorasick

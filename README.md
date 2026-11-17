@@ -2,6 +2,8 @@
 
 CC-LLM 在 Qwen3 Base 上构建单汉字语义词表，并加入音形特征、因果上下文编码器和 PGCA 分支。本仓库包含模型构建、继续预训练、下游 LoRA 微调与评估入口；数据和模型权重单独准备。
 
+`master` 用于使用成品数据运行正常实验；`main` 用于数据处理、诊断、消融及探索，并同步正常实验代码。原始指令数据的清洗、去污染入口仅在 main 的 `scripts/data_factory/instruction/` 中维护。
+
 | 路线 | 正式训练顺序 | 下游产物 |
 | --- | --- | --- |
 | Base | 原基座 → General-SFT → 三项专项 LoRA | `B-INS-{CSC,CGEC,ACT}` |
@@ -142,9 +144,8 @@ data/
 │       ├── train/*.tar.xz
 │       └── validation/*.jsonl
 ├── instruction/
-│   ├── raw/COIG-CQIA.jsonl
-│   ├── raw/tulu-3-sft-mixture.jsonl
-│   └── prepared/                  # prepare 命令生成；也可指定外部成品目录
+│   ├── train.jsonl
+│   └── dev.jsonl
 ├── downstream/
 │   ├── csc/{csc_mix_dedup,cscd_dev}.jsonl
 │   ├── cgec/{train,validation}.jsonl
@@ -239,13 +240,7 @@ bash scripts/smoke/run.sh "$BASE"
 
 ## 6. 三条路线的正式训练
 
-指令数据准备好后，先执行一次：
-
-```bash
-.venv/train/bin/python -B -m scripts.train.instruction.prepare
-```
-
-它清洗并混合本地 COIG-CQIA/Tulu 3，使用 evaluation 环境收集去污染输入；数据读取格式、许可证记录、混合参数和预算说明见 [General-SFT](scripts/train/instruction/README.md)。数据未下载好时先只运行 CPT 阶段，例如 `STAGES=phase1,phase2_a,phase2_b`，不要把缺数据的 instruction 阶段当作已完成。
+数据包中的 `data/instruction/train.jsonl`、`dev.jsonl` 已是指令成品，解压到项目根目录后直接用于训练和冒烟，无需再执行清洗、去重或去污染。格式与训练参数见 [General-SFT](scripts/train/instruction/README.md)。需要重新构建该数据集时，使用 main 分支的数据处理入口。
 
 以下三个入口均包含 General-SFT、合并、生成验收及 CSC/CGEC/Ancient 专项 LoRA。按顺序执行，避免争用 GPU。
 

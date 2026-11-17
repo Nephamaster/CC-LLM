@@ -7,7 +7,7 @@ cd "$ROOT"
 # 同名环境变量优先。MODEL 是 Base 或已经训练完的 Char-CPT / PGCA-CPT 完整权重。
 MODEL_NAME="${MODEL_NAME:-}"
 MODEL="${MODEL:-}"
-INSTRUCTION_DATA="${INSTRUCTION_DATA:-}"
+INSTRUCTION_DATA="${INSTRUCTION_DATA:-$ROOT/data/instruction}"
 SUPERVISED_TOKENS="${SUPERVISED_TOKENS:-0}"  # 每 Epoch 的 Assistant 监督量目标；0 使用全部保留样本
 MAX_LENGTH="${MAX_LENGTH:-4096}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
@@ -27,9 +27,6 @@ source "$TASK_DIR/../downstream/common.sh"
 if [[ -z "$MODEL" ]]; then
     pointer="$TRAIN_ROOT/$MODEL_NAME/next_stage_model.txt"
     if [[ -s "$pointer" ]]; then IFS= read -r MODEL < "$pointer"; else MODEL="$ROOT/models/$MODEL_NAME"; fi
-fi
-if [[ -z "$INSTRUCTION_DATA" && ( -z "${TRAIN:-}" || -z "${DEV:-}" ) ]]; then
-    IFS= read -r INSTRUCTION_DATA < "$ROOT/data/instruction/prepared/latest.txt"
 fi
 TRAIN="${TRAIN:-$INSTRUCTION_DATA/train.jsonl}"
 DEV="${DEV:-$INSTRUCTION_DATA/dev.jsonl}"

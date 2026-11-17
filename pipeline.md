@@ -883,6 +883,8 @@ scripts/train/downstream/
 
 入口为 `scripts/train/instruction/run.sh`。General-SFT 使用 LoRA，按有限 Dev loss 排序并要求完整生成/Adapter/Cache 验收，合并后复验，通过后发布完整 `M-INS` 权重。专项任务从该完整权重开始，各自训练独立 Adapter，不叠加 General-SFT Adapter。完整对话预算可能略超目标，必须用准备报告与实际训练日志对齐三路监督量，不能仅凭相同配置宣称严格相等。数据与执行细节见 [General-SFT](scripts/train/instruction/README.md)。
 
+正式入口直接使用数据包中的 `data/instruction/train.jsonl`、`dev.jsonl`。原始指令数据处理在 main 分支进行，master 不要求执行清洗或读取 prepared/latest 指针。
+
 ### 5.1 LoRA 微调机制
 
 默认配置：
