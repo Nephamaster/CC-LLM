@@ -4,7 +4,7 @@
 
 ## 实现结论
 
-已实现可选 Hierarchical-12L：三个参数独立、各四层的 CausalFeatureEncoder 串行计算 M1 → M2 → M3，再按 PGCA 深度路由。默认仍为 Shared，旧参数名和旧配置缺省行为保留。
+已实现可选 Hierarchical-12L：三个参数独立、各四层的 CausalFeatureEncoder 串行计算 M1 → M2 → M3，再按 PGCA 深度路由。新构建默认 Hierarchical；Shared 为显式对照，旧参数名和旧配置的 Shared 缺省加载行为保留。
 
 三级起点按用户补充规则从实际 `pgca_layers` 派生：
 
@@ -74,7 +74,6 @@ HIER_MODEL=/absolute/path/to/PGCA-Hierarchical-12L
 
 .venv/train/bin/python -B -m src.pgca.build_pgca \
   --model-path "$CHAR_MODEL" --output-path "$HIER_MODEL" \
-  --context-encoder --context-mode hierarchical \
   --auxiliary-heads --zero-init-output
 ```
 
@@ -85,12 +84,11 @@ HIER_MODEL=/absolute/path/to/PGCA-Hierarchical-12L
 ```bash
 BASE_MODEL=/absolute/path/to/Qwen3-Base \
 BASE_MODEL_NAME=Qwen3-Base \
-CONTEXT_MODE=hierarchical \
 PGCA_MODEL="$PWD/models/Qwen3-Base-PGCA-Hierarchical-12L" \
 bash scripts/model_build/run.sh
 ```
 
-PGCA_LAYERS 可覆盖上述 shell 入口的插入区域，未设置则自动计算。Shared 对照不设置 CONTEXT_MODE，或显式设 shared。
+PGCA_LAYERS 可覆盖上述 shell 入口的插入区域，未设置则自动计算。Shared 对照需显式设置 CONTEXT_MODE=shared，并用 PGCA_MODEL 指定独立目录；默认主线的 <Base>-PGCA 对应 Hierarchical-12L。
 
 ### 从 Shared-4L 完整 checkpoint 升级
 
@@ -152,7 +150,7 @@ CPU 短跑调用真实阶段 shell、ms-swift、损失/优化器/回调、数据
 具备完整 Base 权重、数据与 GPU 时，可运行真实集中冒烟：
 
 ```bash
-CONTEXT_MODE=hierarchical CUDA_VISIBLE_DEVICES=0,1 \
+CUDA_VISIBLE_DEVICES=0,1 \
 bash scripts/smoke/run.sh /absolute/path/to/Qwen3-Base
 ```
 

@@ -8,7 +8,7 @@ CHAR_MODEL="${CHAR_MODEL:-$ROOT/models/char}"
 PGCA_MODEL="${PGCA_MODEL:-$ROOT/models/pgca}"
 AUX_PHONETIC_WEIGHT="${AUX_PHONETIC_WEIGHT:-0.03}"
 AUX_GLYPH_WEIGHT="${AUX_GLYPH_WEIGHT:-0.03}"
-CONTEXT_MODE="${CONTEXT_MODE:-shared}"  # shared / hierarchical; boundaries derive from PGCA_LAYERS
+CONTEXT_MODE="${CONTEXT_MODE:-hierarchical}"  # hierarchical by default; shared is an explicit comparison
 PGCA_LAYERS="${PGCA_LAYERS:-}"        # empty uses the selected model's default PGCA region
 
 "$PYTHON_CMD" -B -m src.pgca.build_pgca \

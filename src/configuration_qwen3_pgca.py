@@ -110,6 +110,7 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         pgca_use_glyph_image: bool = False,
         pgca_feature_index_sha256: str | None = None,
         pgca_context_enabled: bool = False,
+        # Missing checkpoint fields keep legacy behavior; new-model builders explicitly select Hierarchical.
         pgca_context_mode: str = "shared",
         pgca_context_stage_starts: list[int] | None = None,
         pgca_context_num_layers: int = 4,

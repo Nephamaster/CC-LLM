@@ -349,8 +349,8 @@ def build_token_type_index(model_path: Path, builder) -> None:
 
 
 def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str | None,
-                     *, context_encoder=False, auxiliary_heads=False, zero_init_output=False,
-                     context_mode="shared", context_stage_starts=None,
+                     *, context_encoder=True, auxiliary_heads=False, zero_init_output=False,
+                     context_mode="hierarchical", context_stage_starts=None,
                      aux_phonetic_weight=DEFAULT_AUX_PHONETIC_WEIGHT,
                      aux_glyph_weight=DEFAULT_AUX_GLYPH_WEIGHT) -> dict:
     validate_auxiliary_weights(aux_phonetic_weight, aux_glyph_weight)
@@ -479,8 +479,8 @@ def main() -> None:
     parser.add_argument("--model-path", type=Path, default=Path("models/char"))
     parser.add_argument("--output-path", type=Path, default=Path("models/pgca"))
     parser.add_argument("--pgca-layers", type=str, default=None)
-    parser.add_argument("--context-encoder", action="store_true")
-    parser.add_argument("--context-mode", choices=("shared", "hierarchical"), default="shared")
+    parser.add_argument("--context-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--context-mode", choices=("shared", "hierarchical"), default="hierarchical")
     parser.add_argument("--context-stage-starts", help="optional confirmation of first,floor-midpoint,last PGCA indices")
     parser.add_argument("--auxiliary-heads", action="store_true")
     parser.add_argument("--zero-init-output", action="store_true")

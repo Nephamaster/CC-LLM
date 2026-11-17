@@ -478,26 +478,49 @@ def test_checkpoint_upgrade_autoload_and_missing_weight(tmp_path, tied):
         Qwen3PGCAForCausalLM.from_pretrained(upgraded, ignore_mismatched_sizes=True)
 
 
-def test_from_char_build(tmp_path):
+@pytest.mark.parametrize("mode", ["hierarchical", "shared"])
+def test_from_char_build(tmp_path, mode):
     char = write_char(tmp_path / "char")
-    output = tmp_path / "hierarchical"
+    output = tmp_path / mode
+    options = {} if mode == "hierarchical" else {"context_mode": "shared"}
     report = build_pgca_model(
         char,
         output,
         "1,2,3,4",
-        context_encoder=True,
-        context_mode="hierarchical",
         auxiliary_heads=True,
         zero_init_output=True,
+        **options,
     )
-    assert set(report["context_stage_parameter_counts"]) == {"C1", "C2", "C3"}
-    assert report["context_stage_starts"] == [1, 2, 4]
+    assert report["context_mode"] == mode
+    assert set(report["context_stage_parameter_counts"]) == (
+        {"C1", "C2", "C3"} if mode == "hierarchical" else {"C1"}
+    )
+    assert report["context_stage_starts"] == ([1, 2, 4] if mode == "hierarchical" else [])
     assert validate_pgca_model(output, "行 银 A")["passed"]
     native = Qwen3ForCausalLM.from_pretrained(char).eval()
     built = AutoModelForCausalLM.from_pretrained(output, trust_remote_code=True).eval()
     ids = torch.tensor([[3, 4, 6]])
     with torch.no_grad():
         torch.testing.assert_close(native(ids).logits, built(ids, use_cache=False).logits, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize(
+    "args,mode,enabled",
+    [
+        ([], "hierarchical", True),
+        (["--context-mode", "shared"], "shared", True),
+        (["--context-mode", "shared", "--no-context-encoder"], "shared", False),
+    ],
+)
+def test_build_cli_defaults(args, mode, enabled, monkeypatch):
+    from unittest.mock import patch
+    import src.pgca.build_pgca as build
+
+    monkeypatch.setattr(sys, "argv", ["build_pgca", *args])
+    with patch.object(build, "build_pgca_model", return_value={}) as function:
+        build.main()
+    assert function.call_args.kwargs["context_mode"] == mode
+    assert function.call_args.kwargs["context_encoder"] is enabled
 
 
 @pytest.mark.parametrize("stage", ["phase1", "phase2a", "phase2b"])

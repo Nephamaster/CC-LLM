@@ -1,6 +1,6 @@
 # CC-LLM：Hierarchical-12L 级联音形上下文编码器改造
 
-实现与实际测试结果见 [工程报告](Hierarchical-12L-implementation.md)。Shared 为默认模式，Hierarchical 需显式启用。
+实现与实际测试结果见 [工程报告](Hierarchical-12L-implementation.md)。新构建默认 Hierarchical；Shared 作为显式对照。旧 checkpoint 缺少新字段时仍按 Shared 加载。
 
 ## 0. 任务目标
 
@@ -117,7 +117,7 @@ Static Phonetic-Glyph Embedding
 建议新增配置：
 
 ```python
-pgca_context_mode = "shared"       # shared / hierarchical
+pgca_context_mode = "hierarchical" # 新构建默认；旧配置缺少此字段仍按 shared 加载
 pgca_context_stage_starts = [9, 12, 16]
 ```
 

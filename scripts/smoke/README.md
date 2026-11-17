@@ -8,6 +8,8 @@ bash scripts/smoke/run.sh /path/to/Qwen3-Base
 
 先准备好 `.venv/train`、`.venv/evaluation` 和根目录 `data/`。冒烟直接使用现有模型构建、训练与评估入口，不要求预先构建 Char/PGCA。Base 可以位于仓库之外。
 
+PGCA 路线默认构建 Hierarchical-12L，三条路线名称仍为 Base/Char/PGCA；若显式设置 CONTEXT_MODE=shared，则检查旧 Shared-4L 对照。已有模型加载按 config 保存的结构执行。
+
 默认使用 GPU `0,1,2,3`，三条路线各占一张卡并行，第四张卡闲置；每条路线内部串行执行。模型构建在 CPU 完成。只用一张卡时，三条路线会自动串行：
 
 ```bash
