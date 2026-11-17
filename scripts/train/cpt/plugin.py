@@ -39,7 +39,8 @@ EncodePreprocessor.__call__ = _single_process_encoding(EncodePreprocessor.__call
 
 GLYPH_NAMES = ("stroke_count", "radical_stroke", "structure")
 BRANCH_GRAD_GROUPS = (
-    "feature_embedding", "context_encoder", "pgca_q_proj", "pgca_k_proj", "pgca_v_proj", "pgca_o_proj",
+    "feature_embedding", "context_encoder", "context_encoder_c2", "context_encoder_c3",
+    "pgca_q_proj", "pgca_k_proj", "pgca_v_proj", "pgca_o_proj",
     "pgca_norms", "auxiliary_phonetic", "auxiliary_glyph",
 )
 
@@ -52,7 +53,10 @@ def stage():
 
 
 def auxiliary_enabled():
-    return stage() in {"phase2a", "phase2b"}
+    value = os.environ.get("ENABLE_AUXILIARY_TASKS", "true").strip().lower()
+    if value not in {"true", "false"}:
+        raise ValueError("ENABLE_AUXILIARY_TASKS must be true or false")
+    return stage() in {"phase2a", "phase2b"} and value == "true"
 
 
 def is_branch_parameter(name):
@@ -64,6 +68,9 @@ def branch_gradient_group(name):
         return "feature_embedding"
     if name.startswith("model.feature_memory_builder.context_encoder."):
         return "context_encoder"
+    if name.startswith("model.feature_memory_builder.context_refiners."):
+        index = int(name.split("context_refiners.", 1)[1].split(".", 1)[0])
+        return f"context_encoder_c{index + 2}"
     if ".pgca_attn." in name:
         part = name.split(".pgca_attn.", 1)[1].split(".", 1)[0]
         return f"pgca_{part}" if part in ("q_proj", "k_proj", "v_proj", "o_proj") else "pgca_norms"
@@ -239,6 +246,13 @@ class CCLLMOptimizer(OptimizerCallback):
 
 
 class CCLLMCallback(TrainerCallback):
+    def on_init_end(self, args, state, control, model=None, **kwargs):
+        # Freeze before optimizer/DDP setup; a zero-weight trainable head could still get weight decay.
+        if not auxiliary_enabled():
+            for name, parameter in model.named_parameters():
+                if "auxiliary_heads" in name.split("."):
+                    parameter.requires_grad_(False)
+
     def on_log(self, args, state, control, logs=None, **kwargs):
         if state.is_world_process_zero and logs and "eval_loss" in logs:
             report_validation(args, logs)
@@ -246,9 +260,10 @@ class CCLLMCallback(TrainerCallback):
     def on_train_begin(self, args, state, control, model=None, **kwargs):
         model = self.trainer.accelerator.unwrap_model(model)
         baseline = stage() == "char_cpt"
+        enabled = auxiliary_enabled()
         if baseline and getattr(model.config, "model_type", None) != "qwen3":
             raise ValueError("Char CPT requires the standard Qwen3 Char model, without a PGCA branch")
-        if not baseline and bool(model.config.pgca_enabled) != auxiliary_enabled():
+        if not baseline and bool(model.config.pgca_enabled) != (stage() in {"phase2a", "phase2b"}):
             raise ValueError("PGCA_ENABLED disagrees with CC_LLM_STAGE")
         unsupported = (args.use_liger_kernel or self.trainer.template.padding_free
                        or self.trainer.template.sequence_parallel_size != 1
@@ -258,11 +273,14 @@ class CCLLMCallback(TrainerCallback):
         size = len(self.trainer.train_dataset)
         if size % (self.trainer.accelerator.num_processes * args.per_device_train_batch_size):
             raise ValueError("prepare cache with the actual world size and batch size to avoid duplicated training targets")
-        if not baseline and not hasattr(model, "auxiliary_trained_tokens"):
+        if enabled and (getattr(model, "auxiliary_heads", None) is None
+                        or not hasattr(model, "auxiliary_trained_tokens")):
             raise ValueError("build a checkpoint with --auxiliary-heads before using this plugin")
         for name, parameter in model.named_parameters():
             expected = (not is_branch_parameter(name) if stage() == "phase1"
                         else is_branch_parameter(name) if stage() == "phase2a" else True)
+            if name.startswith("auxiliary_heads.") and not enabled:
+                expected = False
             if parameter.requires_grad != expected:
                 raise ValueError(f"incorrect trainable state for {name}")
 
@@ -301,7 +319,8 @@ class CCLLMCallback(TrainerCallback):
     def on_save(self, args, state, control, model=None, **kwargs):
         if state.is_world_process_zero:
             model = self.trainer.accelerator.unwrap_model(model)
-            report = {"stage": stage(), "global_step": state.global_step}
+            report = {"stage": stage(), "global_step": state.global_step,
+                      "auxiliary_tasks_enabled": auxiliary_enabled()}
             if hasattr(model, "auxiliary_trained_tokens"):
                 report.update(auxiliary_trained_tokens=int(model.auxiliary_trained_tokens.item()),
                               feature_schema_version=getattr(model.config, "pgca_feature_schema_version", None))

@@ -14,28 +14,49 @@ class PGCACompositeCache(DynamicCache):
     def __init__(self, config):
         self.backbone_config = config
         super().__init__(config=config)
-        self.feature_cache = DynamicCache()
+        count = 3 if getattr(config, "pgca_context_mode", "shared") == "hierarchical" else 1
+        self.feature_caches = tuple(DynamicCache() for _ in range(count))
+
+    @property
+    def feature_cache(self):
+        """Keep the Shared-4L cache accessor compatible."""
+        return self.feature_caches[0]
 
     def reorder_cache(self, beam_idx):
         super().reorder_cache(beam_idx)
-        self.feature_cache.reorder_cache(beam_idx)
+        for cache in self.feature_caches:
+            cache.reorder_cache(beam_idx)
 
     def batch_repeat_interleave(self, repeats):
         super().batch_repeat_interleave(repeats)
-        self.feature_cache.batch_repeat_interleave(repeats)
+        for cache in self.feature_caches:
+            cache.batch_repeat_interleave(repeats)
 
     def batch_select_indices(self, indices):
         super().batch_select_indices(indices)
-        self.feature_cache.batch_select_indices(indices)
+        for cache in self.feature_caches:
+            cache.batch_select_indices(indices)
 
     def crop(self, max_length):
-        super().crop(max_length)
-        self.feature_cache.crop(max_length)
+        # Preserve the legacy absolute-length API; negative removal works across DynamicCache versions.
+        length = self.get_seq_length()
+        remove = min(length, -max_length) if max_length < 0 else max(0, length - max_length)
+        if remove:
+            super().crop(-remove)
+            for cache in self.feature_caches:
+                cache.crop(-remove)
 
     def reset(self):
         # DynamicLayer.reset retains its old length/batch storage; recreate lazy layers.
-        super().__init__(config=self.backbone_config)
-        self.feature_cache = DynamicCache()
+        self.__init__(self.backbone_config)
+
+    def validate_feature_lengths(self, stages):
+        if len(self.feature_caches) != stages:
+            raise ValueError("feature cache stage count does not match the model context mode")
+        if len({id(cache) for cache in self.feature_caches}) != stages:
+            raise ValueError("feature caches must be independent between stages")
+        if any(cache.get_seq_length() != self.get_seq_length() for cache in self.feature_caches):
+            raise ValueError("backbone and feature cache lengths are out of sync")
 
 
 class FeatureRMSNorm(nn.Module):
@@ -109,7 +130,7 @@ class CausalFeatureEncoder(nn.Module):
 
     def forward(self, memory, feature_mask, token_types, position_ids, attention_mask=None, cache=None):
         batch, length, slots, _ = memory.shape
-        if attention_mask is not None and attention_mask.ndim != 2:
+        if attention_mask is not None and (not torch.is_tensor(attention_mask) or attention_mask.ndim != 2):
             raise ValueError("feature context currently supports only unpacked 2D padding masks")
         past_length = cache.get_seq_length() if cache is not None else 0
         total_length = past_length + length

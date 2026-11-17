@@ -14,6 +14,17 @@ def default_pgca_layers(num_hidden_layers: int) -> list[int]:
     return list(range(start, start + width))
 
 
+def hierarchical_stage_starts(pgca_layers: list[int]) -> list[int]:
+    """Derive the first, floor-midpoint and last PGCA layer without moving any layer."""
+    if not pgca_layers:
+        raise ValueError("hierarchical context requires PGCA layers")
+    first, last = min(pgca_layers), max(pgca_layers)
+    starts = [first, (first + last) // 2, last]
+    if len(set(starts)) != 3 or any(index not in pgca_layers for index in starts):
+        raise ValueError("hierarchical first/midpoint/last must be three distinct PGCA layers")
+    return starts
+
+
 @dataclass(frozen=True)
 class PGCAConfig:
     use_pgca: bool = True

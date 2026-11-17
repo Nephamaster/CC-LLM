@@ -31,6 +31,7 @@ CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/$MODEL_NAME/phase2_${MAX_LENGTH}_
 PHASE2_TOKENS="${PHASE2_TOKENS:-10000000000}"      # A+B 总上限；不足时用实际量
 ADAPTATION_TOKENS="${ADAPTATION_TOKENS:-100000000}"
 PHASE2_A_LR="${PHASE2_A_LR:-5e-5}"                # 仅训练新增分支
+ENABLE_AUXILIARY_TASKS="${ENABLE_AUXILIARY_TASKS:-true}"  # false：纯 CLM，PGCA/编码器仍训练
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 
 # 单机 GPU 与 batch；有效 batch = 卡数 × TRAIN_BATCH_SIZE × GRAD_ACCUMULATION。
@@ -78,6 +79,7 @@ IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE MASTER_PORT
 export CC_LLM_STAGE=phase2a PGCA_ENABLED=true
+export ENABLE_AUXILIARY_TASKS
 if [[ -z "$MODEL" ]]; then
     [[ -f "$ALIGN_OUT/next_stage_model.txt" ]] || {
         echo "Set MODEL to a Phase1 checkpoint or finish phase1.sh first" >&2; exit 1;

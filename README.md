@@ -226,6 +226,8 @@ models/<B>-PGCA/
 
 构建会更新 `models/model_name.txt` 与 `models/next_stage_model.txt`。它们只指向最近一次构建，多个规模的实验应像下文一样显式传入模型名称和路径。`MODEL_ROOT` 可整体更改构建输出与指针位置。
 
+PGCA 默认保留 Shared-4L 上下文结构；设置 `CONTEXT_MODE=hierarchical` 可构建三个四层编码器串行级联的 Hierarchical-12L。三级边界自动取实际 PGCA 首层、首尾索引均值向下取整、末层，不改变已有 checkpoint 的 PGCA 层位。从已有 Shared-4L 升级使用独立的 `src.pgca.upgrade_context` 入口，不能用普通加载代替升级。完整命令、初始化和 Cache/训练测试结果见 [Hierarchical-12L 工程报告](Checkpoint/architecture/Hierarchical-12L-implementation.md)。
+
 ## 5. 集中冒烟
 
 ```bash

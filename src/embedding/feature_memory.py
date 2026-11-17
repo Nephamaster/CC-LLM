@@ -117,6 +117,10 @@ class FeatureMemoryBuilder(nn.Module):
             self.register_buffer(key, feature_index[key], persistent=persistent)
         self.register_buffer("feature_index_ready", torch.tensor(ready), persistent=persistent)
         self.context_encoder = CausalFeatureEncoder(context_config) if context_config is not None else None
+        self.context_mode = getattr(context_config, "pgca_context_mode", "shared")
+        self.context_refiners = nn.ModuleList(
+            [CausalFeatureEncoder(context_config) for _ in range(2)] if self.context_mode == "hierarchical" else []
+        )
         if self.context_encoder is not None:
             self.register_buffer("token_type_ids", torch.zeros_like(feature_index["is_hanzi"], dtype=torch.long),
                                  persistent=persistent)
@@ -185,8 +189,23 @@ class FeatureMemoryBuilder(nn.Module):
             if position_ids is None:
                 raise ValueError("contextual feature memory requires explicit position_ids")
             types = self.token_type_ids[input_ids]
+            if self.context_mode == "hierarchical":
+                caches = (None, None, None) if cache is None else cache
+                if not isinstance(caches, (tuple, list)) or len(caches) != 3:
+                    raise ValueError("hierarchical context needs three independent feature caches")
+                if cache is not None and (any(value is None for value in caches) or len({id(value) for value in caches}) != 3):
+                    raise ValueError("hierarchical context needs three independent feature caches")
+                memories = []
+                for encoder, stage_cache in zip(self.context_encoders, caches):
+                    memory, mask = encoder(memory, mask, types, position_ids, attention_mask, stage_cache)
+                    memories.append(memory)
+                return tuple(memories), mask
             return self.context_encoder(memory, mask, types, position_ids, attention_mask, cache)
         return memory, mask
+
+    @property
+    def context_encoders(self):
+        return () if self.context_encoder is None else (self.context_encoder, *self.context_refiners)
 
     def lookup(self, input_ids: torch.Tensor) -> dict[str, torch.Tensor]:
         if input_ids.dtype != torch.long:

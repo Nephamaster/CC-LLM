@@ -10,6 +10,17 @@ bash scripts/train/cpt/phase2_b.sh
 
 每个脚本顶部直接列出该阶段全部训练参数。Phase1 训练主干并冻结 PGCA；Phase2-A 训练音形分支和辅助头；Phase2-B 进行全参数联合训练。
 
+Phase2-A/B 的 `ENABLE_AUXILIARY_TASKS` 默认 true；设为 false 时只使用 CLM 损失，不执行辅助头前向或辅助监督统计，冻结辅助头且不累计辅助 warmup Token。PGCA、Feature Embedding、C1/C2/C3 继续按原阶段规则训练；无需修改模型结构或重建模型。
+
+```bash
+ENABLE_AUXILIARY_TASKS=false bash scripts/train/cpt/phase2_a.sh
+ENABLE_AUXILIARY_TASKS=false bash scripts/train/cpt/phase2_b.sh
+```
+
+也可在 `scripts/train/run.sh` 前设置相同环境变量。Phase1、Char CPT 保持辅助任务关闭，INS/下游策略不变。关闭开关不同于把辅助权重设为 0；每个 checkpoint 的 cc_llm_state.json 记录实际开关状态。更改开关会改变可训练参数/优化器分组，切换实验时用 MODEL 从完整权重开始新运行，不直接 resume 另一开关状态的优化器。
+
+`pgca_aux_enabled` 表示模型结构是否包含辅助头，新开关控制本次训练是否使用它们。false 不删除现有辅助头；原本不含辅助头的完整 PGCA 模型也可在 false 下训练。
+
 Char 对照路线：`MODEL_VARIANT=char MODEL_NAME=B-Char PHASE1_MODEL=/path/to/B-Char STAGES=phase1,cpt bash scripts/train/run.sh`。Phase1 使用相同语料训练标准 Char 主干；随后 `char.sh` 自动读取 Char-ALIGN 指针，以同一 Phase2 共享池进行全参数 CLM，默认监督上限 10B，不划分只训练分支的 A 段，也不启用辅助任务。`CPT_MODEL` 可覆盖 Char 的 Phase2 输入。标准 Qwen3 不能使用 PGCA 专属的多任务 loss，因此复用插件中的 CLM 分支与既有零目标过滤、token 归一化、检查点发布逻辑。
 
 `DATASET_NUM_PROC=1` 时，CPT 插件仅将编码预处理的 `num_proc` 转为 `None`，让编码在当前进程执行，避免额外的进程池数据传递。数据读取与字段转换仍使用原进程设置，编码 batch 保持原值；显式设置大于 1 时仍使用所选并发数。

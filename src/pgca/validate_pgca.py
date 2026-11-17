@@ -84,6 +84,8 @@ def _check_modules(model: Any) -> dict:
         if name.endswith("pgca_attn.gate")
     ]
     context = getattr(model.model.feature_memory_builder, "context_encoder", None)
+    encoders = getattr(model.model.feature_memory_builder, "context_encoders", (context,) if context is not None else ())
+    hierarchical = getattr(model.config, "pgca_context_mode", "shared") == "hierarchical"
     return {
         "expected_layers": sorted(expected_layers),
         "actual_layers": sorted(actual_layers),
@@ -94,7 +96,12 @@ def _check_modules(model: Any) -> dict:
         "non_finite_parameters": non_finite_parameters,
         "parameters_finite": not meta_parameters and not non_finite_parameters,
         "context_matches": (context is not None) == model.config.pgca_context_enabled,
-        "context_layers_match": context is None or len(context.layers) == model.config.pgca_context_num_layers,
+        "context_mode": getattr(model.config, "pgca_context_mode", "shared"),
+        "context_stage_starts": getattr(model.config, "pgca_context_stage_starts", []),
+        "context_stages_match": len(encoders) == (3 if hierarchical else 1 if context is not None else 0),
+        "context_layers_match": all(len(encoder.layers) == model.config.pgca_context_num_layers for encoder in encoders),
+        "context_stage_parameter_counts": {f"C{i + 1}": sum(p.numel() for p in encoder.parameters())
+                                           for i, encoder in enumerate(encoders)},
         "auxiliary_heads_match": (model.auxiliary_heads is not None) == model.config.pgca_aux_enabled,
     }
 
@@ -107,6 +114,7 @@ def _check_feature_memory(model: Any, input_ids: torch.Tensor) -> dict:
     with torch.no_grad():
         positions = torch.arange(input_ids.shape[1], device=input_ids.device)[None]
         memory, mask = builder(input_ids, position_ids=positions)
+    memories = memory if isinstance(memory, tuple) else (memory,)
     expected_shape = [
         input_ids.shape[0],
         input_ids.shape[1],
@@ -132,10 +140,11 @@ def _check_feature_memory(model: Any, input_ids: torch.Tensor) -> dict:
     }
     return {
         "available": True,
-        "memory_shape": list(memory.shape),
+        "memory_shape": list(memories[0].shape),
+        "stage_memory_shapes": [list(value.shape) for value in memories],
         "mask_shape": list(mask.shape),
         "expected_memory_shape": expected_shape,
-        "memory_shape_matches": list(memory.shape) == expected_shape,
+        "memory_shape_matches": all(list(value.shape) == expected_shape for value in memories),
         "mask_shape_matches": list(mask.shape) == expected_shape[:-1],
         "has_any_feature": bool(mask.any().item()),
         "index_rows": int(builder.is_hanzi.shape[0]),
@@ -161,6 +170,48 @@ def _check_forward(model: Any, inputs: dict[str, torch.Tensor]) -> dict:
     }
 
 
+def _compare_cache(model, inputs):
+    """Compare the same full sequence and prefill plus incremental decoding."""
+    ids = inputs["input_ids"]
+    size = ids.shape[1]
+    prefix = max(1, size // 2)
+    lengths = []
+    with torch.no_grad():
+        expected = model(**inputs, use_cache=False).logits
+        output = model(**{key: value[:, :prefix] for key, value in inputs.items()}, use_cache=True)
+        actual = [output.logits]
+        for position in range(prefix, size + 1):
+            past = output.past_key_values
+            caches = getattr(past, "feature_caches", (past.feature_cache,) if hasattr(past, "feature_cache") else ())
+            lengths.append({"expected": position, "backbone": past.get_seq_length(),
+                            "features": [cache.get_seq_length() for cache in caches]})
+            if position < size:
+                incremental = {key: value[:, position:position + 1] for key, value in inputs.items()}
+                if "attention_mask" in inputs:
+                    incremental["attention_mask"] = inputs["attention_mask"][:, :position + 1]
+                output = model(**incremental, past_key_values=past, use_cache=True)
+                actual.append(output.logits)
+    actual = torch.cat(actual, dim=1)
+    atol, rtol = (0.1, 0.02) if expected.dtype == torch.bfloat16 else (0.02, 0.005) if expected.dtype == torch.float16 else (1e-4, 1e-4)
+    stages = (3 if getattr(model.config, "pgca_context_mode", "shared") == "hierarchical" else 1) if model.config.pgca_context_enabled and model.config.pgca_enabled else 0
+    synchronized = all(row["backbone"] == row["expected"] and len(row["features"]) == stages
+                       and all(n == row["expected"] for n in row["features"]) for row in lengths)
+    return {"passed": synchronized and torch.allclose(actual, expected, atol=atol, rtol=rtol),
+            "atol": atol, "rtol": rtol, "max_abs_error": float((actual.float() - expected.float()).abs().max()),
+            "top1_agreement": float(actual.argmax(-1).eq(expected.argmax(-1)).float().mean()), "lengths": lengths}
+
+
+def _check_cache(model, inputs):
+    # ALIGN checkpoints disable PGCA; audit its caches explicitly, then restore that setting.
+    enabled = model.config.pgca_enabled
+    try:
+        model.config.pgca_enabled = True
+        report = _compare_cache(model, inputs)
+        return {**report, "original_pgca_enabled": enabled, "pgca_enabled_for_check": True}
+    finally:
+        model.config.pgca_enabled = enabled
+
+
 def validate_pgca_model(model_path: Path, text: str) -> dict:
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, use_fast=True)
@@ -180,6 +231,7 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
     module_checks = _check_modules(model)
     feature_checks = _check_feature_memory(model, input_ids)
     forward_checks = _check_forward(model, inputs)
+    cache_checks = _check_cache(model, inputs)
     repository_passed = (
         repository_checks["model_type_matches"]
         and repository_checks["architecture_matches"]
@@ -210,11 +262,13 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
         and module_checks["parameters_finite"]
         and module_checks["context_matches"]
         and module_checks["context_layers_match"]
+        and module_checks["context_stages_match"]
         and module_checks["auxiliary_heads_match"]
         and feature_passed
         and forward_checks["logits_shape_matches"]
         and forward_checks["loss_is_finite"]
         and forward_checks["auxiliary_logits_finite"]
+        and cache_checks["passed"]
     )
 
     return {
@@ -229,6 +283,7 @@ def validate_pgca_model(model_path: Path, text: str) -> dict:
         "modules": module_checks,
         "feature_memory": feature_checks,
         "forward": forward_checks,
+        "cache": cache_checks,
         "passed": bool(passed),
     }
 

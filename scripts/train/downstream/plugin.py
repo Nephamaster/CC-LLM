@@ -107,8 +107,13 @@ class CorrectionCallback(TrainerCallback):
         if pgca:
             if not model.config.pgca_enabled or not any(".pgca_attn." in name for name in trainable):
                 raise ValueError("PGCA must be enabled and included in all-linear LoRA")
-            if getattr(model.config, "pgca_context_enabled", False) and not any(".context_encoder." in name for name in trainable):
-                raise ValueError("PGCA context encoder was not included in LoRA")
+            if getattr(model.config, "pgca_context_enabled", False):
+                prefixes = [".context_encoder."]
+                if getattr(model.config, "pgca_context_mode", "shared") == "hierarchical":
+                    prefixes += [".context_refiners.0.", ".context_refiners.1."]
+                for prefix in prefixes:
+                    if not any(prefix in name for name in trainable):
+                        raise ValueError(f"PGCA context encoder was not included in LoRA: {prefix}")
         if state.is_world_process_zero:
             report = {"loss": "assistant_only", "auxiliary_loss_enabled": False, "pgca_enabled": pgca,
                       "task": os.environ.get("CC_LLM_SFT_TASK"), "dev_file": os.environ.get("CC_LLM_SFT_DEV"),

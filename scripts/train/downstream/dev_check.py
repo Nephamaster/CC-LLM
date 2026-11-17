@@ -150,9 +150,14 @@ def cache_probe(model, prefix, continuation, policy):
     def check_length(total):
         backbone = past.get_seq_length()
         feature = getattr(past, "feature_cache", None)
-        feature_length = feature.get_seq_length() if feature is not None else None
-        lengths.append({"expected": total, "backbone": backbone, "feature": feature_length})
-        if backbone != total or (feature_context and feature_length != total):
+        caches = getattr(past, "feature_caches", (feature,) if feature is not None else ())
+        stage_lengths = [cache.get_seq_length() for cache in caches]
+        feature_length = stage_lengths[0] if stage_lengths else None
+        lengths.append({"expected": total, "backbone": backbone, "feature": feature_length,
+                        "feature_stages": stage_lengths})
+        expected_stages = 3 if getattr(model.config, "pgca_context_mode", "shared") == "hierarchical" else 1
+        if backbone != total or (feature_context and (len(stage_lengths) != expected_stages
+                                                      or any(length != total for length in stage_lengths))):
             raise ValueError(f"backbone/feature cache length mismatch: {lengths[-1]}")
 
     check_length(len(prefix))

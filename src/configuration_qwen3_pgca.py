@@ -18,7 +18,7 @@ import os
 from transformers.configuration_utils import PreTrainedConfig
 from transformers.modeling_rope_utils import RopeParameters
 
-from .pgca.config import default_pgca_layers
+from .pgca.config import default_pgca_layers, hierarchical_stage_starts
 
 
 FEATURE_VOCAB_KEYS = (
@@ -110,6 +110,8 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         pgca_use_glyph_image: bool = False,
         pgca_feature_index_sha256: str | None = None,
         pgca_context_enabled: bool = False,
+        pgca_context_mode: str = "shared",
+        pgca_context_stage_starts: list[int] | None = None,
         pgca_context_num_layers: int = 4,
         pgca_context_hidden_size: int = 512,
         pgca_context_num_heads: int = 8,
@@ -183,6 +185,8 @@ class Qwen3PGCAConfig(PreTrainedConfig):
         self.pgca_use_glyph_image = bool(pgca_use_glyph_image)
         self.pgca_feature_index_sha256 = pgca_feature_index_sha256
         self.pgca_context_enabled = bool(pgca_context_enabled)
+        self.pgca_context_mode = pgca_context_mode
+        self.pgca_context_stage_starts = list(pgca_context_stage_starts or [])
         self.pgca_context_num_layers = int(pgca_context_num_layers)
         self.pgca_context_hidden_size = int(pgca_context_hidden_size)
         self.pgca_context_num_heads = int(pgca_context_num_heads)
@@ -209,6 +213,17 @@ class Qwen3PGCAConfig(PreTrainedConfig):
 
     def _validate_pgca(self) -> None:
         validate_auxiliary_weights(self.pgca_aux_phonetic_weight, self.pgca_aux_glyph_weight)
+        if self.pgca_context_mode not in {"shared", "hierarchical"}:
+            raise ValueError("pgca_context_mode must be shared or hierarchical")
+        if self.pgca_context_mode == "hierarchical":
+            if not self.use_pgca or not self.pgca_context_enabled or self.pgca_context_num_layers != 4:
+                raise ValueError("hierarchical context requires PGCA and three four-layer encoders")
+            starts = hierarchical_stage_starts(self.pgca_layers)
+            if self.pgca_context_stage_starts and self.pgca_context_stage_starts != starts:
+                raise ValueError(f"context stage starts must match first/floor-midpoint/last: {starts}")
+            self.pgca_context_stage_starts = starts
+        elif self.pgca_context_stage_starts:
+            raise ValueError("context stage starts require hierarchical mode")
         if self.pgca_context_enabled:
             if not self.use_pgca or self.pgca_context_num_layers < 1 or self.pgca_context_num_heads < 1:
                 raise ValueError("feature context requires PGCA and positive layer/head counts")

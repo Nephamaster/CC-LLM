@@ -245,6 +245,11 @@ def check_feature_index(model: Qwen3PGCAForCausalLM) -> dict:
     }
 
 
+def context_parameter_counts(builder):
+    return {f"C{index + 1}": sum(p.numel() for p in encoder.parameters())
+            for index, encoder in enumerate(builder.context_encoders)}
+
+
 def _copy_remote_file(source: Path, destination: Path) -> None:
     text = source.read_text(encoding="utf-8")
     for old, new in REMOTE_IMPORT_REWRITES.get(destination.name, {}).items():
@@ -345,6 +350,7 @@ def build_token_type_index(model_path: Path, builder) -> None:
 
 def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str | None,
                      *, context_encoder=False, auxiliary_heads=False, zero_init_output=False,
+                     context_mode="shared", context_stage_starts=None,
                      aux_phonetic_weight=DEFAULT_AUX_PHONETIC_WEIGHT,
                      aux_glyph_weight=DEFAULT_AUX_GLYPH_WEIGHT) -> dict:
     validate_auxiliary_weights(aux_phonetic_weight, aux_glyph_weight)
@@ -381,6 +387,7 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         pgca_layers,
     )
     updated_config.update(pgca_context_enabled=context_encoder, pgca_aux_enabled=auxiliary_heads,
+                          pgca_context_mode=context_mode, pgca_context_stage_starts=context_stage_starts,
                           pgca_zero_init_output=zero_init_output,
                           pgca_aux_phonetic_weight=aux_phonetic_weight,
                           pgca_aux_glyph_weight=aux_glyph_weight)
@@ -449,7 +456,12 @@ def build_pgca_model(model_path: Path, output_path: Path, pgca_layers_arg: str |
         "unexpected_keys": loading_info.get("unexpected_keys", []),
         "mismatched_keys": loading_info.get("mismatched_keys", []),
         "pgca_initialization": parameter_checks,
-        "context_parameter_count": sum(p.numel() for p in builder.context_encoder.parameters()) if context_encoder else 0,
+        "context_mode": config.pgca_context_mode,
+        "context_stage_starts": config.pgca_context_stage_starts,
+        "total_parameter_count": sum(p.numel() for p in model.parameters()),
+        "branch_parameter_count": parameter_checks["parameter_count"],
+        "context_stage_parameter_counts": context_parameter_counts(builder),
+        "context_parameter_count": sum(context_parameter_counts(builder).values()),
         "auxiliary_parameter_count": sum(p.numel() for p in model.auxiliary_heads.parameters()) if auxiliary_heads else 0,
         "pgca_aux_phonetic_weight": saved_config["pgca_aux_phonetic_weight"],
         "pgca_aux_glyph_weight": saved_config["pgca_aux_glyph_weight"],
@@ -468,6 +480,8 @@ def main() -> None:
     parser.add_argument("--output-path", type=Path, default=Path("models/pgca"))
     parser.add_argument("--pgca-layers", type=str, default=None)
     parser.add_argument("--context-encoder", action="store_true")
+    parser.add_argument("--context-mode", choices=("shared", "hierarchical"), default="shared")
+    parser.add_argument("--context-stage-starts", help="optional confirmation of first,floor-midpoint,last PGCA indices")
     parser.add_argument("--auxiliary-heads", action="store_true")
     parser.add_argument("--zero-init-output", action="store_true")
     parser.add_argument("--aux-phonetic-weight", type=float, default=DEFAULT_AUX_PHONETIC_WEIGHT)
@@ -476,6 +490,9 @@ def main() -> None:
 
     report = build_pgca_model(args.model_path, args.output_path, args.pgca_layers,
                              context_encoder=args.context_encoder, auxiliary_heads=args.auxiliary_heads,
+                             context_mode=args.context_mode,
+                             context_stage_starts=([int(i) for i in args.context_stage_starts.split(",")]
+                                                   if args.context_stage_starts else None),
                              zero_init_output=args.zero_init_output,
                              aux_phonetic_weight=args.aux_phonetic_weight,
                              aux_glyph_weight=args.aux_glyph_weight)

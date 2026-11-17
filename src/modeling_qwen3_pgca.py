@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from bisect import bisect_right
 from collections.abc import Callable
 from typing import Optional
 
@@ -396,12 +397,20 @@ class Qwen3PGCAPreTrainedModel(PreTrainedModel):
             if model.config.pgca_context_enabled:
                 required_prefixes.extend(("feature_memory_builder.context_encoder.",
                                           "feature_memory_builder.token_type_ids"))
+                if getattr(model.config, "pgca_context_mode", "shared") == "hierarchical":
+                    required_prefixes.append("feature_memory_builder.context_refiners.")
             if model.config.pgca_aux_enabled:
                 required_prefixes.extend(("auxiliary_heads.", "auxiliary_trained_tokens"))
             missing = [key for key in loading_info.get("missing_keys", [])
                        if any(prefix in key for prefix in required_prefixes)]
             if missing:
                 raise RuntimeError(f"checkpoint is missing contextual/auxiliary weights: {missing}")
+            mismatched = [item for item in loading_info.get("mismatched_keys", [])
+                          if any(prefix in (item if isinstance(item, str) else item[0]) for prefix in required_prefixes)]
+            if mismatched:
+                raise RuntimeError(f"checkpoint has mismatched contextual/auxiliary weights: {mismatched}")
+            if any("feature_memory_builder.context_refiners." in key for key in loading_info.get("unexpected_keys", [])):
+                raise RuntimeError("checkpoint contains hierarchical weights but config does not match")
 
         return (model, loading_info) if return_loading_info else model
 
@@ -458,7 +467,7 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
         position_ids=None,
         attention_mask=None,
         feature_cache=None,
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, torch.Tensor | None]:
         if not self.config.pgca_enabled:
             return None, None
         if self.config.pgca_context_enabled and input_ids is None:
@@ -479,14 +488,19 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
             return None, None
 
         seq_len = inputs_embeds.shape[1]
-        if feature_memory.shape[1] != seq_len:
-            if feature_memory.shape[1] < seq_len:
-                raise ValueError("feature_memory sequence length is shorter than hidden states")
-            feature_memory = feature_memory[:, -seq_len:, :, :]
-            feature_mask = feature_mask[:, -seq_len:]
 
-        feature_memory = feature_memory.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-        feature_mask = feature_mask.to(device=inputs_embeds.device, dtype=torch.bool)
+        def align(memory):
+            if memory.shape[1] < seq_len:
+                raise ValueError("feature_memory sequence length is shorter than hidden states")
+            return memory[:, -seq_len:].to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+
+        if isinstance(feature_memory, tuple):
+            if getattr(self.config, "pgca_context_mode", "shared") != "hierarchical" or len(feature_memory) != 3:
+                raise ValueError("hierarchical context must return three stage memories")
+            feature_memory = tuple(align(memory) for memory in feature_memory)
+        else:
+            feature_memory = align(feature_memory)
+        feature_mask = feature_mask[:, -seq_len:].to(device=inputs_embeds.device, dtype=torch.bool)
         return feature_memory, feature_mask
 
     @merge_with_config_defaults
@@ -511,6 +525,10 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         context_active = self.config.pgca_enabled and self.config.pgca_context_enabled
+        hierarchical_context = getattr(self.config, "pgca_context_mode", "shared") == "hierarchical"
+        context_stages = 3 if hierarchical_context else 1
+        if context_active and past_key_values is not None and not use_cache:
+            raise ValueError("feature-context decoding with past_key_values requires use_cache=True")
         if self.training and context_active and use_cache:
             raise ValueError("disable use_cache for feature-context training")
         if use_cache and context_active and not isinstance(past_key_values, PGCACompositeCache):
@@ -521,8 +539,10 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
             past_key_values = PGCACompositeCache(self.config)
         elif use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
-        if use_cache and context_active and past_key_values.feature_cache.get_seq_length() != past_key_values.get_seq_length():
-            raise ValueError("backbone and feature cache lengths are out of sync")
+        encoder_cache = None
+        if use_cache and context_active:
+            past_key_values.validate_feature_lengths(context_stages)
+            encoder_cache = past_key_values.feature_caches if hierarchical_context else past_key_values.feature_cache
 
         if position_ids is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
@@ -537,7 +557,7 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
             feature_mask=feature_mask,
             position_ids=position_ids,
             attention_mask=attention_mask,
-            feature_cache=past_key_values.feature_cache if use_cache and context_active else None,
+            feature_cache=encoder_cache,
         )
 
         if not isinstance(causal_mask_mapping := attention_mask, dict):
@@ -558,6 +578,10 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            layer_memory = feature_memory
+            if isinstance(feature_memory, tuple):
+                layer_memory = (feature_memory[bisect_right(self.config.pgca_context_stage_starts, i) - 1]
+                                if decoder_layer.pgca_attn is not None else None)
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask_mapping[self.config.layer_types[i]],
@@ -565,11 +589,13 @@ class Qwen3PGCAModel(Qwen3PGCAPreTrainedModel):
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
-                feature_memory=feature_memory,
+                feature_memory=layer_memory,
                 feature_mask=feature_mask,
                 **kwargs,
             )
 
+        if use_cache and context_active:
+            past_key_values.validate_feature_lengths(context_stages)
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
