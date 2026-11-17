@@ -16,13 +16,13 @@
 
 ## 原始数据与准备
 
-本轮不下载数据。将两份原始数据的 JSON、JSONL 或 Parquet 放到：
+本轮不下载数据。直接读取以下两个 JSONL 文件，不扫描子目录：
 
 ```text
 data/instruction/
 ├── raw/
-│   ├── COIG-CQIA/coig_cqia.jsonl
-│   └── tulu-3-sft-mixture/tulu3.jsonl
+│   ├── COIG-CQIA.jsonl
+│   └── tulu-3-sft-mixture.jsonl
 └── prepared/                   # 准备命令自动生成 vN、latest.txt
 ```
 
@@ -45,7 +45,7 @@ HF_ENDPOINT=https://hf-mirror.com \
 .venv/train/bin/python -B -m scripts.train.instruction.prepare --samples 150000
 ```
 
-该命令通过 evaluation 环境读取本地专项评估输入、通过 HF 镜像读取 LMEH 的评估输入，再由 train 环境清洗训练数据。不会调用 Git，不固定依赖或数据 revision，也不会训练模型。`--coig`、`--tulu`、`--benchmarks`、`--evaluation-python` 可以覆盖位置。
+该命令通过 evaluation 环境读取本地专项评估输入、通过 HF 镜像读取 LMEH 的评估输入，再由 train 环境清洗训练数据。不会调用 Git，不固定依赖或数据 revision，也不会训练模型。`--coig`、`--tulu` 可以覆盖两个 JSONL 文件的位置，`--benchmarks`、`--evaluation-python` 可以覆盖评估数据和解释器位置。
 
 准备过程保留合法多轮，统一成 `messages`，检查角色交替、空回答、控制字符、模板标记及过长文本；按首轮 user 问题去重，避免同问题不同答案跨 Train/Dev。保留来源、原 ID、原任务类型、版权和许可证描述。COIG 数据卡的许可证未明确，不伪造授权；Tulu 的集合许可与子集许可不能混为一谈。
 

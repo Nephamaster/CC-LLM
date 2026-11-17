@@ -1,4 +1,4 @@
-"""Build one shared COIG-CQIA/Tulu3 messages pool from local JSON/JSONL/Parquet."""
+"""Build one shared COIG-CQIA/Tulu3 messages pool from two local JSONL files."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import unicodedata
 
-from scripts.evaluation.common import ROOT, write_json
+from scripts.evaluation.common import ROOT, iter_jsonl, write_json
 from scripts.evaluation.runs import new_run_directory
 from scripts.train.runtime import atomic_write
 from .decontamination import BenchmarkIndex, benchmark_texts
@@ -37,39 +37,6 @@ TULU_LICENSES = {
     "codealpaca": "Apache-2.0",
     "coconot": "ODC-BY-1.0",
 }
-
-
-def files(path):
-    paths = (
-        [path]
-        if path.is_file()
-        else sorted(
-            p
-            for p in path.rglob("*")
-            if p.suffix in {".json", ".jsonl", ".parquet"}
-            and not any(x.startswith(".") for x in p.relative_to(path).parts)
-        )
-    )
-    if not paths:
-        raise FileNotFoundError(f"no instruction data files: {path}")
-    return paths
-
-
-def records(path):
-    if path.suffix == ".parquet":
-        import pyarrow.parquet as pq
-
-        for batch in pq.ParquetFile(path).iter_batches(batch_size=256):
-            yield from batch.to_pylist()
-    elif path.suffix == ".jsonl":
-        from scripts.evaluation.common import iter_jsonl
-
-        yield from iter_jsonl(path)
-    else:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        if not isinstance(data, list):
-            raise ValueError(f"expected a JSON array: {path}")
-        yield from data
 
 
 def convert(row, family, path, index):
@@ -183,9 +150,10 @@ def convert(row, family, path, index):
 
 
 def prepare(args):
-    sources = [
-        (family, path) for family, root in [("coig", args.coig), ("tulu", args.tulu)] for path in files(root)
-    ]
+    sources = [("coig", args.coig), ("tulu", args.tulu)]
+    for _, path in sources:
+        if not path.is_file():
+            raise FileNotFoundError(f"expected an instruction JSONL file: {path}")
     output = new_run_directory(args.output)
     if not args.benchmark_text:
         text_file = output / "benchmark_inputs.txt"
@@ -212,7 +180,7 @@ def prepare(args):
         )
         for family, path in sources:
             print(f"[instruction/data] {family} {path}", flush=True)
-            for index, row in enumerate(records(path)):
+            for index, row in enumerate(iter_jsonl(path)):
                 counts["input"] += 1
                 try:
                     item = convert(row, family, path, index)
@@ -324,8 +292,18 @@ def prepare(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--coig", type=Path, default=ROOT / "data/instruction/raw/COIG-CQIA")
-    parser.add_argument("--tulu", type=Path, default=ROOT / "data/instruction/raw/tulu-3-sft-mixture")
+    parser.add_argument(
+        "--coig",
+        type=Path,
+        default=ROOT / "data/instruction/raw/COIG-CQIA.jsonl",
+        help="COIG-CQIA JSONL file",
+    )
+    parser.add_argument(
+        "--tulu",
+        type=Path,
+        default=ROOT / "data/instruction/raw/tulu-3-sft-mixture.jsonl",
+        help="Tulu 3 JSONL file",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "data/instruction/prepared")
     parser.add_argument("--benchmarks", type=Path, default=ROOT / "data/evaluation")
     parser.add_argument("--evaluation-python", type=Path, default=ROOT / ".venv/evaluation/bin/python")
