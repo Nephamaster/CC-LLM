@@ -13,6 +13,8 @@ EVAL_MODE=instruct BENCHMARK=all bash scripts/evaluation/lmeh/run.sh
 
 任务数据和 SQuAD v2 评分器通过 `HF_ENDPOINT=https://hf-mirror.com` 获取，下载后复用 Hugging Face 缓存。代码不固定数据 revision，也不要求在项目数据包中保存通用 benchmark。GSM8K 最多生成 512 token，SQuAD v2 最多生成 256 token。
 
+CMMLU 通过 HF 缓存获取官方 `cmmlu_v1_0_1.zip`，用内置 CSV 加载器直接读取各学科的 Dev/Test，不执行已被新版 datasets 移除支持的 `cmmlu.py`。保持 67 学科、Dev 5-shot、原提示与指标；忽略 CSV 索引列，并保持题目、四个选项和答案均为字符串。指令数据去污染也复用这套任务配置，无需降级 datasets 或更换数据集来源。
+
 只检查任务数据能否通过镜像加载：
 
 ```bash

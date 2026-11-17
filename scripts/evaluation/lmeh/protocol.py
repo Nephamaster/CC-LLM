@@ -1,6 +1,7 @@
 """Resolve installed benchmark tasks without pinning package or dataset revisions."""
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -15,6 +16,16 @@ BENCHMARKS = {
     "cmmlu": {"task": "cmmlu", "shots": 5, "leaves": 67, "output": "cmmlu"},
     "clue": {"task": "clue", "shots": 0, "leaves": 9, "output": "clue"},
 }
+
+
+def cmmlu_dataset(data_files, usecols, **_metadata):
+    """Declare string fields before CSV parsing so Dev/Test cannot infer conflicting types."""
+    from datasets import Features, Value, load_dataset
+
+    return load_dataset(
+        "csv", data_files=data_files, usecols=usecols,
+        features=Features({name: Value("string") for name in usecols}),
+    )
 
 
 def table_metrics(benchmark, results):
@@ -90,6 +101,13 @@ def build_bundle(destination, benchmark):
         names = ["gsm8k.yaml"]
     if family == "arc":
         names = ["arc_challenge.yaml"]
+    if family == "cmmlu":
+        from huggingface_hub import hf_hub_download
+
+        archive = hf_hub_download(
+            repo_id="haonan-li/cmmlu", filename="cmmlu_v1_0_1.zip", repo_type="dataset",
+            endpoint=os.environ.get("HF_ENDPOINT", "https://hf-mirror.com"),
+        )
     for name in sorted(names):
         config = yaml.safe_load((folder / name).read_text(encoding="utf-8"))
         if family == "arc":
@@ -99,8 +117,20 @@ def build_bundle(destination, benchmark):
         if "dataset_path" in config:
             config.pop("dataset_kwargs", None)
             config["num_fewshot"] = BENCHMARKS[benchmark]["shots"]
+        if family == "cmmlu":
+            if "dataset_path" in config:
+                config["dataset_path"] = "csv"
+            if "dataset_name" in config:
+                subject = config["dataset_name"]
+                config["dataset_name"] = None
+                config["dataset_kwargs"] = {
+                    "data_files": {split: f"zip://{split}/{subject}.csv::{archive}" for split in ("dev", "test")},
+                    "usecols": ["Question", "A", "B", "C", "D", "Answer"],
+                }
         if family == "gsm8k":
             config["generation_kwargs"]["max_gen_toks"] = BENCHMARKS[benchmark]["max_gen_toks"]
-        (destination / name).write_text(
-            yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        text = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+        if family == "cmmlu" and "dataset_name" in config:
+            text += "custom_dataset: !function scripts.evaluation.lmeh.protocol.cmmlu_dataset\n"
+        (destination / name).write_text(text, encoding="utf-8")
     return destination
