@@ -30,7 +30,8 @@ MASTER_PORT="${MASTER_PORT:-}"                  # 留空时由 torchrun 自动�
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"         # 每卡训练 batch
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"           # 每卡验证 batch
 GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-4}"
-DATASET_NUM_PROC="${DATASET_NUM_PROC:-32}"
+DATASET_NUM_PROC="${DATASET_NUM_PROC:-4}"          # 数据预处理进程数；过多进程会争抢内存与磁盘
+export ENCODING_BATCH_SIZE="${ENCODING_BATCH_SIZE:-32}"  # 每个编码进程一次处理的文档数
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
 

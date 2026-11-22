@@ -308,6 +308,8 @@ bash scripts/train/run.sh
 
 默认按可见卡数推导 `NPROC_PER_NODE`；手动指定时应与选卡数一致。需要覆盖参数时可在阶段命令前加 `TRAIN_BATCH_SIZE=1 GRAD_ACCUMULATION=... DATASET_NUM_PROC=1`，或修改对应脚本顶部。不要把本轮实验的参数改动当作不影响比较的透明优化。
 
+CPT 数据预处理默认 4 进程，每个编码批次 32 篇文档，可用 `DATASET_NUM_PROC`、`ENCODING_BATCH_SIZE` 分别调整。后者用于控制长文档切分时的中间结果内存，与 GPU 训练 batch 无关。编码启动时会打印实际设置；增加进程不保证更快，尤其在内存或磁盘受限时。Phase2-A 默认也复用原生预处理缓存。
+
 训练日志在启动时打印的 `.log` 文件中。每个版本目录包含 `checkpoint_selection.json`，记录 best/last、选择原因、验证指标及有效目标统计。Phase2-A 选择 last，其他阶段优先选择具有有限指标的 best，否则记录回退到 last。出现 NaN 时应检查选优报告，不能把正常退出当作验证通过。
 
 下游 LoRA 每次保存 checkpoint，还会自动执行每任务 1 条固定 Dev 自由生成，检查结束符监督及生成健康状况，写入 `checkpoint-N/dev_check/vN/`。失败保留报告并继续训练，不改变原有 loss 选模。正式评估前会对选中的模型再做完整验收，见下一节。
@@ -458,18 +460,9 @@ bash scripts/train/downstream/csc.sh
 
 `TRAIN_ROOT` 可整体修改训练根目录，评估时需传同一个值以读取指针。单阶段可通过 `OUT` 修改输出目录；模型名称与检查点路径分开填写，不能将 `checkpoint-N` 当成模型名称。
 
-PGCA-A/B 共用 `phase2_<长度>.raw` 原始编码，分别使用 `phase2_<长度>_adaptation` 和 `phase2_<长度>_joint` prepared 视图。缓存记录卡数、每卡 batch、长度、种子和预算；改变这些设置会触发校验。显式指定 `CACHE_DIR` 时默认 RAW 为它后面的 `.raw`，需要复用其他原始缓存时应显式设置 `RAW_CACHE`。
+PGCA-A/B 共用 `phase2_<长度>.raw` 原始编码，分别使用 `phase2_<长度>_adaptation` 和 `phase2_<长度>_joint` prepared 视图。只改变卡数或每卡 batch 时，脚本自动复用原始编码、重建视图的末尾补齐，无需手动删除缓存或更换目录；配置一致时直接复用。重建失败会保留已有视图。
 
-只改变卡数/batch、需要新的 prepared 视图时，可按当前阶段设置两个路径，例如：
-
-```bash
-MODEL_NAME="${B}-PGCA" \
-RAW_CACHE="$PWD/outputs/cache/${B}-PGCA/phase2_4096.raw" \
-CACHE_DIR="$PWD/outputs/cache/${B}-PGCA/phase2_4096_joint_new" \
-bash scripts/train/cpt/phase2_b.sh
-```
-
-该例还需沿用所需的 GPU、batch、种子、预算，并确保 adaptation 指针存在，或显式指定 `MODEL`。如果更换 tokenizer、输入数据或切分长度，应重新导出原始编码，不能只换 prepared 路径。
+显式指定 `CACHE_DIR` 时默认 RAW 为它后面的 `.raw`，需要复用其他原始缓存时应显式设置 `RAW_CACHE`。长度、种子或 Token 预算变化仍需使用对应的新 prepared 目录。如果更换 tokenizer、输入数据或切分长度，应重新导出原始编码，不能只换 prepared 路径。
 
 ## 常见意外与处理
 
@@ -483,9 +476,9 @@ bash scripts/train/cpt/phase2_b.sh
 | DNS、连接镜像超时 | 检查国内端点连通性；环境脚本已隔离额外包索引。模型与数据下载重试同一目录，或准备离线 wheel/数据缓存。 |
 | 训练提示没有 JSONL | 完成外层数据解压及预训练分片解压，排除 data/data 嵌套。损坏的包先重新取得。 |
 | 构建校验失败 | 查看 Char/PGCA 输出中的 reports；确认原基座、汉字资源、词表/embedding/特殊 token 映射。修正原因后重建，不绕过校验继续训练。 |
-| CUDA OOM | 区分训练或推理；先减对应的 TRAIN_BATCH_SIZE、EVAL_BATCH_SIZE 或 BATCH_SIZE。训练需按目标有效 batch 调整梯度累积；卡数/batch 改变时准备新的缓存视图。模型状态本身仍装不下时需分片训练适配，当前没有可直接生效的 ZeRO/FSDP 开关。 |
-| Map 阶段退出 / Killed | 查看实际阶段 .log 的退出码、信号和容器 OOM 增量；尝试 DATASET_NUM_PROC=1。CPT 单进程编码会在当前进程执行。不能仅凭进度条判断是内存还是崩溃。 |
-| prepared cache geometry mismatch | 保持原卡数/batch，或按上面示例新建 prepared 视图，复用正确的 RAW_CACHE。 |
+| CUDA OOM | 区分训练或推理；先减对应的 TRAIN_BATCH_SIZE、EVAL_BATCH_SIZE 或 BATCH_SIZE。训练需按目标有效 batch 调整梯度累积；卡数/batch 改变时自动重建缓存视图。模型状态本身仍装不下时需分片训练适配，当前没有可直接生效的 ZeRO/FSDP 开关。 |
+| Map 阶段退出 / Killed | 查看实际阶段 .log 的退出码、信号和容器 OOM 增量。CPT 可同时降低 DATASET_NUM_PROC 和 ENCODING_BATCH_SIZE，控制并发与单批中间结果；单进程编码会在当前进程执行。不能仅凭进度条判断是内存还是崩溃。 |
+| 修改卡数/batch 后重新准备缓存 | 正常行为：自动复用 RAW_CACHE 重建 prepared 视图，不重新编码。若仍提示 geometry mismatch，请同步最新的 prepare_data.py。 |
 | raw cache incomplete | 保留原目录，用 RAW_CACHE 指向一个新的导出位置重试；完整 raw 的准备失败可直接重试。 |
 | address already in use | 默认端口自动分配；需要手动指定时换 MASTER_PORT。不要终止不属于本任务的进程。 |
 | device ordinal / TP 卡数错误 | 检查 CUDA_VISIBLE_DEVICES、NPROC_PER_NODE、TENSOR_PARALLEL_SIZE。进程内 cuda:0 是可见列表中的第一张卡。单卡 vLLM 设置 TP=1；HF 不使用该 TP。 |

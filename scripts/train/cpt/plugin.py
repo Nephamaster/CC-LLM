@@ -25,16 +25,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from scripts.train.runtime import publish_checkpoint, report_validation
 
 
-def _single_process_encoding(preprocess):
+def _encoding_preprocessor(preprocess):
     @wraps(preprocess)
     def encode(self, dataset, *, num_proc=1, **kwargs):
+        batch_size = int(os.environ.get("ENCODING_BATCH_SIZE", "32"))
+        if batch_size < 1:
+            raise ValueError("ENCODING_BATCH_SIZE must be positive")
+        kwargs["batch_size"] = batch_size
+        print(f"[cpt/encode] processes={num_proc or 1}, encoding_batch_size={batch_size}", flush=True)
         return preprocess(self, dataset, num_proc=None if num_proc == 1 else num_proc, **kwargs)
 
     return encode
 
 
-# Pool(1) still serializes inputs; keep single-worker encoding in the calling process.
-EncodePreprocessor.__call__ = _single_process_encoding(EncodePreprocessor.__call__)
+# Split expands long documents; limit each map batch before collecting its output.
+# Pool(1) still serializes inputs, so encode in the calling process instead.
+EncodePreprocessor.__call__ = _encoding_preprocessor(EncodePreprocessor.__call__)
 
 
 GLYPH_NAMES = ("stroke_count", "radical_stroke", "structure")

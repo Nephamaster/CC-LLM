@@ -97,27 +97,51 @@ def check_raw(input_dir):
     return rows
 
 
-def prepare(input_dir, output_dir, **kwargs):
+def prepare(input_dir, output_dir, *, verify=False, **kwargs):
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with (output_dir.parent / f".{output_dir.name}.prepare.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if (output_dir / "preparation_report.json").exists():
-            raise FileExistsError(f"prepared cache already completed: {output_dir}; rerun with --verify")
+        completed = (output_dir / "preparation_report.json").exists()
+        if completed:
+            if not verify:
+                raise FileExistsError(f"prepared cache already completed: {output_dir}; rerun with --verify")
+            report = json.loads((output_dir / "preparation_report.json").read_text(encoding="utf-8"))
+            if report["max_length"] != kwargs.get("max_length"):
+                raise ValueError("prepared cache max_length mismatch; use a new cache directory")
+            if report["seed"] != kwargs.get("seed", 42):
+                raise ValueError("prepared cache data seed mismatch; use a new cache directory")
+            expected_budget = min(kwargs.get("total_tokens", 0) or report["available_targets"],
+                                  report["available_targets"])
+            if report["train_targets"] != expected_budget:
+                raise ValueError("prepared cache token budget mismatch")
+            adaptation_tokens = kwargs.get("adaptation_tokens", 0)
+            if adaptation_tokens and report["splits"].get("train_a", {}).get("targets") != adaptation_tokens:
+                raise ValueError("prepared cache adaptation budget mismatch")
+            if (report.get("world_size"), report.get("batch_size")) == (
+                    kwargs.get("world_size", 1), kwargs.get("batch_size", 1)):
+                print("prepared cache verified", flush=True)
+                return report
+            print("prepared cache GPU count/batch changed; rebuilding views from raw cache", flush=True)
+            check_raw(input_dir)
         staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-prepare-", dir=output_dir.parent))
         backup = None
         try:
             report = build_prepared(input_dir, staging / "cache", **kwargs)
             if output_dir.exists():
-                backup = output_dir.with_name(f"{output_dir.name}.incomplete-{time.time_ns()}")
+                suffix = "previous" if completed else "incomplete"
+                backup = output_dir.with_name(f"{output_dir.name}.{suffix}-{time.time_ns()}")
                 output_dir.replace(backup)
-                print(f"preserved incomplete prepared cache: {backup}", flush=True)
+                if not completed:
+                    print(f"preserved incomplete prepared cache: {backup}", flush=True)
             try:
                 (staging / "cache").replace(output_dir)
             except OSError:
                 if backup is not None and not output_dir.exists():
                     backup.replace(output_dir)
                 raise
+            if completed and backup is not None:
+                shutil.rmtree(backup)
             return report
         finally:
             shutil.rmtree(staging)
@@ -187,22 +211,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.check_raw:
         print("reusing completed raw cache:", json.dumps(check_raw(args.input)))
-    elif args.verify:
-        report = json.loads((args.output / "preparation_report.json").read_text(encoding="utf-8"))
-        if report["max_length"] != args.max_length:
-            raise ValueError("prepared cache max_length mismatch; use a new cache directory")
-        if report.get("world_size") != args.world_size or report.get("batch_size") != args.batch_size:
-            raise ValueError("prepared cache distributed batch geometry mismatch; prepare new cache views")
-        if report["seed"] != args.seed:
-            raise ValueError("prepared cache data seed mismatch; use a new cache directory")
-        expected_budget = min(args.total_tokens or report["available_targets"], report["available_targets"])
-        if report["train_targets"] != expected_budget:
-            raise ValueError("prepared cache token budget mismatch")
-        if args.adaptation_tokens and report["splits"].get("train_a", {}).get("targets") != args.adaptation_tokens:
-            raise ValueError("prepared cache adaptation budget mismatch")
-        print("prepared cache verified")
     else:
-        print(json.dumps(prepare(args.input, args.output, adaptation_tokens=args.adaptation_tokens,
+        print(json.dumps(prepare(args.input, args.output, verify=args.verify, adaptation_tokens=args.adaptation_tokens,
                                  total_tokens=args.total_tokens, seed=args.seed,
                                  model_path=args.model, max_length=args.max_length,
                                  world_size=args.world_size, batch_size=args.batch_size), indent=2))
