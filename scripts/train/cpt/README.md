@@ -36,9 +36,9 @@ data/pretrain/phase2/{train,validation}
 
 数据包中的 `train/*.tar.xz` 必须先按根目录 README 给出的命令原地解压；训练脚本不会自动解压或删除压缩包。训练缓存写入 `outputs/cache/<MODEL_NAME>/`，不同模型名称默认使用不同缓存。A/B 使用同一数据、token 预算、长度和随机种子，保证监督区间不重叠。
 
-正式训练 batch 参数：Phase1、Char CPT 每卡 batch 8 / 累积 4；PGCA-A 每卡 batch 8 / 累积 1；PGCA-B 每卡 batch 16 / 累积 2。8 卡时有效 batch 分别为 256、256、64、256。GPU 仍用 `CUDA_VISIBLE_DEVICES` 选择，训练进程数自动按可见卡数推导。数据预处理进程默认已从旧表中的 32 调整为 4，与训练卡数独立。
+Phase1、Char CPT 默认每卡 batch 8、累积 4。PGCA-A 默认每卡 batch 8、累积 1。PGCA-B 默认每卡 batch 1、目标有效 batch 256，按实际进程数向上取整计算梯度累积步数。两卡累积 128，八卡累积 32，显式传入 `GRAD_ACCUMULATION` 可覆盖。PGCA-B 的 warmup 默认 1%，总更新步数由单遍训练数据量和有效 batch 决定。GPU 用 `CUDA_VISIBLE_DEVICES` 选择，数据预处理进程数默认 4。
 
-A 的默认 prepared 目录为 `phase2_<长度>_adaptation`，B 为 `phase2_<长度>_joint`，分别满足 batch 8/16 的末尾补齐要求。两者默认复用既有的 `phase2_<长度>.raw` 原始编码；显式指定 `CACHE_DIR` 时仍默认使用其对应的 `.raw`。后续更改卡数或每卡 batch 时，脚本自动从原始编码重建 prepared 视图，无需删除缓存或重新编码；真实样本的顺序、监督 Token 区间保持不变，仅重新计算补齐样本数。
+A 的默认 prepared 目录为 `phase2_<长度>_adaptation`，B 为 `phase2_<长度>_joint`，各自按卡数和每卡 batch 补齐。两者默认复用既有的 `phase2_<长度>.raw` 原始编码；显式指定 `CACHE_DIR` 时仍默认使用其对应的 `.raw`。后续更改卡数或每卡 batch 时，脚本自动从原始编码重建 prepared 视图，无需删除缓存或重新编码；真实样本的顺序、监督 Token 区间保持不变，仅重新计算补齐样本数。只改梯度累积可直接复用同一 prepared 视图。
 
 原生编码导出和后续准备可分开恢复：`.raw/train`、`.raw/val` 已完成时直接复用；准备在临时目录完成后才发布，旧的未完成准备目录保留为 `.incomplete-*`。自动重建失败时保留已有 prepared 缓存，成功后替换并清理旧视图。原生导出不完整时会提示具体 split，原文件保留；可设置 `RAW_CACHE` 指向新的导出目录。长度、随机种子或 Token 预算变化仍需使用对应的新缓存目录。
 

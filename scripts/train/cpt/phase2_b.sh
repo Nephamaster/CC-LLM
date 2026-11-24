@@ -22,7 +22,7 @@ ADAPTATION_OUT="${ADAPTATION_OUT:-$CPT_ROOT/adaptation}"
 OUT="${OUT:-$CPT_ROOT/joint}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase2}"
 MAX_LENGTH="${MAX_LENGTH:-4096}"
-# A/B 的 batch 不同：B 单独准备视图，默认复用 A 的原始编码。
+# B 单独准备训练视图，默认复用 A 的原始编码。
 # 显式指定 CACHE_DIR 时，沿用该目录对应的 .raw；RAW_CACHE 仍可单独覆盖。
 if [[ -z "${RAW_CACHE:-}" && -n "${CACHE_DIR:-}" ]]; then
     RAW_CACHE="${CACHE_DIR}.raw"
@@ -40,9 +40,10 @@ RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-}"              # 留空时按可见 GPU 数推导
 MASTER_PORT="${MASTER_PORT:-}"                  # 留空时由 torchrun 自动分配
-TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"         # 每卡训练 batch
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"          # 每卡训练 batch
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"           # 每卡验证 batch
-GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-2}"
+TARGET_EFFECTIVE_BATCH="${TARGET_EFFECTIVE_BATCH:-256}"
+GRAD_ACCUMULATION="${GRAD_ACCUMULATION:-}"         # 留空时按目标有效 batch 向上取整
 DATASET_NUM_PROC="${DATASET_NUM_PROC:-4}"          # 数据预处理进程数；过多进程会争抢内存与磁盘
 export ENCODING_BATCH_SIZE="${ENCODING_BATCH_SIZE:-32}"  # 每个编码进程一次处理的文档数
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
@@ -58,7 +59,7 @@ ADAM_BETA2="${ADAM_BETA2:-0.95}"
 ADAM_EPSILON="${ADAM_EPSILON:-1e-8}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-linear}"
-WARMUP_RATIO="${WARMUP_RATIO:-0.03}"              # 学习率 warmup，不是辅助任务权重 warmup
+WARMUP_RATIO="${WARMUP_RATIO:-0.01}"              # 学习率 warmup，不是辅助任务权重 warmup
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-1.0}"
 
 # 日志、保存与随机种子。选优要求 SAVE_STEPS 是 EVAL_STEPS 的整数倍。
@@ -80,6 +81,10 @@ export PYTHONDONTWRITEBYTECODE=1
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 IFS=, read -r -a cc_devices <<< "$CUDA_VISIBLE_DEVICES"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${#cc_devices[@]}}"
+if [[ -z "$GRAD_ACCUMULATION" ]]; then
+    global_micro_batch=$((NPROC_PER_NODE * TRAIN_BATCH_SIZE))
+    GRAD_ACCUMULATION=$(((TARGET_EFFECTIVE_BATCH + global_micro_batch - 1) / global_micro_batch))
+fi
 export CUDA_VISIBLE_DEVICES NPROC_PER_NODE MASTER_PORT
 export CC_LLM_STAGE=phase2b PGCA_ENABLED=true
 export ENABLE_AUXILIARY_TASKS

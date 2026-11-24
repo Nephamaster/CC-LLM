@@ -290,12 +290,12 @@ bash scripts/train/run.sh
 | --- | ---: | ---: | ---: |
 | Phase1 / Char CPT | 8 | 4 | 256 |
 | PGCA-A | 8 | 1 | 64 |
-| PGCA-B | 16 | 2 | 256 |
+| PGCA-B | 1 | 32（按卡数自动调整） | 256 |
 | General-SFT | 2 | 8 | 128 |
 | CSC / CGEC | 8 | 1 | 64 |
 | Ancient | 2 | 4 | 64 |
 
-有效 batch = 实际 GPU 数 × `TRAIN_BATCH_SIZE` × `GRAD_ACCUMULATION`。例如四卡每卡 batch 1、累积 64，对应有效 batch 256。修改卡数时按公式调整，不能将表中每卡 batch 直接当作全局 batch。显存是否容纳还需实卡验证，不因模型能成功加载就视为可以训练。
+有效 batch = 实际 GPU 数 × `TRAIN_BATCH_SIZE` × `GRAD_ACCUMULATION`。Phase2-B 默认以 `TARGET_EFFECTIVE_BATCH=256` 自动计算梯度累积步数，除不尽时向上取整，显式设置 `GRAD_ACCUMULATION` 优先。两卡每卡 batch 1 时默认累积 128 步。Phase2-B 默认 warmup 为 1%，按完整数据训练一遍。其他阶段修改卡数时可按公式调整梯度累积。显存是否容纳还需实卡验证，不因模型能成功加载就视为可以训练。
 
 选择非连续显卡也可以：
 
