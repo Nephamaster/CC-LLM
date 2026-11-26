@@ -16,3 +16,5 @@ resources/
 HF_TOKEN
 GITHUB_TOKEN
 .env
+
+Checkpoint/
