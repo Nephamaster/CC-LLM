@@ -12,7 +12,7 @@ MODEL_NAME="${MODEL_NAME:-${CPT_MODEL_NAME:-}}"
 if [[ -z "$MODEL_NAME" ]]; then
     [[ -s "$ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run model_build/run.sh" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$ROOT/models/model_name.txt"
-    MODEL_NAME="${MODEL_NAME}-CPT-INS"
+    MODEL_NAME="${MODEL_NAME}-Align-CPT-INS"
 fi
 if [[ -z "${MODEL:-}" ]]; then
     pointer="$TRAIN_ROOT/$MODEL_NAME/next_stage_model.txt"

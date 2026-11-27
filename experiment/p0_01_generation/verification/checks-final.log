@@ -1,0 +1,68 @@
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1023.75it/s]
+test_budget_and_eos_can_coincide (__main__.ExperimentChecks.test_budget_and_eos_can_coincide) ... ok
+test_configuration_comparison_preserves_unknowns (__main__.ExperimentChecks.test_configuration_comparison_preserves_unknowns) ... ok
+test_real_prepare_hf_and_swift_cells (__main__.ExperimentChecks.test_real_prepare_hf_and_swift_cells) ... /tmp/cc-p0-01-20261126-env/lib/python3.14/site-packages/torch/jit/_script.py:1485: FutureWarning: `torch.jit.script` is not supported in Python 3.14+ and may break. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+[WARNING:swift] Loading model from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. This will execute custom Python code shipped in the model repository (e.g. configuration_*.py, modeling_*.py, tokenization_*.py). Only proceed if you trust the source of this model.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+[INFO:swift] Setting torch_dtype: torch.float32
+[WARNING:swift] Loading config from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[transformers] The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+[WARNING:swift] Loading tokenizer/processor from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[INFO:swift] default_system: None
+[INFO:swift] max_length: 8192
+[INFO:swift] response_prefix: None
+[INFO:swift] agent_template: hermes
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 11558.38it/s]
+`pretrained` model kwarg is not of type `str`. Many other model arguments may be ignored. Please do not launch via accelerate or use `parallelize=True` if passing an existing model this way.
+Passed an already-initialized model through `pretrained`, assuming single-process call to evaluate() or custom distributed integration
+[P0-01] shared/A fixture/0 budget=4
+Running generate_until requests:   0%|          | 0/1 [00:00<?, ?it/s]Running generate_until requests: 100%|██████████| 1/1 [00:00<00:00, 173.12it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 12366.74it/s]
+[P0-01] shared/B fixture/0 budget=4
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=8192) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[WARNING:swift] Loading model from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. This will execute custom Python code shipped in the model repository (e.g. configuration_*.py, modeling_*.py, tokenization_*.py). Only proceed if you trust the source of this model.
+[INFO:swift] Setting torch_dtype: torch.float32
+[WARNING:swift] Loading config from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[transformers] The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+[WARNING:swift] Loading tokenizer/processor from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[INFO:swift] default_system: None
+[INFO:swift] max_length: 8192
+[INFO:swift] response_prefix: None
+[INFO:swift] agent_template: hermes
+[WARNING:swift] Loading model from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. This will execute custom Python code shipped in the model repository (e.g. configuration_*.py, modeling_*.py, tokenization_*.py). Only proceed if you trust the source of this model.
+[WARNING:swift] Loading config from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[transformers] The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+[INFO:swift] attn_impl: sdpa
+[WARNING:swift] Loading tokenizer/processor from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[INFO:swift] model_kwargs: {'device_map': {'': 'cpu'}, 'dtype': torch.bfloat16}
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 22424.64it/s]
+[P0-01] shared/C fixture/0 budget=4
+[INFO:swift] Successfully registered `/tmp/cc-p0-01-20261126-env/lib/python3.14/site-packages/swift/dataset/data/dataset_info.json`.
+[WARNING:swift] Loading model from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. This will execute custom Python code shipped in the model repository (e.g. configuration_*.py, modeling_*.py, tokenization_*.py). Only proceed if you trust the source of this model.
+[INFO:swift] Setting torch_dtype: torch.float32
+[WARNING:swift] Loading config from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[transformers] The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+[WARNING:swift] Loading tokenizer/processor from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[INFO:swift] default_system: None
+[INFO:swift] max_length: 8192
+[INFO:swift] response_prefix: None
+[INFO:swift] agent_template: hermes
+[WARNING:swift] Loading model from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. This will execute custom Python code shipped in the model repository (e.g. configuration_*.py, modeling_*.py, tokenization_*.py). Only proceed if you trust the source of this model.
+[WARNING:swift] Loading config from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[transformers] The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+[INFO:swift] attn_impl: sdpa
+[WARNING:swift] Loading tokenizer/processor from '/tmp/cc-p0-01-check-5eoqca7u/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[INFO:swift] model_kwargs: {'device_map': {'': 'cpu'}, 'dtype': torch.bfloat16}
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 18499.93it/s]
+[P0-01] shared/D fixture/0 budget=4
+ok
+test_summary_uses_latest_failed_cell (__main__.ExperimentChecks.test_summary_uses_latest_failed_cell) ... ok
+test_trace_preserves_actual_generate_and_restores_methods (__main__.ExperimentChecks.test_trace_preserves_actual_generate_and_restores_methods) ... ok
+test_vllm_trace_preserves_arguments_and_captures_engine_update (__main__.ExperimentChecks.test_vllm_trace_preserves_arguments_and_captures_engine_update) ... ok
+test_wrong_prompt_fails_and_restores (__main__.ExperimentChecks.test_wrong_prompt_fails_and_restores) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 10.072s
+
+OK

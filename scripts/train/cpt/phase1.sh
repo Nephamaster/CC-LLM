@@ -13,7 +13,8 @@ MODEL_NAME="${MODEL_NAME:-}"
 if [[ -z "$MODEL_NAME" && -s "$CC_ROOT/models/model_name.txt" ]]; then
     IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
     if [[ "${MODEL_VARIANT:-pgca}" == char ]]; then
-        MODEL_NAME="${MODEL_NAME%-PGCA}-Char"
+        MODEL_NAME="${MODEL_NAME%-PGCA}"
+        [[ "$MODEL_NAME" == *-Char ]] || MODEL_NAME="${MODEL_NAME}-Char"
     fi
 fi
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
@@ -21,7 +22,7 @@ TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 # MODEL 是初始 PGCA 模型；MODEL_VARIANT=char 时使用标准 Char 模型。
 MODEL="${MODEL:-}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase1}"
-OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
+OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-Align}"
 MAX_LENGTH="${MAX_LENGTH:-2048}"
 CACHE_DIR="${CACHE_DIR:-$CC_ROOT/outputs/cache/$MODEL_NAME/phase1_${MAX_LENGTH}}"
 PHASE1_TOKENS="${PHASE1_TOKENS:-1000000000}"        # 上限；不足时用实际量，0 表示全部

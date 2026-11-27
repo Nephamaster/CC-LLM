@@ -41,7 +41,7 @@ class Smoke:
         self.base_name = args.base_model.name
         self.models = {"base": args.base_model,
                        "char": self.output / "models" / f"{self.base_name}-Char",
-                       "pgca": self.output / "models" / f"{self.base_name}-PGCA"}
+                       "pgca": self.output / "models" / f"{self.base_name}-Char-PGCA"}
 
     def report(self):
         with self.lock:
@@ -188,14 +188,14 @@ class Smoke:
     def train(self, variant, gpu, stage, model, prepared):
         name = self.models[variant].name
         root = self.output / "training"
-        cpt = root / f"{name}-CPT"
-        ins = root / f"{name if variant == 'base' else name+'-CPT'}-INS"
-        outputs = {"phase1": root / f"{name}-ALIGN", "cpt": cpt, "instruction": ins,
+        cpt = root / f"{name}-Align-CPT"
+        ins = root / f"{name if variant == 'base' else name+'-Align-CPT'}-INS"
+        outputs = {"phase1": root / f"{name}-Align", "cpt": cpt, "instruction": ins,
                    "phase2_a": cpt / "adaptation", "phase2_b": cpt / "joint"}
         suffix = {"csc": "CSC", "cgec": "CGEC", "ancient": "ACT"}
         adapter = stage in suffix
         if adapter:
-            outputs[stage] = root / f"{name if variant == 'base' else name+'-CPT'}-INS-{suffix[stage]}"
+            outputs[stage] = root / f"{name if variant == 'base' else name+'-Align-CPT'}-INS-{suffix[stage]}"
         output = outputs[stage]
         values = dict(MODEL_VARIANT=variant, MODEL_NAME=name, PYTHON_CMD=self.args.train_python, TRAIN_ROOT=root,
                       OUT=output, STAGES=stage, FORCE="true", NPROC_PER_NODE=1, TRAIN_BATCH_SIZE=1,
@@ -203,7 +203,7 @@ class Smoke:
                       EVAL_STEPS=self.args.train_steps, SAVE_STEPS=self.args.train_steps, LOGGING_STEPS=1,
                       SAVE_TOTAL_LIMIT=1, SAVE_ONLY_MODEL="true", LOAD_FROM_CACHE_FILE="false",
                       DEV_CHECK_SAMPLES=1, DEV_CHECK_SAVE_SAMPLES=1, DEV_CHECK_MAX_NEW_TOKENS=self.args.max_new_tokens,
-                      ALIGN_OUT=root / f"{name}-ALIGN", CPT_ROOT=cpt, ADAPTATION_OUT=cpt / "adaptation")
+                      ALIGN_OUT=root / f"{name}-Align", CPT_ROOT=cpt, ADAPTATION_OUT=cpt / "adaptation")
         if stage == "instruction":
             values.update(INSTRUCTION_MODEL=model or "", INSTRUCTION_DATA=self.output / "data/instruction_sft",
                           INS_OUT=ins, SUPERVISED_TOKENS=0, NUM_TRAIN_EPOCHS=1, MAX_LENGTH=4096,
@@ -251,7 +251,7 @@ class Smoke:
             for name in ("input.jsonl", "input.manifest.json"):
                 shutil.copy2(self.output / "data" / kind / name, output / name)
         task = "csc" if kind == "csc" else "ancient" if kind in {"c3", "fuxi"} else "cgec"
-        model_name = self.models[variant].name + ("" if variant == "base" else "-CPT") + "-INS"
+        model_name = self.models[variant].name + ("" if variant == "base" else "-Align-CPT") + "-INS"
         suffix = {"csc": "CSC", "cgec": "CGEC", "ancient": "ACT"}[task]
         values = dict(MODEL=model or "", LORA=adapter or "", MODEL_NAME=f"{model_name}-{suffix}",
                       PYTHON=self.args.eval_python, RUN_DIR=output, STAGE="all", BATCH_SIZE=1,
@@ -298,8 +298,8 @@ class Smoke:
                 model = self.train(variant, gpu, stage, model,
                                    train_ok and prepared["phase1" if stage == "phase1" else "phase2"])
                 if variant == "pgca" and stage == "phase1":
-                    self.ppl(variant, gpu, model, name + "-ALIGN", eval_ok and prepared["ppl"])
-            final_name = name if variant == "base" else name + "-CPT"
+                    self.ppl(variant, gpu, model, name + "-Align", eval_ok and prepared["ppl"])
+            final_name = name if variant == "base" else name + "-Align-CPT"
             if stages:
                 self.ppl(variant, gpu, model, final_name, eval_ok and prepared["ppl"])
             model = self.train(variant, gpu, "instruction", model, train_ok and prepared["instruction_sft"])

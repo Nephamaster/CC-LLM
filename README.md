@@ -7,10 +7,12 @@ CC-LLM 在 Qwen3 Base 上构建单汉字语义词表，并加入音形特征、�
 | 路线 | 正式训练顺序 | 下游产物 |
 | --- | --- | --- |
 | Base | 原基座 → General-SFT → 三项专项 LoRA | `B-INS-{CSC,CGEC,ACT}` |
-| Char | 字符模型 → Phase1 → Char CPT → General-SFT → 三项专项 LoRA | `B-Char-CPT-INS-{CSC,CGEC,ACT}` |
-| PGCA | 完整模型 → Phase1 → Phase2-A → Phase2-B → General-SFT → 三项专项 LoRA | `B-PGCA-CPT-INS-{CSC,CGEC,ACT}` |
+| Char | 字符模型 → Phase1 → Char CPT → General-SFT → 三项专项 LoRA | `B-Char-Align-CPT-INS-{CSC,CGEC,ACT}` |
+| PGCA | 完整模型 → Phase1 → Phase2-A → Phase2-B → General-SFT → 三项专项 LoRA | `B-Char-PGCA-Align-CPT-INS-{CSC,CGEC,ACT}` |
 
 `B` 为原基座名称。构建从模型配置推导隐藏维度、注意力头维度和 PGCA 层位置，不绑定参数规模；其他架构需要单独适配。以下以 Qwen3-4B-Base 为例，完成后更换模型变量即可进行 Qwen3-8B-Base 或其他 Qwen3 Base 实验。
+
+名称累计实际经历的步骤。构建的 `-Char`、`-Char-PGCA`、`-PGCA` 分别表示字符改造、字符改造后加入 PGCA、原词表上加入 PGCA 的命名。当前默认入口构建 `-Char-PGCA`。训练依次追加 `-Align`、`-CPT`、`-INS`，例如 `B-Char-PGCA-Align-CPT-INS`；仅对齐后做指令微调则为 `B-Char-PGCA-Align-INS`。
 
 所有命令均在仓库根目录执行。按下列编号顺序操作；环境和数据准备一次，模型相关步骤按规模分别执行。`pipeline.md` 描述研究方法，实际执行以本文与 `scripts/` 为准。
 
@@ -219,20 +221,20 @@ bash scripts/model_build/run.sh
 
 ```text
 models/<B>-Char/
-models/<B>-PGCA/
+models/<B>-Char-PGCA/
 ```
 
 维度和层号从所选 Base 配置推导。模型构建允许输出目录已经存在，会覆盖同名构建产物；训练依赖这些模型时不要再次向同一路径构建。
 
 构建会更新 `models/model_name.txt` 与 `models/next_stage_model.txt`。它们只指向最近一次构建，多个规模的实验应像下文一样显式传入模型名称和路径。`MODEL_ROOT` 可整体更改构建输出与指针位置。
 
-上述默认命令构建的是 **Hierarchical-12L**：三个四层编码器串行级联，仍使用主线名称 `models/<B>-PGCA/`，无需额外指定 CONTEXT_MODE 或 PGCA_MODEL。三级边界自动取实际 PGCA 首层、首尾索引均值向下取整、末层。
+上述默认命令构建的是 **Hierarchical-12L**：三个四层编码器串行级联，仍使用主线名称 `models/<B>-Char-PGCA/`，无需额外指定 CONTEXT_MODE 或 PGCA_MODEL。三级边界自动取实际 PGCA 首层、首尾索引均值向下取整、末层。
 
 旧 Shared-4L 仅作显式对照，另指定模型路径：
 
 ```bash
 BASE_MODEL="$BASE" BASE_MODEL_NAME="$B" \
-CONTEXT_MODE=shared PGCA_MODEL="$PWD/models/${B}-PGCA-Shared-4L" \
+CONTEXT_MODE=shared PGCA_MODEL="$PWD/models/${B}-Char-PGCA-Shared-4L" \
 bash scripts/model_build/run.sh
 ```
 
@@ -267,8 +269,8 @@ PHASE1_MODEL="$PWD/models/${B}-Char" \
 bash scripts/train/run.sh
 
 # PGCA：Phase1 → Phase2-A → Phase2-B → General-SFT → 三项专项 LoRA。
-MODEL_VARIANT=pgca MODEL_NAME="${B}-PGCA" \
-PHASE1_MODEL="$PWD/models/${B}-PGCA" \
+MODEL_VARIANT=pgca MODEL_NAME="${B}-Char-PGCA" \
+PHASE1_MODEL="$PWD/models/${B}-Char-PGCA" \
 bash scripts/train/run.sh
 ```
 
@@ -301,7 +303,7 @@ bash scripts/train/run.sh
 
 ```bash
 CUDA_VISIBLE_DEVICES=1,3 \
-MODEL_VARIANT=pgca MODEL_NAME="${B}-PGCA" \
+MODEL_VARIANT=pgca MODEL_NAME="${B}-Char-PGCA" \
 STAGES=phase2_b \
 bash scripts/train/run.sh
 ```
@@ -329,10 +331,10 @@ export TENSOR_PARALLEL_SIZE=4
 MODEL_NAME="${B}-INS" \
 bash scripts/evaluation/run.sh
 
-MODEL_NAME="${B}-Char-CPT-INS" \
+MODEL_NAME="${B}-Char-Align-CPT-INS" \
 bash scripts/evaluation/run.sh
 
-MODEL_NAME="${B}-PGCA-CPT-INS" \
+MODEL_NAME="${B}-Char-PGCA-Align-CPT-INS" \
 bash scripts/evaluation/run.sh
 ```
 
@@ -372,8 +374,8 @@ MODEL="$BASE" MODEL_NAME="$B" bash scripts/evaluation/ppl/run.sh
 MODEL="$PWD/models/${B}-Char" MODEL_NAME="${B}-Char" \
 bash scripts/evaluation/ppl/run.sh
 
-IFS= read -r ALIGN_MODEL < "outputs/train/${B}-PGCA-ALIGN/next_stage_model.txt"
-MODEL="$ALIGN_MODEL" MODEL_NAME="${B}-PGCA-ALIGN" \
+IFS= read -r ALIGN_MODEL < "outputs/train/${B}-Char-PGCA-Align/next_stage_model.txt"
+MODEL="$ALIGN_MODEL" MODEL_NAME="${B}-Char-PGCA-Align" \
 bash scripts/evaluation/ppl/run.sh
 ```
 
@@ -415,14 +417,14 @@ BASE="$PWD/models/$B"
 例如跳过已完成的 PGCA Phase1，接着运行 A/B：
 
 ```bash
-MODEL_VARIANT=pgca MODEL_NAME="${B}-PGCA" \
+MODEL_VARIANT=pgca MODEL_NAME="${B}-Char-PGCA" \
 STAGES=phase2_a,phase2_b bash scripts/train/run.sh
 ```
 
 指定某个完整 INS 模型做 CSC：
 
 ```bash
-MODEL_VARIANT=pgca MODEL_NAME="${B}-PGCA" \
+MODEL_VARIANT=pgca MODEL_NAME="${B}-Char-PGCA" \
 CSC_MODEL=/absolute/path/to/ins/vN/merged \
 STAGES=csc bash scripts/train/run.sh
 ```
@@ -430,7 +432,7 @@ STAGES=csc bash scripts/train/run.sh
 恢复 PGCA-B 的同一次训练：
 
 ```bash
-MODEL_NAME="${B}-PGCA" \
+MODEL_NAME="${B}-Char-PGCA-Align" \
 MODEL=/absolute/path/to/joint/vN/checkpoint-N \
 RESUME_FROM_CHECKPOINT=/absolute/path/to/joint/vN/checkpoint-N \
 bash scripts/train/cpt/phase2_b.sh
@@ -439,7 +441,7 @@ bash scripts/train/cpt/phase2_b.sh
 恢复 CSC LoRA 时，脚本可从 adapter 配置读取原基座：
 
 ```bash
-MODEL_NAME="${B}-PGCA-CPT-INS" \
+MODEL_NAME="${B}-Char-PGCA-Align-CPT-INS" \
 RESUME_FROM_CHECKPOINT=/absolute/path/to/CSC/vN/checkpoint-N \
 bash scripts/train/downstream/csc.sh
 ```
@@ -450,9 +452,9 @@ bash scripts/train/downstream/csc.sh
 
 | 产物 | 默认位置 |
 | --- | --- |
-| 模型源码、词表、权重 | `models/<B>-Char`、`models/<B>-PGCA` |
-| Char 训练 | `outputs/train/<B>-Char-ALIGN`、`outputs/train/<B>-Char-CPT` |
-| PGCA 训练 | `outputs/train/<B>-PGCA-ALIGN`、`outputs/train/<B>-PGCA-CPT/{adaptation,joint}` |
+| 模型源码、词表、权重 | `models/<B>-Char`、`models/<B>-Char-PGCA` |
+| Char 训练 | `outputs/train/<B>-Char-Align`、`outputs/train/<B>-Char-Align-CPT` |
+| PGCA 训练 | `outputs/train/<B>-Char-PGCA-Align`、`outputs/train/<B>-Char-PGCA-Align-CPT/{adaptation,joint}` |
 | General-SFT 与合并 | `outputs/train/<输入模型名称>-INS/{adapters,inputs,vN/merged}` |
 | 下游 adapter | `outputs/train/<输入模型名称>-{CSC,CGEC,ACT}` |
 | 缓存 | `outputs/cache/<模型名称>/` |

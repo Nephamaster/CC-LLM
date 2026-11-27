@@ -56,7 +56,7 @@ DATA_SEED="${DATA_SEED:-42}"
 if [[ -z "$MODEL_NAME" ]]; then
     [[ -s "$CC_ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run model_build/run.sh" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
-    MODEL_NAME="${MODEL_NAME}-CPT-INS"
+    MODEL_NAME="${MODEL_NAME}-Align-CPT-INS"
 fi
 [[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" != . && "$MODEL_NAME" != .. ]] || {
     echo "MODEL_NAME must be the input model name, not a checkpoint path" >&2; exit 2;

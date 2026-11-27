@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "checks": 7,
+  "python": "3.14.6",
+  "packages": {
+    "torch": "2.15.0+cpu",
+    "transformers": "5.22.2",
+    "ms-swift": "4.6.1",
+    "lm_eval": "0.4.13",
+    "tokenizers": "0.23.3"
+  },
+  "fixture": "two-layer width-16 Qwen3 CPU model, ByteLevel BPE, synthetic forced EOS at length bound",
+  "covered": [
+    "real Harness-HF generation",
+    "real native HF generation",
+    "real Swift TransformersEngine exact IDs and ordinary dialogue",
+    "original generation tokens preserved by tracing",
+    "EOS and length-bound distinction",
+    "wrong input rejected and patches restored",
+    "configuration normalization and latest-failed-cell summary"
+  ],
+  "vllm_test": "simulated API unit check only; no real vLLM/GPU test",
+  "actual_base_shared_weights_tested": false,
+  "log": "checks-final.log",
+  "earlier_fixture_failure": {
+    "log": "checks.log",
+    "reason": "WordLevel tokenizer cannot satisfy native StopStringCriteria static prefix cleanup; replaced with ByteLevel BPE fixture"
+  }
+}

@@ -1,0 +1,65 @@
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1139.76it/s]
+test_budget_and_eos_can_coincide (__main__.ExperimentChecks.test_budget_and_eos_can_coincide) ... ok
+test_real_prepare_hf_and_swift_cells (__main__.ExperimentChecks.test_real_prepare_hf_and_swift_cells) ... /tmp/cc-p0-01-20261126-env/lib/python3.14/site-packages/torch/jit/_script.py:1485: FutureWarning: `torch.jit.script` is not supported in Python 3.14+ and may break. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+[WARNING:swift] Loading model from '/tmp/cc-p0-01-check-vuq9ka4k/tiny' with trust_remote_code=True. This will execute custom Python code shipped in the model repository (e.g. configuration_*.py, modeling_*.py, tokenization_*.py). Only proceed if you trust the source of this model.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+[INFO:swift] Setting torch_dtype: torch.float32
+[WARNING:swift] Loading config from '/tmp/cc-p0-01-check-vuq9ka4k/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[transformers] The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+[WARNING:swift] Loading tokenizer/processor from '/tmp/cc-p0-01-check-vuq9ka4k/tiny' with trust_remote_code=True. Custom Python code from the model repository will be executed. Only use models from sources you trust.
+[INFO:swift] default_system: None
+[INFO:swift] max_length: 8192
+[INFO:swift] response_prefix: None
+[INFO:swift] agent_template: hermes
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 5563.03it/s]
+[P0-01] shared/B fixture/0 budget=4
+Traceback (most recent call last):
+  File "/home/nepham/Lab/CC-LLM/experiment/p0_01_generation/worker.py", line 103, in run_cases
+    action(case, record)
+    ~~~~~~^^^^^^^^^^^^^^
+  File "/home/nepham/Lab/CC-LLM/experiment/p0_01_generation/worker.py", line 161, in action
+    criteria = StoppingCriteriaList([StopStringCriteria(tokenizer, stop)]) if stop else StoppingCriteriaList()
+                                     ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/tmp/cc-p0-01-20261126-env/lib/python3.14/site-packages/transformers/generation/stopping_criteria.py", line 259, in __init__
+    self.embedding_vec, self.max_valid_positions, self.max_valid_end_lens = self.clean_and_embed_tokens_with_cache(
+                                                                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        token_list, token_indices, tokenizer
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/tmp/cc-p0-01-20261126-env/lib/python3.14/site-packages/transformers/generation/stopping_criteria.py", line 281, in clean_and_embed_tokens_with_cache
+    clean_token_list, clean_token_indices = self.clean_tokenizer_vocab(
+                                            ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        tokenizer, stop_string_matching_mode=self._stop_string_matching_mode
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/tmp/cc-p0-01-20261126-env/lib/python3.14/site-packages/transformers/generation/stopping_criteria.py", line 381, in clean_tokenizer_vocab
+    token_string = token_string[token_string.index(static_prefix) + len(static_prefix) :]
+                                ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+ValueError: substring not found
+ERROR
+test_summary_uses_latest_failed_cell (__main__.ExperimentChecks.test_summary_uses_latest_failed_cell) ... ok
+test_trace_preserves_actual_generate_and_restores_methods (__main__.ExperimentChecks.test_trace_preserves_actual_generate_and_restores_methods) ... ok
+test_vllm_trace_preserves_arguments_and_captures_engine_update (__main__.ExperimentChecks.test_vllm_trace_preserves_arguments_and_captures_engine_update) ... ok
+test_wrong_prompt_fails_and_restores (__main__.ExperimentChecks.test_wrong_prompt_fails_and_restores) ... ok
+
+======================================================================
+ERROR: test_real_prepare_hf_and_swift_cells (__main__.ExperimentChecks.test_real_prepare_hf_and_swift_cells)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/nepham/Lab/CC-LLM/experiment/p0_01_generation/checks.py", line 133, in test_real_prepare_hf_and_swift_cells
+    action(args)
+    ~~~~~~^^^^^^
+  File "/home/nepham/Lab/CC-LLM/experiment/p0_01_generation/worker.py", line 168, in native
+    run_cases(args, tokenizer, action)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nepham/Lab/CC-LLM/experiment/p0_01_generation/worker.py", line 113, in run_cases
+    raise RuntimeError("one or more cases failed; inspect generations.jsonl and worker.log")
+RuntimeError: one or more cases failed; inspect generations.jsonl and worker.log
+
+----------------------------------------------------------------------
+Ran 6 tests in 10.368s
+
+FAILED (errors=1)

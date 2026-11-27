@@ -13,7 +13,7 @@ bash scripts/train/downstream/ancient.sh
 正式新增路线默认读取合并后的 INS 指针，分别训练独立专项 Adapter。General-SFT 参见 [指令微调](../instruction/README.md)。显式固定完整输入权重时同时传入名称：
 
 ```bash
-MODEL=/path/to/merged-ins-model MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
+MODEL=/path/to/merged-ins-model MODEL_NAME=Qwen3-Base-Char-PGCA-Align-CPT-INS \
 bash scripts/train/downstream/csc.sh
 ```
 

@@ -12,12 +12,13 @@ PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/.venv/train/bin/python}"
 MODEL_NAME="${MODEL_NAME:-}"
 if [[ -z "$MODEL_NAME" && -s "$CC_ROOT/models/model_name.txt" ]]; then
     IFS= read -r MODEL_NAME < "$CC_ROOT/models/model_name.txt"
+    MODEL_NAME="${MODEL_NAME}-Align"
 fi
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 
-# 本阶段输入、输出及训练参数。MODEL 优先；留空时读取 Phase1 完成指针。
+# MODEL_NAME 为输入模型名称，如 B-Char-PGCA-Align；MODEL 优先。
 MODEL="${MODEL:-}"
-ALIGN_OUT="${ALIGN_OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
+ALIGN_OUT="${ALIGN_OUT:-$TRAIN_ROOT/$MODEL_NAME}"
 CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
 OUT="${OUT:-$CPT_ROOT/adaptation}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase2}"

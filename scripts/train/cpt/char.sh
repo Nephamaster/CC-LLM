@@ -12,9 +12,9 @@ PYTHON_CMD="${PYTHON_CMD:-$CC_ROOT/.venv/train/bin/python}"
 MODEL_NAME="${MODEL_NAME:-}"
 TRAIN_ROOT="${TRAIN_ROOT:-$CC_ROOT/outputs/train}"
 
-# 标准 Char 主干全参数训练，无 PGCA 分支和辅助损失。MODEL 优先；默认衔接 Char-ALIGN。
+# MODEL_NAME 为输入模型名称，如 B-Char-Align；MODEL 优先。
 MODEL="${MODEL:-}"
-ALIGN_OUT="${ALIGN_OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
+ALIGN_OUT="${ALIGN_OUT:-$TRAIN_ROOT/$MODEL_NAME}"
 DATA_DIR="${DATA_DIR:-$CC_ROOT/data/pretrain/phase2}"
 OUT="${OUT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
 MAX_LENGTH="${MAX_LENGTH:-4096}"
@@ -62,7 +62,7 @@ DATA_SEED="${DATA_SEED:-42}"                      # 同时控制准备缓存时�
 # ==================== 1. 初始化与输入模型 ====================
 if [[ -z "$MODEL" ]]; then
     [[ -s "$ALIGN_OUT/next_stage_model.txt" ]] || {
-        echo "Finish Char Phase1 or set MODEL to the Char-ALIGN checkpoint" >&2; exit 1;
+        echo "Set MODEL_NAME to the input model name (e.g. B-Char-Align), or set MODEL explicitly" >&2; exit 1;
     }
     IFS= read -r MODEL < "$ALIGN_OUT/next_stage_model.txt"
 fi

@@ -10,6 +10,8 @@ bash scripts/train/cpt/phase2_b.sh
 
 每个脚本顶部直接列出该阶段全部训练参数。Phase1 训练主干并冻结 PGCA；Phase2-A 训练音形分支和辅助头；Phase2-B 进行全参数联合训练。
 
+单阶段脚本的 `MODEL_NAME` 是输入模型名称。Phase1 例如传 `B-Char-PGCA`，输出 `B-Char-PGCA-Align`；Phase2-A/B 沿用同一个 CPT 输入名 `B-Char-PGCA-Align`，共同输出 `B-Char-PGCA-Align-CPT/{adaptation,joint}`。Char CPT 同样在输入名后追加 `-CPT`。总入口仍使用构建模型名，自动完成阶段名称衔接。
+
 Phase2-A/B 的 `ENABLE_AUXILIARY_TASKS` 默认 true；设为 false 时只使用 CLM 损失，不执行辅助头前向或辅助监督统计，冻结辅助头且不累计辅助 warmup Token。PGCA、Feature Embedding、C1/C2/C3 继续按原阶段规则训练；无需修改模型结构或重建模型。
 
 ```bash
@@ -21,7 +23,7 @@ ENABLE_AUXILIARY_TASKS=false bash scripts/train/cpt/phase2_b.sh
 
 `pgca_aux_enabled` 表示模型结构是否包含辅助头，新开关控制本次训练是否使用它们。false 不删除现有辅助头；原本不含辅助头的完整 PGCA 模型也可在 false 下训练。
 
-Char 对照路线：`MODEL_VARIANT=char MODEL_NAME=B-Char PHASE1_MODEL=/path/to/B-Char STAGES=phase1,cpt bash scripts/train/run.sh`。Phase1 使用相同语料训练标准 Char 主干；随后 `char.sh` 自动读取 Char-ALIGN 指针，以同一 Phase2 共享池进行全参数 CLM，默认监督上限 10B，不划分只训练分支的 A 段，也不启用辅助任务。`CPT_MODEL` 可覆盖 Char 的 Phase2 输入。标准 Qwen3 不能使用 PGCA 专属的多任务 loss，因此复用插件中的 CLM 分支与既有零目标过滤、token 归一化、检查点发布逻辑。
+Char 对照路线：`MODEL_VARIANT=char MODEL_NAME=B-Char PHASE1_MODEL=/path/to/B-Char STAGES=phase1,cpt bash scripts/train/run.sh`。Phase1 使用相同语料训练标准 Char 主干；随后 `char.sh` 自动读取 Char-Align 指针，以同一 Phase2 共享池进行全参数 CLM，默认监督上限 10B，不划分只训练分支的 A 段，也不启用辅助任务。`CPT_MODEL` 可覆盖 Char 的 Phase2 输入。标准 Qwen3 不能使用 PGCA 专属的多任务 loss，因此复用插件中的 CLM 分支与既有零目标过滤、token 归一化、检查点发布逻辑。
 
 数据预处理默认 `DATASET_NUM_PROC=4`，编码单批默认 `ENCODING_BATCH_SIZE=32` 篇文档。两者都能在命令前覆盖；编码单批与 GPU 训练 batch 无关。长文档先编码再切分，一批可能扩展为许多训练片段，因此不沿用 Swift 的 1000 篇编码批次。减少单批文档数用于控制中间结果内存，不保证对所有机器都提速；并发应根据实际 CPU、内存和磁盘吞吐选择，不是越大越好。
 

@@ -4,7 +4,7 @@ TASK_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$TASK_DIR/../../.." && pwd)"
 cd "$ROOT"
 
-# 同名环境变量优先。MODEL 是 Base 或已经训练完的 Char-CPT / PGCA-CPT 完整权重。
+# 同名环境变量优先。MODEL 是输入完整权重，MODEL_NAME 是它的规范名称。
 MODEL_NAME="${MODEL_NAME:-}"
 MODEL="${MODEL:-}"
 INSTRUCTION_DATA="${INSTRUCTION_DATA:-$ROOT/data/instruction}"
@@ -20,7 +20,7 @@ TEMPLATE_TYPE=cc_llm_instruction
 if [[ -z "$MODEL_NAME" ]]; then
     [[ -s "$ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME to the General-SFT input model name" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$ROOT/models/model_name.txt"
-    MODEL_NAME="${MODEL_NAME}-CPT"
+    MODEL_NAME="${MODEL_NAME}-Align-CPT"
 fi
 source "$TASK_DIR/../downstream/common.sh"
 

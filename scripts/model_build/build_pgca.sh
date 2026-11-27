@@ -5,7 +5,7 @@ cd "$ROOT"
 export PYTHONDONTWRITEBYTECODE=1
 PYTHON_CMD="${PYTHON_CMD:-$ROOT/.venv/train/bin/python}"
 CHAR_MODEL="${CHAR_MODEL:-$ROOT/models/char}"
-PGCA_MODEL="${PGCA_MODEL:-$ROOT/models/pgca}"
+PGCA_MODEL="${PGCA_MODEL:-${CHAR_MODEL}-PGCA}"
 AUX_PHONETIC_WEIGHT="${AUX_PHONETIC_WEIGHT:-0.03}"
 AUX_GLYPH_WEIGHT="${AUX_GLYPH_WEIGHT:-0.03}"
 CONTEXT_MODE="${CONTEXT_MODE:-hierarchical}"  # hierarchical by default; shared is an explicit comparison

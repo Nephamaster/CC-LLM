@@ -16,7 +16,7 @@ cgec/run.sh      FCGEC 与 NaCGEC
 ancient/run.sh   C³Bench 与 Fùxì
 ```
 
-下游 LoRA 评估使用 `MODEL=完整基座` 和 `LORA=专项 adapter checkpoint`，正式新增路线从 Base-INS、Char-CPT-INS、PGCA-CPT-INS 合并模型开始。总入口用 `MODEL_NAME` 区分路线，并读取 `outputs/train/<MODEL_NAME>-{CSC,CGEC,ACT}/next_stage_model.txt`；`TRAIN_ROOT` 可以更改训练根目录。`STAGE=prepare|infer|score|all` 可单独执行阶段，`RUN_DIR` 可接续指定版本。
+下游 LoRA 评估使用 `MODEL=完整基座` 和 `LORA=专项 adapter checkpoint`，正式新增路线从 Base-INS、Char-Align-CPT-INS、Char-PGCA-Align-CPT-INS 合并模型开始。总入口用 `MODEL_NAME` 区分路线，并读取 `outputs/train/<MODEL_NAME>-{CSC,CGEC,ACT}/next_stage_model.txt`；`TRAIN_ROOT` 可以更改训练根目录。`STAGE=prepare|infer|score|all` 可单独执行阶段，`RUN_DIR` 可接续指定版本。
 
 `INFERENCE_BACKEND=auto` 对标准模型使用 vLLM，对当前 PGCA 使用 HF。显式 `INFERENCE_BACKEND=vllm` 会通过 vLLM Transformers backend 加载本地自定义模型；未完成真实一致性验证前不能替代 PGCA 的 HF 正式结果。
 

@@ -1,6 +1,6 @@
 # 通用指令微调（General-SFT）
 
-主线是 Base → INS、Char-CPT → INS、PGCA-CPT → INS，随后各自独立训练 CSC、CGEC、ACT Adapter。使用 all-linear LoRA，PGCA 分支也参与，辅助损失关闭；验收后合并为完整 M-INS，再进行专项 LoRA。
+主线是 Base → INS、Char-Align-CPT → INS、Char-PGCA-Align-CPT → INS，随后各自独立训练 CSC、CGEC、ACT Adapter。使用 all-linear LoRA，PGCA 分支也参与，辅助损失关闭；验收后合并为完整 M-INS，再进行专项 LoRA。
 
 ## 成品数据
 
@@ -24,12 +24,12 @@ budget.py 使用实际模型 Tokenizer 和训练模板，排除超长完整对�
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
-MODEL=/absolute/path/to/full-model MODEL_NAME=Qwen3-Base-PGCA-CPT \
+MODEL=/absolute/path/to/full-model MODEL_NAME=Qwen3-Base-Char-PGCA-Align-CPT \
 TRAIN_BATCH_SIZE=2 GRAD_ACCUMULATION=8 \
 bash scripts/train/instruction/run.sh
 ```
 
-Base 用原基座路径/名称；Char 用 Char-CPT；PGCA 用 PGCA-CPT。参数在 `run.sh` 顶部，同名环境变量优先；LoRA/优化器等共用 `downstream/common.sh`。默认长度 4096、学习率 1e-4、1 Epoch；训练两遍时在同一命令前加 `NUM_TRAIN_EPOCHS=2`。
+Base 用原基座路径/名称；Char 用 Char-Align-CPT；默认 PGCA 用 Char-PGCA-Align-CPT。只完成 Align 或 CPT 时，显式传入实际输入名称，例如 `MODEL_NAME=B-Char-Align` 输出 `B-Char-Align-INS`，`MODEL_NAME=B-CPT` 输出 `B-CPT-INS`。参数在 `run.sh` 顶部，同名环境变量优先；LoRA/优化器等共用 `downstream/common.sh`。默认长度 4096、学习率 1e-4、1 Epoch；训练两遍时在同一命令前加 `NUM_TRAIN_EPOCHS=2`。
 
 `SUPERVISED_TOKENS=0` 表示不按监督 Token 裁样本视图，Epoch 独立由 `NUM_TRAIN_EPOCHS` 控制。可选的正数预算按实际模板 `labels[1:] != -100` 选择每 Epoch 的完整对话，达到目标后保留最后一条完整对话，不再强制覆盖 Epoch。不会截断答案或屏蔽 EOS 来凑整数，因此实际值可能超过目标。
 
@@ -64,7 +64,7 @@ outputs/train/M-INS/
 总训练入口默认已经包含 instruction：
 
 ```bash
-MODEL_VARIANT=pgca MODEL_NAME=Qwen3-Base-PGCA \
+MODEL_VARIANT=pgca MODEL_NAME=Qwen3-Base-Char-PGCA \
 STAGES=instruction,csc,cgec,ancient bash scripts/train/run.sh
 ```
 
@@ -73,7 +73,7 @@ STAGES=instruction,csc,cgec,ancient bash scripts/train/run.sh
 通用正式结果使用 INS 模型：
 
 ```bash
-MODEL_NAME=Qwen3-Base-PGCA-CPT-INS \
+MODEL_NAME=Qwen3-Base-Char-PGCA-Align-CPT-INS \
 EVAL_MODE=instruct bash scripts/evaluation/run.sh
 ```
 

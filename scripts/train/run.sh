@@ -20,8 +20,14 @@ if [[ -z "${MODEL_NAME:-}" ]]; then
     [[ -s "$ROOT/models/model_name.txt" ]] || { echo "Set MODEL_NAME or run scripts/model_build/run.sh" >&2; exit 1; }
     IFS= read -r MODEL_NAME < "$ROOT/models/model_name.txt"
     case "$MODEL_VARIANT" in
-        base) MODEL_NAME="${MODEL_NAME%-PGCA}" ;;
-        char) MODEL_NAME="${MODEL_NAME%-PGCA}-Char" ;;
+        base)
+            MODEL_NAME="${MODEL_NAME%-PGCA}"
+            MODEL_NAME="${MODEL_NAME%-Char}"
+            ;;
+        char)
+            MODEL_NAME="${MODEL_NAME%-PGCA}"
+            [[ "$MODEL_NAME" == *-Char ]] || MODEL_NAME="${MODEL_NAME}-Char"
+            ;;
     esac
 fi
 [[ "$MODEL_NAME" != */* ]] || { echo "MODEL_NAME must be a name, not a path" >&2; exit 1; }
@@ -63,15 +69,23 @@ run_stage() {
     echo "[train] complete $name: $(<"$stage_pointer")"
 }
 
-ALIGN_ROOT="${ALIGN_OUT:-$TRAIN_ROOT/${MODEL_NAME}-ALIGN}"
-CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${MODEL_NAME}-CPT}"
+ALIGN_NAME="${MODEL_NAME}-Align"
+ALIGN_ROOT="${ALIGN_OUT:-$TRAIN_ROOT/$ALIGN_NAME}"
+CPT_ROOT="${CPT_ROOT:-$TRAIN_ROOT/${ALIGN_NAME}-CPT}"
 ADAPTATION_OUT="${ADAPTATION_OUT:-$CPT_ROOT/adaptation}"
-SFT_MODEL_NAME="${MODEL_NAME}-CPT"
+SFT_MODEL_NAME="${ALIGN_NAME}-CPT"
 BASE_INPUT=""
 if [[ "$MODEL_VARIANT" == base ]]; then
     SFT_MODEL_NAME="$MODEL_NAME"
     BASE_INPUT="${BASE_MODEL:-}"
 fi
+if selected phase1 && ! selected cpt && ! selected phase2_a && ! selected phase2_b; then
+    SFT_MODEL_NAME="$ALIGN_NAME"
+fi
+case "$MODEL_NAME" in
+    *-INS) SFT_MODEL_NAME="${MODEL_NAME%-INS}" ;;
+    *-Align|*-CPT) SFT_MODEL_NAME="$MODEL_NAME" ;;
+esac
 align_updated=false
 adaptation_updated=false
 cpt_updated=false
@@ -81,15 +95,15 @@ if selected phase1; then
     align_updated="$stage_ran"
 fi
 if selected cpt; then
-    run_stage cpt "$CPT_ROOT" "${CPT_MODEL:-}" "$align_updated" "$MODEL_NAME" "$ROOT/scripts/train/cpt/char.sh"
+    run_stage cpt "$CPT_ROOT" "${CPT_MODEL:-}" "$align_updated" "$ALIGN_NAME" "$ROOT/scripts/train/cpt/char.sh"
     cpt_updated="$stage_ran"
 fi
 if selected phase2_a; then
-    run_stage phase2_a "$ADAPTATION_OUT" "${PHASE2_A_MODEL:-}" "$align_updated" "$MODEL_NAME" "$ROOT/scripts/train/cpt/phase2_a.sh"
+    run_stage phase2_a "$ADAPTATION_OUT" "${PHASE2_A_MODEL:-}" "$align_updated" "$ALIGN_NAME" "$ROOT/scripts/train/cpt/phase2_a.sh"
     adaptation_updated="$stage_ran"
 fi
 if selected phase2_b; then
-    run_stage phase2_b "$CPT_ROOT/joint" "${PHASE2_B_MODEL:-}" "$adaptation_updated" "$MODEL_NAME" "$ROOT/scripts/train/cpt/phase2_b.sh"
+    run_stage phase2_b "$CPT_ROOT/joint" "${PHASE2_B_MODEL:-}" "$adaptation_updated" "$ALIGN_NAME" "$ROOT/scripts/train/cpt/phase2_b.sh"
     cpt_updated="$stage_ran"
     if [[ "$stage_ran" != true ]]; then
         mkdir -p -- "$CPT_ROOT"
