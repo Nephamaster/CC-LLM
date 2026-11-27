@@ -34,3 +34,13 @@ LIMIT=10                 # 仅冒烟
 每次运行自动创建新的 `vN` 结果目录。
 
 单卡 vLLM 评估需设置 `CUDA_VISIBLE_DEVICES=<索引> TENSOR_PARALLEL_SIZE=1`；HF 后端不使用该 TP 参数。
+
+## 生成策略、seed 与配置记录
+
+所有自由生成请求在共用后端入口明确使用 greedy、单返回序列。SQuAD 的实际 `construct_requests` 也显式设置 `do_sample=false, temperature=0`，不依赖 Python 任务的汇总配置。预算、任务停止串及候选 loglikelihood 评分保持各自协议。
+
+实验 seed 统一为42：evaluator/few-shot 与 vLLM 引擎、生成请求分别显式设置。manifest 的 `seeds` 区分这些层次，`actual_model.engine_seed` 记录 harness 后端接收的引擎值。HF 的 RNG 由 evaluator 设置；不将 seed 作为不受支持的 HF generate 参数传入。
+
+每轮新增 `generation_config.jsonl`，按真实生成 dispatch 追加关键生效参数。HF 在长度及停止条件解析后捕获；vLLM 在合入引擎默认值后捕获，并同时保留传入的采样参数。日志不复制 Prompt 或完整训练 args。`phase=dispatch_end` 的 `effective_config_observed` 说明本次是否实际捕获，异常只记录类型，钩子会恢复。
+
+manifest 的 `generation_protocol` 标识解码协议，`generation_trace` 给出日志路径和本进程捕获覆盖。候选概率任务没有自由生成时，`generation_calls=0, all_calls_observed=null`；未捕获时不会用请求值冒充生效值。HF 最终温度字段为1但 `do_sample=false` 仍表示 greedy。

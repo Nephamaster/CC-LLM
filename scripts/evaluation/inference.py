@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 from .common import ROOT, ensure_dir, iter_jsonl, read_journal, write_json, write_line
 from .generation import token_budget
+from .generation_config import EVALUATION_SEED, GENERATION_PROTOCOL, GenerationConfigLog
 
 TEMPLATE_KEYS = (
     "system", "use_chat_template", "response_prefix", "enable_thinking", "preserve_thinking",
@@ -93,11 +94,14 @@ def resolve_backend(model_path, requested):
 
 class TrainingTemplatePredictor:
     def __init__(self, model_path, adapter_path, contract, batch_size, max_new_tokens,
-                 backend="auto", tensor_parallel_size=4):
+                 backend="auto", tensor_parallel_size=4, generation_log=None):
         from swift import InferRequest, RequestConfig, TransformersEngine
         from swift.model import get_model_processor
         from swift.utils import import_external_file
         from transformers import AutoConfig
+        from transformers import set_seed
+
+        set_seed(EVALUATION_SEED)
 
         plugins = contract["external_plugins"]
         for path in [plugins] if isinstance(plugins, str) else plugins:
@@ -122,6 +126,7 @@ class TrainingTemplatePredictor:
                 str(Path(model_path).resolve()), template=template, adapters=adapters,
                 tensor_parallel_size=tensor_parallel_size, max_model_len=context_length,
                 max_num_seqs=batch_size,
+                seed=EVALUATION_SEED,
                 engine_kwargs={"model_impl": "transformers", "trust_remote_code": True},
             )
         else:
@@ -131,9 +136,14 @@ class TrainingTemplatePredictor:
         self.request_cls = InferRequest
         self.config_cls = RequestConfig
         self.max_new_tokens = max_new_tokens
+        self.config_log = GenerationConfigLog(generation_log, backend) if generation_log else None
         self.info = {"backend": backend, "model_class": type(model).__name__ if model is not None else None,
                      "template": contract, "use_cache": True,
-                     "tensor_parallel_size": tensor_parallel_size}
+                     "tensor_parallel_size": tensor_parallel_size, "generation_protocol": GENERATION_PROTOCOL,
+                     "seeds": {"torch": EVALUATION_SEED, "engine": EVALUATION_SEED if backend == "vllm" else None,
+                               "request": EVALUATION_SEED}}
+        if self.config_log is not None:
+            self.info["generation_trace"] = self.config_log.summary()
 
     def __call__(self, rows):
         groups = defaultdict(list)
@@ -142,7 +152,18 @@ class TrainingTemplatePredictor:
         output = [None] * len(rows)
         for budget, group in groups.items():
             requests = [self.request_cls(messages=row["messages"]) for _, row in group]
-            results = self.engine.infer(requests, self.config_cls(max_tokens=budget, temperature=0, stream=False), use_tqdm=False)
+            config = self.config_cls(max_tokens=budget, temperature=0, seed=EVALUATION_SEED, stream=False)
+            if self.config_log is None:
+                results = self.engine.infer(requests, config, use_tqdm=False)
+            else:
+                model = self.engine.model if self.info["backend"] == "hf" else None
+                try:
+                    with self.config_log.capture(model=model, engine=self.engine,
+                                                 request={"max_tokens": budget, "temperature": 0,
+                                                          "seed": EVALUATION_SEED, "batch_size": len(group)}):
+                        results = self.engine.infer(requests, config, use_tqdm=False)
+                finally:
+                    self.info["generation_trace"] = self.config_log.summary()
             if len(results) != len(group):
                 raise RuntimeError("generation returned a different number of results")
             for (index, _), result in zip(group, results):
@@ -175,12 +196,15 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=32,
                 "batch_size": batch_size, "decoder": "greedy", "use_cache": True,
                 "backend": resolve_backend(model_path, backend),
                 "tensor_parallel_size": tensor_parallel_size,
+                "generation_protocol": GENERATION_PROTOCOL,
                 "pgca_enabled_env": os.getenv("PGCA_ENABLED")}
     identity["dev_check"] = {"mode": os.getenv("DEV_CHECK_MODE", "not_run"),
                              "reports": os.getenv("DEV_CHECK_REPORT_ROOT")}
     previous = []
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
+        if manifest.get("identity", {}).get("generation_protocol") != GENERATION_PROTOCOL:
+            raise ValueError("prediction decoding protocol differs or is unrecorded; start a new evaluation RUN_DIR")
     elif output.exists() or output.with_suffix(".retry.jsonl").exists():
         raise ValueError("predictions/journal exist without their identity manifest")
     else:
@@ -217,7 +241,8 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=32,
         print("[evaluation] loading model and adapter", flush=True)
         predictor = TrainingTemplatePredictor(
             model_path, adapter_path, contract, batch_size, max_new_tokens,
-            backend=backend, tensor_parallel_size=tensor_parallel_size)
+            backend=backend, tensor_parallel_size=tensor_parallel_size,
+            generation_log=output.with_suffix(".generation.jsonl"))
         print("[evaluation] model and adapter loaded", flush=True)
     predictor_info = getattr(predictor, "info", manifest.get("predictor", {"backend": "test_fixture"}))
     write_json(manifest_path, {**manifest, "complete": False, "predictor": predictor_info})
@@ -254,6 +279,7 @@ def infer(input_path, output_path, model_path, adapter_path=None, batch_size=32,
                 progress.set_postfix(errors=errors)
     finally:
         progress.close()
+        write_json(manifest_path, {**manifest, "complete": False, "predictor": predictor_info})
     temporary = output.with_suffix(".tmp.jsonl")
     with temporary.open("w", encoding="utf-8") as handle:
         for i in range(len(rows)):

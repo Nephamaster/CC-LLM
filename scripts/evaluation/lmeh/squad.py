@@ -11,6 +11,7 @@ class BudgetedSQuAD2(SQuAD2):
         prompt, generation_kwargs = requests[0].arguments
         requests[0].arguments = (
             prompt,
-            {**generation_kwargs, "max_gen_toks": BENCHMARKS["squadv2"]["max_gen_toks"]},
+            {**generation_kwargs, "max_gen_toks": BENCHMARKS["squadv2"]["max_gen_toks"],
+             "do_sample": False, "temperature": 0.0},
         )
         return requests

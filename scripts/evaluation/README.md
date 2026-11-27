@@ -68,3 +68,11 @@ LMEH 每次运行额外写入 `table_metrics.json`；其他评估的 `metrics.js
 | PPL | `domain_token_ppl` 按政务/影视/通用/游戏/科技/金融填六域；`avg_domain_token_ppl` 为六域算术平均，对应表内 AVERAGE。正式整体 PPL 仍按总 NLL/总目标数计算，不能与六域平均混淆。Base/Char tokenizer 不同，跨 tokenizer 比较还需查看 BPC/BPB。 |
 
 正式新实验三条路线均先完成 General-SFT，再训练独立专项 LoRA；模型名保留 INS 后缀。旧的原基座直接专项微调结果属于不同训练协议，应单独标注。C³Bench 的 `official_code_equivalence=false`：NER、层级出处、标点仍为内部重建口径，未经等价核验不得作为已确认官方分数。
+
+## 生效生成配置与预测复用
+
+自由生成统一 greedy，实验 seed 为42。LMEH 为 vLLM 引擎及每个生成请求显式设置 seed；专项 Swift 设置 Torch RNG、vLLM 引擎与 RequestConfig 的 seed。候选概率打分、PPL、任务预算与停止串不因这项修复而修改。
+
+LMEH 每轮保存 `generation_config.jsonl`，专项保存在 `predictions.generation.jsonl`。记录按真实 dispatch 分组，包含请求信息、关键生效配置和捕获状态；HF 在停止条件构造处观察，vLLM 在引擎默认值合入后观察。Swift 生成前的配置标为 `prepared`，与实际观察的 `effective` 分开。manifest/predictor 的 `generation_trace` 汇总只覆盖当前进程 dispatch，追加日志保留此前尝试；它不表示所有复用样本均在本次重新推理。
+
+专项预测身份新增 `generation_protocol`。已有预测若没有该标识，或与当前协议不同，推理入口会要求新建运行，不覆盖旧预测或把旧 seed 结果标成新协议。使用 `STAGE=all` 新建正式运行，或先 `STAGE=prepare` 再接续 `infer`；纯评分旧结果不经过此推理检查，旧成绩仍按原协议解释。

@@ -4,6 +4,30 @@ from pathlib import Path
 
 from lm_eval.models.huggingface import HFLM
 
+from ..generation_config import EVALUATION_SEED
+
+
+def generation_requests(backend, requests, *, vllm_seed=None):
+    from .chat import chat_stops
+
+    requests = chat_stops(requests, hasattr(backend, "instruct_protocol"))
+    for request in requests:
+        text, options = request.args
+        options = {**options, "do_sample": False, "temperature": 0.0}
+        if vllm_seed is None:
+            options.pop("seed", None)
+            options.pop("n", None)
+            options.update(num_beams=1, num_return_sequences=1)
+        else:
+            options.pop("num_beams", None)
+            options.pop("num_return_sequences", None)
+            options.update(seed=vllm_seed, n=1)
+        request.arguments = (text, options)
+        budget = options.get("max_gen_toks", backend.max_gen_toks)
+        if len(backend.tok_encode(text)) + budget > backend.max_length:
+            raise ValueError("benchmark prompt + generation budget exceeds MAX_LENGTH; refusing to truncate")
+    return requests
+
 
 class StrictHFLM(HFLM):
     def __init__(self, *args, **kwargs):
@@ -22,17 +46,10 @@ class StrictHFLM(HFLM):
         return super()._loglikelihood_tokens(requests, **kwargs)
 
     def generate_until(self, requests, **kwargs):
-        from .chat import chat_stops
-        requests = chat_stops(requests, hasattr(self, "instruct_protocol"))
-        for request in requests:
-            text, options = request.args
-            budget = options.get("max_gen_toks", self.max_gen_toks)
-            if len(self.tok_encode(text)) + budget > self.max_length:
-                raise ValueError("benchmark prompt + generation budget exceeds MAX_LENGTH; refusing to truncate")
-        return super().generate_until(requests, **kwargs)
+        return super().generate_until(generation_requests(self, requests), **kwargs)
 
 
-def build_vllm_backend(model_path, *, dtype, batch_size, max_length, tensor_parallel_size):
+def build_vllm_backend(model_path, *, dtype, batch_size, max_length, tensor_parallel_size, seed=EVALUATION_SEED):
     from lm_eval.models.vllm_causallms import VLLM
 
     class StrictVLLM(VLLM):
@@ -43,14 +60,7 @@ def build_vllm_backend(model_path, *, dtype, batch_size, max_length, tensor_para
             return super()._loglikelihood_tokens(requests, **kwargs)
 
         def generate_until(self, requests, **kwargs):
-            from .chat import chat_stops
-            requests = chat_stops(requests, hasattr(self, "instruct_protocol"))
-            for request in requests:
-                text, options = request.args
-                budget = options.get("max_gen_toks", self.max_gen_toks)
-                if len(self.tok_encode(text)) + budget > self.max_length:
-                    raise ValueError("benchmark prompt + generation budget exceeds MAX_LENGTH; refusing to truncate")
-            return super().generate_until(requests, **kwargs)
+            return super().generate_until(generation_requests(self, requests, vllm_seed=seed), **kwargs)
 
     config = json.loads((Path(model_path) / "config.json").read_text(encoding="utf-8"))
     model_impl = "transformers" if config.get("model_type") == "qwen3_pgca" else "auto"
@@ -63,4 +73,5 @@ def build_vllm_backend(model_path, *, dtype, batch_size, max_length, tensor_para
         max_model_len=max_length,
         add_bos_token=False,
         model_impl=model_impl,
+        seed=seed,
     )

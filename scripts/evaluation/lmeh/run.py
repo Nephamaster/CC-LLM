@@ -13,6 +13,7 @@ from ..common import ROOT
 from ..runs import new_run_directory
 from ..ppl.evaluate import checkpoint_identity, load_model, write_report
 from .protocol import BENCHMARKS, build_bundle, select_benchmarks, table_metrics
+from ..generation_config import EVALUATION_SEED, GENERATION_PROTOCOL, GenerationConfigLog
 
 
 def validate_component(value):
@@ -43,7 +44,7 @@ def load_tasks(bundle, benchmark):
     for name, task in leaves.items():
         # SQuAD is a Python task whose upstream constructor ignores most YAML overrides.
         task.set_config("num_fewshot", BENCHMARKS[benchmark]["shots"])
-        task.set_fewshot_seed(42)
+        task.set_fewshot_seed(EVALUATION_SEED)
         docs = task.eval_docs
         if not len(docs):
             raise ValueError(f"empty evaluation split: {name}")
@@ -95,7 +96,11 @@ def evaluate_one(args, benchmark, backend):
                 "model": model_identity, "backend": backend_name,
                 "max_length": args.max_length, "dtype": args.dtype, "device": args.device,
                 "batch_size": args.batch_size, "limit": args.limit, "smoke_only": args.limit is not None,
-                "seed": 42, "bootstrap_iters": 0 if args.limit else 1000,
+                "seed": EVALUATION_SEED, "generation_protocol": GENERATION_PROTOCOL,
+                "seeds": {"evaluator": EVALUATION_SEED, "fewshot": EVALUATION_SEED,
+                          "engine": EVALUATION_SEED if backend_name == "vllm" else None,
+                          "request": EVALUATION_SEED if backend_name == "vllm" else None},
+                "bootstrap_iters": 0 if args.limit else 1000,
                 "evaluation_mode": args.mode, "apply_chat_template": args.mode == "instruct",
                 "fewshot_as_multiturn": args.mode == "instruct", "add_bos_token": False,
                 "tensor_parallel_size": args.tensor_parallel_size,
@@ -137,16 +142,25 @@ def evaluate_one(args, benchmark, backend):
             pgca_enabled=getattr(backend.model.config, "pgca_enabled", None),
             pgca_context_enabled=getattr(backend.model.config, "pgca_context_enabled", None),
             checkpoint_max_new_tokens_ignored=backend.checkpoint_max_new_tokens)
+    else:
+        manifest["actual_model"]["engine_seed"] = backend.model_args.get("seed")
     write_report(manifest_path, manifest)
     # Pass already loaded root groups/tasks, retaining harness's own group aggregation.
     task_name = BENCHMARKS[benchmark]["task"]
     root = loaded.get("groups", {}).get(task_name) or loaded["tasks"].get(task_name)
-    result = evaluator.simple_evaluate(
-        model=backend, tasks=[root], task_manager=manager, num_fewshot=BENCHMARKS[benchmark]["shots"],
-        limit=args.limit, log_samples=True, apply_chat_template=args.mode == "instruct", fewshot_as_multiturn=args.mode == "instruct",
-        random_seed=42, numpy_random_seed=42, torch_random_seed=42, fewshot_random_seed=42,
-        bootstrap_iters=0 if args.limit else 1000, cache_requests=False,
-    )
+    config_log = GenerationConfigLog(output / "generation_config.jsonl", backend_name)
+    try:
+        with config_log.harness(backend):
+            result = evaluator.simple_evaluate(
+                model=backend, tasks=[root], task_manager=manager, num_fewshot=BENCHMARKS[benchmark]["shots"],
+                limit=args.limit, log_samples=True, apply_chat_template=args.mode == "instruct", fewshot_as_multiturn=args.mode == "instruct",
+                random_seed=EVALUATION_SEED, numpy_random_seed=EVALUATION_SEED,
+                torch_random_seed=EVALUATION_SEED, fewshot_random_seed=EVALUATION_SEED,
+                bootstrap_iters=0 if args.limit else 1000, cache_requests=False,
+            )
+    finally:
+        manifest["generation_trace"] = config_log.summary()
+        write_report(manifest_path, manifest)
     if result is None:
         raise RuntimeError("harness returned no results")
     result = json_ready(result)
