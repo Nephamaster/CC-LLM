@@ -231,7 +231,7 @@ MODEL_NAME="$ALIGN_NAME" \
 TRAIN_BATCH_SIZE=2 \
 EVAL_BATCH_SIZE=2 \
 GRAD_ACCUMULATION=4 \
-DATASET_NUM_PROC=32 \
+DATASET_NUM_PROC=4 \
 ENCODING_BATCH_SIZE=32 \
 MAX_LENGTH=4096 \
 PHASE2_TOKENS=10000000000 \
@@ -255,7 +255,7 @@ MODEL_NAME="$ALIGN_NAME" \
 TRAIN_BATCH_SIZE=1 \
 EVAL_BATCH_SIZE=1 \
 GRAD_ACCUMULATION=32 \
-DATASET_NUM_PROC=32 \
+DATASET_NUM_PROC=4 \
 ENCODING_BATCH_SIZE=32 \
 MAX_LENGTH=4096 \
 PHASE2_TOKENS=10000000000 \
@@ -387,6 +387,8 @@ done
 [[ "$failed" == 0 ]]
 ```
 
+
+
 MMLU、CMMLU、GSM8K 默认 **5-shot**，其余 **0-shot**。
 
 **13. 下游正式评估**
@@ -403,8 +405,6 @@ BENCHMARKS=csc,fcgec_valid,fcgec_test,nacgec,nacgec_test,ancient_c3,ancient_fuxi
 RUN_NAME=full \
 bash scripts/evaluation/run.sh
 ```
-
-
 
 Fuxi 的裁判项需要额外配置 `JUDGE_MODEL`、`JUDGE_BASE_URL` 和 `JUDGE_API_KEY`；没有配置时相关指标保持 pending。无标签测试集产出提交文件。
 
